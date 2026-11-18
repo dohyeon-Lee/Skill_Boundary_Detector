@@ -52,7 +52,26 @@ def test_guard_configuration_is_frozen_and_explicit_opt_out_is_preserved(monkeyp
     monkeypatch.setattr(MODULE.runpy,'run_path',lambda _: {'load_global_config':lambda _: {'srun_gpu_memory_guard':True,'srun_gpu_reserve_gib':6}})
     env=MODULE.memory_guard_environment({})
     assert env['SBD_GPU_MEMORY_GUARD']=='true' and env['SBD_GPU_GUARD_RESERVE_GIB']=='6'
+    assert float(env['SBD_GPU_GUARD_MINIMUM_GIB']) == float(env['SBD_GPU_GUARD_RETRY_MARGIN_GIB']) == 6
+    assert float(env['SBD_GPU_GUARD_STOP_BELOW_GIB']) == 3
     assert MODULE.memory_guard_environment({'SBD_GPU_MEMORY_GUARD':'0'})=={'SBD_GPU_MEMORY_GUARD':'0'}
+
+
+@pytest.mark.parametrize('profile', [False, True])
+def test_guard_small_budget_from_rllab_or_fallback(monkeypatch, profile):
+    loader = MODULE.runpy.run_path(str(SCRIPT.with_name('global_config_loader.py')))
+    config = loader['load_global_config'](SCRIPT.parent.parent / 'global_config.yaml', server='rllab') if profile else {}
+    monkeypatch.setattr(MODULE.runpy, 'run_path', lambda _: {'load_global_config': lambda _: config})
+    env = MODULE.memory_guard_environment({})
+    assert float(env['SBD_GPU_GUARD_RESERVE_GIB']) == 0.3
+    assert float(env['SBD_GPU_GUARD_MINIMUM_GIB']) == 0.3
+    assert float(env['SBD_GPU_GUARD_STOP_BELOW_GIB']) == 0.15
+    assert float(env['SBD_GPU_GUARD_RETRY_MARGIN_GIB']) == 0.3
+    assert float(env['SBD_GPU_GUARD_INTERVAL']) == 0.5
+    override = MODULE.memory_guard_environment({'SBD_GPU_GUARD_RESERVE_GIB': '1'})
+    assert override['SBD_GPU_GUARD_RESERVE_GIB'] == '1'
+    assert float(override['SBD_GPU_GUARD_MINIMUM_GIB']) == float(override['SBD_GPU_GUARD_RETRY_MARGIN_GIB']) == 1
+    assert float(override['SBD_GPU_GUARD_STOP_BELOW_GIB']) == 0.5
 
 
 @pytest.mark.parametrize("option", ["--parsable", "--array=0-2", "--dependency=afterok:123"])

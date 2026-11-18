@@ -106,6 +106,22 @@ def _checkout(tmp_path):
     return root
 
 
+def test_eval_guard_bootstraps_from_moved_checkout_before_config_loading(tmp_path):
+    root = _checkout(tmp_path)
+    shared = root.parent / "src"
+    (shared / "guard_eval.py").write_text(
+        'import sys\nprint("guard-entry", *sys.argv[1:])\nraise SystemExit(73)\n'
+    )
+    work = root / "PT/eval"
+    script = work / "src/eval.sbatch"
+    env = dict(os.environ, PI05_EVAL_DIR=str(work), SBD_GPU_MEMORY_GUARD="true", SBD_GPU_GUARD_CHILD="0")
+    result = subprocess.run(["bash", str(script), "argument with spaces"],
+                            cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert result.returncode == 73, result.stderr
+    assert "guard-entry" in result.stdout and str(script) in result.stdout
+    assert "argument with spaces" in result.stdout
+
+
 @pytest.mark.parametrize("stage", ["PT", "FT"])
 @pytest.mark.parametrize("action", ["train", "eval"])
 def test_launchers_resolve_from_an_unrelated_cwd_without_submitting(tmp_path, monkeypatch, stage, action):
@@ -156,4 +172,10 @@ def test_eval_hands_the_stage_workdir_and_shared_sources_to_a_mock_scheduler(tmp
     assert str(root / stage / "eval") in result.stdout.splitlines()
     assert str(root / "PT/eval/src") in result.stdout.splitlines()
     assert str(root / stage / "eval/pi05_eval_config.yaml") in result.stdout.splitlines()
-    assert str(root / "PT/eval/src/eval.sbatch") in result.stdout.splitlines()
+    # Submission now freezes the runtime script beside the config, protecting
+    # running evaluations from subsequent pulls of the shared implementation.
+    scripts = [Path(line) for line in result.stdout.splitlines()
+               if Path(line).name.startswith("eval.runtime.")]
+    assert len(scripts) == 1
+    assert scripts[0].parent == root / stage / "eval"
+    assert scripts[0].read_bytes() == (root / "PT/eval/src/eval.sbatch").read_bytes()

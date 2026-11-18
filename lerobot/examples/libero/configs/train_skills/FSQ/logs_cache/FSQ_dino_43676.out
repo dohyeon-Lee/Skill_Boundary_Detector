@@ -1,0 +1,40 @@
+START FSQ DINO FEATURE CACHE
+Node       : node100
+Dataset    : /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/libero_90_full_full
+RGB cache  : /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_frame_cache/dataset_filtered/libero_90_full_full/rgb_zstd_v2/636f58e4449b3efb34b9a44c
+Cache root : /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_dino_feature_cache/dataset_filtered/libero_90_full_full/dinov3_vits16_top_bf16_v1
+Fingerprint: 92ecf9600d491fd2037c19d8
+Batch size : 256
+Wed Oct  7 23:34:24 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA L40S                    On  |   00000000:21:00.0 Off |                    0 |
+| N/A   40C    P0             68W /  350W |       0MiB /  46068MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+[FSQ DINO cache] 1/10 videos/observation.images.image/chunk-000/file-000.mp4: 58654 frames
+[FSQ DINO cache] 2/10 videos/observation.images.image/chunk-000/file-001.mp4: 62331 frames
+[FSQ DINO cache] 3/10 videos/observation.images.image/chunk-000/file-002.mp4: 64755 frames
+[FSQ DINO cache] 4/10 videos/observation.images.image/chunk-000/file-003.mp4: 57336 frames
+[FSQ DINO cache] 5/10 videos/observation.images.image/chunk-000/file-004.mp4: 62854 frames
+[FSQ DINO cache] 6/10 videos/observation.images.image/chunk-000/file-005.mp4: 60941 frames
+[FSQ DINO cache] 7/10 videos/observation.images.image/chunk-000/file-006.mp4: 61572 frames
+[FSQ DINO cache] 8/10 videos/observation.images.image/chunk-000/file-007.mp4: 63614 frames
+[FSQ DINO cache] 9/10 videos/observation.images.image/chunk-000/file-008.mp4: 59644 frames
+[FSQ DINO cache] 10/10 videos/observation.images.image/chunk-000/file-009.mp4: 17548 frames
+[FSQ DINO cache] complete: /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_dino_feature_cache/dataset_filtered/libero_90_full_full/dinov3_vits16_top_bf16_v1/92ecf9600d491fd2037c19d8 (569249 frames, 80.21 GiB)
+[FSQ DINO cache] valid: /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_dino_feature_cache/dataset_filtered/libero_90_full_full/dinov3_vits16_top_bf16_v1/92ecf9600d491fd2037c19d8
+DONE FSQ DINO FEATURE CACHE

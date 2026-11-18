@@ -1,6 +1,6 @@
 # ============================================================================
 # ABC global config — shared by ABC data preparation, training, and evaluation.
-# Machine-specific scheduler settings live in servers/<name>.yaml.
+# Machine-specific scheduler settings live in skillVLA/servers/<name>.yaml.
 # Module YAML files may override these defaults locally.
 # ============================================================================
 

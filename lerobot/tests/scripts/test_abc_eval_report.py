@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-SRC = ROOT / 'lerobot/examples/abc/configs/train_pi05/PT/eval/src'
+SRC = ROOT / 'lerobot/skillVLA/abc/configs/train_pi05/PT/eval/src'
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 

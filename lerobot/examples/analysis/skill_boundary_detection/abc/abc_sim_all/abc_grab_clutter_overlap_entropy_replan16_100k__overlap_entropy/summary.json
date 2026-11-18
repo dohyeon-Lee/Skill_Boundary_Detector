@@ -1,0 +1,5707 @@
+{
+  "13125": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        112,
+        176,
+        256,
+        384,
+        432,
+        483
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8751399517059326,
+      "score_max": 0.9519527554512024,
+      "selected_k_histogram": {
+        "5": 42
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13161": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        144,
+        256,
+        288,
+        352,
+        416,
+        560,
+        608,
+        672,
+        755
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.877554178237915,
+      "score_max": 0.9591173529624939,
+      "selected_k_histogram": {
+        "5": 55
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13185": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        128,
+        208,
+        272,
+        304,
+        416,
+        483
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8845758438110352,
+      "score_max": 0.9391021728515625,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13192": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        48,
+        160,
+        224,
+        256,
+        320,
+        352,
+        400,
+        440
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8678812980651855,
+      "score_max": 0.9517934322357178,
+      "selected_k_histogram": {
+        "5": 34
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13209": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        352,
+        480,
+        704,
+        784,
+        848,
+        899
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8445577621459961,
+      "score_max": 0.9602180123329163,
+      "selected_k_histogram": {
+        "5": 64
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13126": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        224,
+        368,
+        432,
+        496,
+        530
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8614050149917603,
+      "score_max": 0.9541220664978027,
+      "selected_k_histogram": {
+        "5": 45
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13131": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        336,
+        400,
+        640,
+        704,
+        767
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.842655599117279,
+      "score_max": 0.9505171775817871,
+      "selected_k_histogram": {
+        "5": 57
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13179": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        32,
+        64,
+        128,
+        160,
+        224,
+        352,
+        432,
+        469
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8815391063690186,
+      "score_max": 0.9532846808433533,
+      "selected_k_histogram": {
+        "5": 38
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13193": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        224,
+        304,
+        400,
+        528,
+        576,
+        656,
+        784,
+        832,
+        891
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8758441209793091,
+      "score_max": 0.9586644172668457,
+      "selected_k_histogram": {
+        "5": 65
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13244": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        112,
+        192,
+        256,
+        345
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8654572367668152,
+      "score_max": 0.9489766955375671,
+      "selected_k_histogram": {
+        "5": 28
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13127": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        240,
+        411
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8583623170852661,
+      "score_max": 0.9336593151092529,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13138": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        176,
+        256,
+        352,
+        608,
+        725
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8461371660232544,
+      "score_max": 0.9450899362564087,
+      "selected_k_histogram": {
+        "5": 53
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13160": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        128,
+        240,
+        325
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8908436298370361,
+      "score_max": 0.9632447957992554,
+      "selected_k_histogram": {
+        "5": 30
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13201": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        176,
+        240,
+        336
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8821612596511841,
+      "score_max": 0.9499878287315369,
+      "selected_k_histogram": {
+        "5": 30
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13237": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        160,
+        208,
+        304,
+        368,
+        496,
+        640,
+        720,
+        765
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.858967125415802,
+      "score_max": 0.9559619426727295,
+      "selected_k_histogram": {
+        "5": 55
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13128": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        48,
+        80,
+        112,
+        144,
+        208,
+        272,
+        464,
+        544,
+        610
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8437175750732422,
+      "score_max": 0.9508458971977234,
+      "selected_k_histogram": {
+        "5": 48
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13139": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        192,
+        368,
+        449
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8445842862129211,
+      "score_max": 0.9614430665969849,
+      "selected_k_histogram": {
+        "5": 38
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13147": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        112,
+        224,
+        272,
+        304,
+        368,
+        432,
+        544,
+        656,
+        728
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8957396149635315,
+      "score_max": 0.9520811438560486,
+      "selected_k_histogram": {
+        "5": 54
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13158": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        176,
+        240,
+        288,
+        318
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8770222663879395,
+      "score_max": 0.9558835029602051,
+      "selected_k_histogram": {
+        "5": 28
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13168": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        128,
+        192,
+        272,
+        367
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8705325126647949,
+      "score_max": 0.9630472660064697,
+      "selected_k_histogram": {
+        "5": 32
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13129": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        112,
+        192,
+        320,
+        364
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8626172542572021,
+      "score_max": 0.9592825770378113,
+      "selected_k_histogram": {
+        "5": 31
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13206": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        208,
+        320,
+        356
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.872469961643219,
+      "score_max": 0.9452523589134216,
+      "selected_k_histogram": {
+        "5": 31
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13233": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        352,
+        400,
+        432,
+        487
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8418835997581482,
+      "score_max": 0.9384496212005615,
+      "selected_k_histogram": {
+        "5": 41
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13234": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        48,
+        112,
+        224,
+        288,
+        368,
+        464,
+        528,
+        608,
+        688,
+        765
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8796425461769104,
+      "score_max": 0.9688366055488586,
+      "selected_k_histogram": {
+        "5": 57
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13324": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        256,
+        288,
+        352,
+        400,
+        512,
+        576,
+        629
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8757631182670593,
+      "score_max": 0.9539039134979248,
+      "selected_k_histogram": {
+        "5": 47
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13130": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        352,
+        431
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8417189717292786,
+      "score_max": 0.9278414249420166,
+      "selected_k_histogram": {
+        "5": 37
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13162": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        192,
+        240,
+        304,
+        464,
+        537
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8741526007652283,
+      "score_max": 0.956358015537262,
+      "selected_k_histogram": {
+        "5": 43
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13166": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        160,
+        256,
+        320,
+        388
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8737499117851257,
+      "score_max": 0.9503332376480103,
+      "selected_k_histogram": {
+        "5": 34
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13183": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        240,
+        304,
+        400,
+        480
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8750355839729309,
+      "score_max": 0.965705156326294,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13210": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        192,
+        288,
+        320,
+        390
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8680239915847778,
+      "score_max": 0.9448713064193726,
+      "selected_k_histogram": {
+        "5": 36
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13132": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        144,
+        224,
+        288,
+        384,
+        592,
+        720,
+        928,
+        976,
+        1008,
+        1090
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8336058855056763,
+      "score_max": 0.9529820680618286,
+      "selected_k_histogram": {
+        "5": 77
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13135": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        240,
+        320,
+        384,
+        448,
+        512,
+        643
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8600273728370667,
+      "score_max": 0.9603311419487,
+      "selected_k_histogram": {
+        "5": 50
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13171": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        144,
+        224,
+        272,
+        400,
+        464,
+        544,
+        624,
+        703
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8606720566749573,
+      "score_max": 0.9485706090927124,
+      "selected_k_histogram": {
+        "5": 52
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13172": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        272,
+        352,
+        398
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8576017618179321,
+      "score_max": 0.9264450669288635,
+      "selected_k_histogram": {
+        "5": 33
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13177": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        144,
+        208,
+        320,
+        480,
+        592,
+        634
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.870068371295929,
+      "score_max": 0.9556877613067627,
+      "selected_k_histogram": {
+        "5": 49
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13133": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        160,
+        320,
+        352,
+        416,
+        471
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8551535606384277,
+      "score_max": 0.9573436379432678,
+      "selected_k_histogram": {
+        "5": 40
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13143": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        96,
+        320,
+        384,
+        467
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8564497828483582,
+      "score_max": 0.9517126083374023,
+      "selected_k_histogram": {
+        "5": 36
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13189": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        144,
+        208,
+        352,
+        544,
+        624,
+        816,
+        912
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.855501651763916,
+      "score_max": 0.9539943337440491,
+      "selected_k_histogram": {
+        "5": 63
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13197": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        128,
+        336,
+        413
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8519052267074585,
+      "score_max": 0.9582490921020508,
+      "selected_k_histogram": {
+        "5": 37
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13200": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        128,
+        304,
+        384,
+        423
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8488836288452148,
+      "score_max": 0.9460771083831787,
+      "selected_k_histogram": {
+        "5": 37
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13134": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        272,
+        384,
+        432,
+        512
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8654367327690125,
+      "score_max": 0.9657623767852783,
+      "selected_k_histogram": {
+        "5": 43
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13149": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        96,
+        320,
+        400,
+        510
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8507144451141357,
+      "score_max": 0.9649861454963684,
+      "selected_k_histogram": {
+        "5": 41
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13163": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        48,
+        224,
+        416,
+        560,
+        624,
+        722
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8476172685623169,
+      "score_max": 0.9499635696411133,
+      "selected_k_histogram": {
+        "5": 54
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13165": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        240,
+        288,
+        321
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8628023862838745,
+      "score_max": 0.9488651752471924,
+      "selected_k_histogram": {
+        "5": 30
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13167": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        48,
+        176,
+        256,
+        336,
+        400,
+        448,
+        688,
+        716
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8510293960571289,
+      "score_max": 0.9634052515029907,
+      "selected_k_histogram": {
+        "5": 53
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13136": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        48,
+        96,
+        160,
+        288,
+        480,
+        581
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.857142448425293,
+      "score_max": 0.9425944685935974,
+      "selected_k_histogram": {
+        "5": 45
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13141": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        160,
+        240,
+        336,
+        496,
+        656,
+        928,
+        972
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8399232029914856,
+      "score_max": 0.9582791924476624,
+      "selected_k_histogram": {
+        "5": 67
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13153": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        272,
+        304,
+        416,
+        443
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8784407377243042,
+      "score_max": 0.9410557746887207,
+      "selected_k_histogram": {
+        "5": 38
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13175": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        304,
+        352,
+        416,
+        475
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8595520257949829,
+      "score_max": 0.9364521503448486,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13184": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        144,
+        288,
+        448,
+        506
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8715082406997681,
+      "score_max": 0.9534148573875427,
+      "selected_k_histogram": {
+        "5": 43
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13137": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        272,
+        336,
+        448,
+        576,
+        704,
+        736,
+        800,
+        899
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8513004779815674,
+      "score_max": 0.9564136862754822,
+      "selected_k_histogram": {
+        "5": 64
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13159": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        352,
+        432,
+        496,
+        624,
+        724
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8548404574394226,
+      "score_max": 0.9693549871444702,
+      "selected_k_histogram": {
+        "5": 53
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13205": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        224,
+        256,
+        320,
+        352,
+        398
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.88332599401474,
+      "score_max": 0.968725860118866,
+      "selected_k_histogram": {
+        "5": 34
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13225": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        144,
+        320,
+        368,
+        400,
+        432,
+        496,
+        593
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8652153015136719,
+      "score_max": 0.9478521347045898,
+      "selected_k_histogram": {
+        "5": 47
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13296": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        224,
+        288,
+        400,
+        512,
+        608,
+        645
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8519256711006165,
+      "score_max": 0.9382619857788086,
+      "selected_k_histogram": {
+        "5": 49
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13140": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        128,
+        304,
+        384,
+        449
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8576580882072449,
+      "score_max": 0.9423907995223999,
+      "selected_k_histogram": {
+        "5": 37
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13181": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        192,
+        288,
+        418
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8740334510803223,
+      "score_max": 0.9502538442611694,
+      "selected_k_histogram": {
+        "5": 37
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13213": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        208,
+        272,
+        384,
+        432,
+        528,
+        560,
+        630
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.860929548740387,
+      "score_max": 0.9488458037376404,
+      "selected_k_histogram": {
+        "5": 46
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13249": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        96,
+        192,
+        240,
+        320,
+        448,
+        560,
+        608,
+        677
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8715560436248779,
+      "score_max": 0.9684262871742249,
+      "selected_k_histogram": {
+        "5": 50
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13252": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        208,
+        272,
+        368,
+        528,
+        608,
+        640
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8666777014732361,
+      "score_max": 0.9439584612846375,
+      "selected_k_histogram": {
+        "5": 47
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13142": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        112,
+        224,
+        416,
+        576,
+        649
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8462996482849121,
+      "score_max": 0.9599879384040833,
+      "selected_k_histogram": {
+        "5": 48
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13146": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        128,
+        304,
+        448,
+        528,
+        573
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8649357557296753,
+      "score_max": 0.9576881527900696,
+      "selected_k_histogram": {
+        "5": 45
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13157": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        240,
+        304,
+        342
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8692161440849304,
+      "score_max": 0.9356566667556763,
+      "selected_k_histogram": {
+        "5": 29
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13169": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        112,
+        144,
+        224,
+        288,
+        365
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8682716488838196,
+      "score_max": 0.9350966215133667,
+      "selected_k_histogram": {
+        "5": 31
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13174": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        208,
+        272,
+        416,
+        592,
+        688,
+        726
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8575959801673889,
+      "score_max": 0.9697136878967285,
+      "selected_k_histogram": {
+        "5": 54
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13144": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        144,
+        192,
+        288,
+        384,
+        448,
+        592,
+        656,
+        736,
+        824
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8765089511871338,
+      "score_max": 0.9682976603507996,
+      "selected_k_histogram": {
+        "5": 59
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13152": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        208,
+        272,
+        368,
+        464,
+        624,
+        732
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8570557832717896,
+      "score_max": 0.9617436528205872,
+      "selected_k_histogram": {
+        "5": 54
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13173": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        192,
+        256,
+        320,
+        464,
+        512,
+        592,
+        704,
+        752,
+        806
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8418474793434143,
+      "score_max": 0.9342965483665466,
+      "selected_k_histogram": {
+        "5": 59
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13231": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        208,
+        304,
+        368,
+        496,
+        528,
+        608,
+        640,
+        692
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.874597430229187,
+      "score_max": 0.9501137733459473,
+      "selected_k_histogram": {
+        "5": 54
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13254": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        272,
+        352,
+        448,
+        493
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8641669154167175,
+      "score_max": 0.9312096834182739,
+      "selected_k_histogram": {
+        "5": 41
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13145": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        288,
+        368,
+        435
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8721064925193787,
+      "score_max": 0.960536539554596,
+      "selected_k_histogram": {
+        "5": 37
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13203": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        144,
+        176,
+        256,
+        336,
+        416,
+        480,
+        560,
+        632
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8559303879737854,
+      "score_max": 0.9543622732162476,
+      "selected_k_histogram": {
+        "5": 47
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13221": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        128,
+        224,
+        304,
+        368,
+        462
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8741055727005005,
+      "score_max": 0.9399800896644592,
+      "selected_k_histogram": {
+        "5": 38
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13250": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        240,
+        272,
+        352,
+        394
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8690113425254822,
+      "score_max": 0.9481509923934937,
+      "selected_k_histogram": {
+        "5": 34
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13279": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        240,
+        335
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8457278609275818,
+      "score_max": 0.9368574023246765,
+      "selected_k_histogram": {
+        "5": 29
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13148": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        368,
+        464,
+        512
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.857528030872345,
+      "score_max": 0.9530723094940186,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13150": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        256,
+        336,
+        512,
+        688,
+        736,
+        768,
+        960,
+        1046
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8444621562957764,
+      "score_max": 0.9555507302284241,
+      "selected_k_histogram": {
+        "5": 73
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13187": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        128,
+        384,
+        432,
+        495
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8549755215644836,
+      "score_max": 0.9521767497062683,
+      "selected_k_histogram": {
+        "5": 41
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13195": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        176,
+        304,
+        528,
+        592,
+        688,
+        769
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8653153777122498,
+      "score_max": 0.9660781025886536,
+      "selected_k_histogram": {
+        "5": 56
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13198": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        144,
+        304,
+        432,
+        528,
+        656,
+        720,
+        784,
+        840
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8665622472763062,
+      "score_max": 0.9538409113883972,
+      "selected_k_histogram": {
+        "5": 62
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13151": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        192,
+        336,
+        368,
+        416,
+        512,
+        634
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8542773127555847,
+      "score_max": 0.9422418475151062,
+      "selected_k_histogram": {
+        "5": 48
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13154": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        128,
+        336,
+        448,
+        496
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.843875527381897,
+      "score_max": 0.9490472674369812,
+      "selected_k_histogram": {
+        "5": 40
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13215": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        240,
+        304,
+        400,
+        432,
+        476
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8709334135055542,
+      "score_max": 0.9507206082344055,
+      "selected_k_histogram": {
+        "5": 38
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13223": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        224,
+        288,
+        352,
+        432,
+        473
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8849319219589233,
+      "score_max": 0.9660542607307434,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13236": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        320,
+        368,
+        496,
+        656,
+        704,
+        741
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8397188186645508,
+      "score_max": 0.9610716700553894,
+      "selected_k_histogram": {
+        "5": 55
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13155": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        128,
+        288,
+        355
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8699406981468201,
+      "score_max": 0.9642858505249023,
+      "selected_k_histogram": {
+        "5": 29
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13196": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        112,
+        240,
+        272,
+        320,
+        360
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8863495588302612,
+      "score_max": 0.9478662610054016,
+      "selected_k_histogram": {
+        "5": 31
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13208": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        176,
+        256,
+        288,
+        368,
+        464,
+        528,
+        592,
+        656,
+        698
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8799694776535034,
+      "score_max": 0.9575169086456299,
+      "selected_k_histogram": {
+        "5": 53
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13224": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        144,
+        208,
+        288,
+        368,
+        454
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8838728666305542,
+      "score_max": 0.9538071751594543,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13257": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        144,
+        240,
+        368,
+        432,
+        535
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8368958830833435,
+      "score_max": 0.9647862911224365,
+      "selected_k_histogram": {
+        "5": 42
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13156": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        192,
+        224,
+        272,
+        378
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8770945072174072,
+      "score_max": 0.9594854116439819,
+      "selected_k_histogram": {
+        "5": 32
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13220": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        96,
+        288,
+        368,
+        400,
+        461
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.864371657371521,
+      "score_max": 0.9550650119781494,
+      "selected_k_histogram": {
+        "5": 40
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13260": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        176,
+        224,
+        304,
+        464,
+        515
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.861627459526062,
+      "score_max": 0.9414517879486084,
+      "selected_k_histogram": {
+        "5": 39
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13276": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        176,
+        256,
+        384,
+        416,
+        480,
+        528,
+        640,
+        696
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8558173775672913,
+      "score_max": 0.9440847635269165,
+      "selected_k_histogram": {
+        "5": 49
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13288": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        176,
+        240,
+        304,
+        400,
+        512,
+        576,
+        624,
+        704,
+        736,
+        912,
+        941
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8723395466804504,
+      "score_max": 0.9596215486526489,
+      "selected_k_histogram": {
+        "5": 67
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13164": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        128,
+        192,
+        240,
+        272,
+        304,
+        544,
+        610
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8580750823020935,
+      "score_max": 0.9545278549194336,
+      "selected_k_histogram": {
+        "5": 44
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13241": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        96,
+        160,
+        240,
+        288,
+        336,
+        420
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8733593821525574,
+      "score_max": 0.9422301650047302,
+      "selected_k_histogram": {
+        "5": 35
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13297": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        144,
+        256,
+        320
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8622189164161682,
+      "score_max": 0.9413423538208008,
+      "selected_k_histogram": {
+        "5": 27
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13309": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        32,
+        192,
+        320,
+        432,
+        464,
+        496,
+        623
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8530383110046387,
+      "score_max": 0.9486176371574402,
+      "selected_k_histogram": {
+        "5": 48
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13334": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        128,
+        176,
+        240,
+        304,
+        368,
+        432,
+        496,
+        535
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8777351379394531,
+      "score_max": 0.9473244547843933,
+      "selected_k_histogram": {
+        "5": 40
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13170": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        160,
+        224,
+        448,
+        546
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8480066061019897,
+      "score_max": 0.951672375202179,
+      "selected_k_histogram": {
+        "5": 40
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13180": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        112,
+        320,
+        560,
+        592,
+        652
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8559674620628357,
+      "score_max": 0.9575589895248413,
+      "selected_k_histogram": {
+        "5": 54
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13222": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        144,
+        224,
+        288,
+        384,
+        448,
+        512,
+        621
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8794096112251282,
+      "score_max": 0.9569796919822693,
+      "selected_k_histogram": {
+        "5": 50
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13247": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        208,
+        256,
+        336,
+        368,
+        496,
+        528,
+        592,
+        624,
+        688,
+        784,
+        832,
+        912,
+        976,
+        1136,
+        1199
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8664231896400452,
+      "score_max": 0.952258825302124,
+      "selected_k_histogram": {
+        "5": 82
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13259": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        144,
+        336,
+        480,
+        528,
+        580
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.850933849811554,
+      "score_max": 0.9477311968803406,
+      "selected_k_histogram": {
+        "5": 45
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13178": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        48,
+        96,
+        208,
+        272,
+        320,
+        400,
+        480,
+        512,
+        570
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.879791796207428,
+      "score_max": 0.9753517508506775,
+      "selected_k_histogram": {
+        "5": 45
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13199": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        96,
+        160,
+        224,
+        304,
+        352,
+        480,
+        560,
+        672,
+        736,
+        773
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8648154735565186,
+      "score_max": 0.9474880695343018,
+      "selected_k_histogram": {
+        "5": 57
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13219": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        96,
+        128,
+        240,
+        339
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8621846437454224,
+      "score_max": 0.9465371370315552,
+      "selected_k_histogram": {
+        "5": 32
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13246": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        432,
+        496,
+        575
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8541246652603149,
+      "score_max": 0.9545242786407471,
+      "selected_k_histogram": {
+        "5": 43
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13255": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        144,
+        256,
+        464,
+        592,
+        736,
+        816,
+        906
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8613090515136719,
+      "score_max": 0.9483487010002136,
+      "selected_k_histogram": {
+        "5": 65
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13188": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        112,
+        272,
+        352,
+        450
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8712477087974548,
+      "score_max": 0.9369621276855469,
+      "selected_k_histogram": {
+        "5": 36
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13191": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        224,
+        288,
+        320,
+        400,
+        432,
+        496,
+        576,
+        640,
+        784,
+        833
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8718230128288269,
+      "score_max": 0.9596445560455322,
+      "selected_k_histogram": {
+        "5": 60
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13229": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        64,
+        128,
+        176,
+        288,
+        384,
+        464
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8687578439712524,
+      "score_max": 0.9499915242195129,
+      "selected_k_histogram": {
+        "5": 40
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13263": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        128,
+        240,
+        320,
+        401
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8794476985931396,
+      "score_max": 0.969806969165802,
+      "selected_k_histogram": {
+        "5": 34
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13290": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        144,
+        256,
+        384,
+        464,
+        528,
+        608,
+        720
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8745927810668945,
+      "score_max": 0.9607238173484802,
+      "selected_k_histogram": {
+        "5": 52
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13190": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        160,
+        192,
+        304,
+        352,
+        416,
+        496
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.881158709526062,
+      "score_max": 0.9552903771400452,
+      "selected_k_histogram": {
+        "5": 38
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13204": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        32,
+        64,
+        192,
+        336,
+        488
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8540822267532349,
+      "score_max": 0.9578245282173157,
+      "selected_k_histogram": {
+        "5": 37
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13216": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        80,
+        128,
+        192,
+        272,
+        352,
+        416,
+        496,
+        541
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8667540550231934,
+      "score_max": 0.9440432786941528,
+      "selected_k_histogram": {
+        "5": 42
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13256": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        160,
+        192,
+        272,
+        304,
+        383
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8822733759880066,
+      "score_max": 0.9549002647399902,
+      "selected_k_histogram": {
+        "5": 33
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  },
+  "13281": {
+    "overlap_entropy_r16": {
+      "boundaries": [
+        96,
+        128,
+        208,
+        362
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r16": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r16": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r16": [
+          2.0027048587799072,
+          1.2585804462432861,
+          1.2388362884521484,
+          1.1163376569747925,
+          1.044599175453186,
+          1.0192996263504028,
+          0.9188295006752014,
+          0.7975470423698425,
+          0.7930619716644287,
+          0.7126156687736511,
+          0.6760095953941345
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.8727306723594666,
+      "score_max": 0.9565852284431458,
+      "selected_k_histogram": {
+        "5": 34
+      },
+      "threshold": 0.858441948890686,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 4348
+    }
+  }
+}

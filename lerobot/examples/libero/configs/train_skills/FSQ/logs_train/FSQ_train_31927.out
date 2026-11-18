@@ -1,0 +1,103 @@
+START FSQ TRAIN
+Node       : node200
+Inputs     : /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs
+Output     : /data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/FSQ/libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal
+HF cache   : /data1/dohyeon/Skill_Boundary_Detector/.cache/huggingface
+Grad ckpt  : false
+Thu Jul 23 08:55:52 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA B200                    Off |   00000000:17:00.0 Off |                    0 |
+| N/A   45C    P0            626W / 1000W |  137720MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA B200                    Off |   00000000:3D:00.0 Off |                    0 |
+| N/A   39C    P0            198W / 1000W |   43646MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA B200                    Off |   00000000:5F:00.0 Off |                    0 |
+| N/A   35C    P0            200W / 1000W |   43634MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA B200                    Off |   00000000:70:00.0 Off |                    0 |
+| N/A   30C    P0            195W / 1000W |   43634MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   4  NVIDIA B200                    Off |   00000000:97:00.0 Off |                    0 |
+| N/A   32C    P0            202W / 1000W |   43634MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   5  NVIDIA B200                    Off |   00000000:BA:00.0 Off |                    0 |
+| N/A   36C    P0            146W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   6  NVIDIA B200                    Off |   00000000:DC:00.0 Off |                    0 |
+| N/A   45C    P0            151W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   7  NVIDIA B200                    Off |   00000000:ED:00.0 Off |                    0 |
+| N/A   62C    P0            964W / 1000W |  137718MiB / 183359MiB |    100%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         1126295      C   ...CRFT/openpi/.venv/bin/python3      13769... |
+|    1   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43624MiB |
+|    2   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43612MiB |
+|    3   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43612MiB |
+|    4   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43612MiB |
+|    7   N/A  N/A         3903877      C   ...CRFT/openpi/.venv/bin/python3      13769... |
++-----------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 9620 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_std_globalmean_ms1/skillset/skills
+[FSQ] Skill lengths — min:21 max:236 mean:59.2
+[FSQ] encoder input mode: optimal
+[FSQ] encoder_min: [-4.4140e-01 -5.7060e-01 -3.3630e-01 -3.3431e+00 -3.5830e+00 -2.3470e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] encoder_max: [4.1870e-01 5.4600e-01 3.7550e-01 2.0190e+00 4.0401e+00 2.6123e+00
+ 4.6400e-02 1.7000e-03]
+[FSQ] optimal start-EEF min/max: [-0.4709 -0.3542  0.446   0.104  -3.6998 -2.5381] / [0.19   0.4818 1.2813 4.1367 2.6948 1.7193]
+[FSQ] state q01/q99: [-4.0200e-01 -2.8250e-01  4.5820e-01  1.2572e+00 -2.7793e+00 -1.3225e+00
+  1.6000e-03 -4.0000e-02] / [ 1.2720e-01  3.1970e-01  1.2555e+00  3.8244e+00  2.3465e+00  6.1010e-01
+  4.0200e-02 -1.7000e-03]
+[FSQ] action q01/q99: [-0.6295 -0.8705 -0.8973 -0.1232 -0.1564 -0.2796 -1.    ] / [0.8518 0.8464 0.9375 0.1875 0.1773 0.3493 1.    ]
+[FSQ] state_min:  [-4.8620e-01 -3.9710e-01  4.4550e-01 -7.4810e-01 -4.3631e+00 -3.2124e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] state_max:  [2.0270e-01 4.8810e-01 1.3585e+00 4.8434e+00 4.0424e+00 2.4015e+00
+ 4.6400e-02 1.7000e-03]
+[FSQ] length_min/max: 21 / 236
+[FSQ-v3] trajectories=9620 train=8658 val=962 fp=85566bc82a12
+[FSQ-v3] gradient checkpointing: disabled
+[FSQ-v3]    1/500 train=0.3299 val=0.7347 action=0.1306 prog=0.0359 end=0.5682 select=0.7347
+[FSQ-v3]   10/500 train=0.2033 val=0.4272 action=0.0781 prog=0.0175 end=0.3315 select=0.4272
+[FSQ-v3]   20/500 train=0.1874 val=0.4192 action=0.0721 prog=0.0167 end=0.3304 select=0.4192
+[FSQ-v3]   30/500 train=0.1724 val=0.4173 action=0.0661 prog=0.0146 end=0.3367 select=0.4173
+[FSQ-v3]   40/500 train=0.1695 val=0.3900 action=0.0639 prog=0.0135 end=0.3125 select=0.3900
+[FSQ-v3]   50/500 train=0.1582 val=0.4125 action=0.0644 prog=0.0142 end=0.3339 select=0.4125
+[FSQ-v3]   60/500 train=0.1551 val=0.3705 action=0.0622 prog=0.0129 end=0.2954 select=0.3705
+[FSQ-v3]   70/500 train=0.1479 val=0.3796 action=0.0614 prog=0.0133 end=0.3049 select=0.3796
+[FSQ-v3]   80/500 train=0.1449 val=0.3781 action=0.0586 prog=0.0125 end=0.3070 select=0.3781
+[FSQ-v3]   90/500 train=0.1412 val=0.3569 action=0.0598 prog=0.0125 end=0.2846 select=0.3569
+[FSQ-v3]  100/500 train=0.1402 val=0.3738 action=0.0579 prog=0.0119 end=0.3039 select=0.3738
+[FSQ-v3]  110/500 train=0.1338 val=0.4218 action=0.0582 prog=0.0118 end=0.3518 select=0.4218
+[FSQ-v3]  120/500 train=0.1334 val=0.3791 action=0.0579 prog=0.0115 end=0.3097 select=0.3791
+[FSQ-v3]  130/500 train=0.1280 val=0.4091 action=0.0569 prog=0.0116 end=0.3407 select=0.4091
+[FSQ-v3]  140/500 train=0.1279 val=0.3811 action=0.0572 prog=0.0111 end=0.3128 select=0.3811
+[FSQ-v3]  150/500 train=0.1258 val=0.3727 action=0.0583 prog=0.0108 end=0.3035 select=0.3727
+[FSQ-v3]  160/500 train=0.1241 val=0.4263 action=0.0570 prog=0.0115 end=0.3578 select=0.4263
+[FSQ-v3]  170/500 train=0.1236 val=0.3534 action=0.0562 prog=0.0105 end=0.2866 select=0.3534
+[FSQ-v3]  180/500 train=0.1208 val=0.4179 action=0.0549 prog=0.0109 end=0.3522 select=0.4179
+[FSQ-v3]  190/500 train=0.1195 val=0.4389 action=0.0549 prog=0.0111 end=0.3729 select=0.4389
+[FSQ-v3]  200/500 train=0.1170 val=0.4010 action=0.0557 prog=0.0108 end=0.3346 select=0.4010
+[FSQ-v3]  210/500 train=0.1139 val=0.3929 action=0.0547 prog=0.0105 end=0.3277 select=0.3929
+[FSQ-v3]  220/500 train=0.1125 val=0.3810 action=0.0553 prog=0.0108 end=0.3148 select=0.3810
+[FSQ-v3]  230/500 train=0.1114 val=0.4140 action=0.0544 prog=0.0110 end=0.3486 select=0.4140

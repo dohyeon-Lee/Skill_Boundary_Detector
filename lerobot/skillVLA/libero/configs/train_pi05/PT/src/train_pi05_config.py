@@ -32,14 +32,23 @@ def _find_global(start: Path) -> Path | None:
     return None
 
 
-def _load_global(path: Path) -> dict[str, Any]:
-    """global_config.yaml plus its per-server overlay (configs/src/global_config_loader.py)."""
+def _global_loader() -> dict[str, Any]:
+    """Load shared profile helpers independently of the selected YAML bundle."""
     loader = next(
         directory / "src" / "global_config_loader.py"
         for directory in Path(__file__).resolve().parents
         if (directory / "src" / "global_config_loader.py").is_file()
     )
-    return runpy.run_path(str(loader))["load_global_config"](path)
+    return runpy.run_path(str(loader))
+
+
+def _load_global(path: Path) -> dict[str, Any]:
+    """global_config.yaml plus the shared or frozen per-server overlay."""
+    return _global_loader()["load_global_config"](path)
+
+
+def server_config_dir(path: Path) -> Path | None:
+    return _global_loader()["server_config_dir"](path)
 
 
 def load_config(path: Path) -> dict[str, Any]:

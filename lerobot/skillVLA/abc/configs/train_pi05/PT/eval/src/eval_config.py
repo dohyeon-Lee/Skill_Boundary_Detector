@@ -195,7 +195,7 @@ def load_eval_config(path: Path | str = DEFAULT_CONFIG_PATH) -> EvalConfig:
     if randomization is not None and not isinstance(randomization, dict):
         raise ValueError("rollout.randomization must be null or a mapping")
 
-    output_root = Path(str(output.get("root", "lerobot/examples/abc/configs/train_pi05/PT/eval/outputs")))
+    output_root = Path(str(output.get("root", "lerobot/skillVLA/abc/configs/train_pi05/PT/eval/outputs")))
     if not output_root.is_absolute():
         output_root = project_root / output_root
     run_name = str(output.get("run_name", "hold_smoke")).strip()

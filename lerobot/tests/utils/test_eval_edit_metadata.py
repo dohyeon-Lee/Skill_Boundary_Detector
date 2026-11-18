@@ -124,7 +124,7 @@ def test_native_encoder_keeps_non_macroblock_dimensions_and_all_frames(tmp_path)
 
 
 def test_cache_requires_raw_recordings_and_valid_episode_metadata(tmp_path):
-    source = Path(__file__).parents[2] / 'examples/libero/configs/train_skillVLA/PT/eval/src/run_eval.py'
+    source = Path(__file__).parents[2] / 'skillVLA/libero/configs/train_skillVLA/PT/eval/src/run_eval.py'
     node = next(n for n in ast.parse(source.read_text()).body
                 if isinstance(n, ast.FunctionDef) and n.name == '_panel_artifacts_complete')
     namespace = {'Path': Path, 'json': json}

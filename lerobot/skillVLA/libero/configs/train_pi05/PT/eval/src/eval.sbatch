@@ -21,7 +21,7 @@ if [[ "${SBD_GPU_MEMORY_GUARD:-false}" == @(1|true|True) ]] && \
    [ "${SBD_GPU_GUARD_CHILD:-0}" != 1 ]; then
   PROJECT_ROOT_HINT="$(cd "${SUBMIT_DIR}/../../../../../../.." && pwd)"
   exec "${BOOTSTRAP_PYTHON}" \
-    "${PROJECT_ROOT_HINT}/lerobot/examples/libero/configs/src/guard_eval.py" "$0" "$@"
+    "${PROJECT_ROOT_HINT}/lerobot/skillVLA/libero/configs/src/guard_eval.py" "$0" "$@"
 fi
 
 # submit_eval.sh exports one frozen resolution. Resolve here only for a direct `sbatch src/eval.sbatch`.

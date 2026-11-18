@@ -1,0 +1,29 @@
+START FSQ FRAME CACHE
+Node       : node01
+Dataset    : /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/libero_90_full_full
+Cache root : /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_frame_cache/dataset_filtered/libero_90_full_full/rgb_zstd_v2
+Fingerprint: 636f58e4449b3efb34b9a44c
+Workers    : 24
+Legacy RGB : /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_frame_cache/dataset_filtered/libero_90_full_full/rgb_uint8_v1 (used only when complete)
+[FSQ frame cache] no valid legacy cache; decoding source videos
+[FSQ frame cache] building 17 videos with 24 workers under /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_frame_cache/dataset_filtered/libero_90_full_full/rgb_zstd_v2/.building/636f58e4449b3efb34b9a44c
+[FSQ frame cache] 1/17 videos/observation.images.image/chunk-000/file-009.mp4: 17548 frames, 3.21 -> 0.97 GiB (30.3%)
+[FSQ frame cache] 2/17 videos/observation.images.wrist_image/chunk-000/file-006.mp4: 37473 frames, 6.86 -> 1.63 GiB (23.7%)
+[FSQ frame cache] 3/17 videos/observation.images.image/chunk-000/file-003.mp4: 57336 frames, 10.50 -> 3.51 GiB (33.5%)
+[FSQ frame cache] 4/17 videos/observation.images.image/chunk-000/file-000.mp4: 58654 frames, 10.74 -> 3.57 GiB (33.2%)
+[FSQ frame cache] 5/17 videos/observation.images.image/chunk-000/file-008.mp4: 59644 frames, 10.92 -> 3.58 GiB (32.8%)
+[FSQ frame cache] 6/17 videos/observation.images.image/chunk-000/file-005.mp4: 60941 frames, 11.16 -> 3.64 GiB (32.6%)
+[FSQ frame cache] 7/17 videos/observation.images.image/chunk-000/file-001.mp4: 62331 frames, 11.41 -> 3.60 GiB (31.6%)
+[FSQ frame cache] 8/17 videos/observation.images.image/chunk-000/file-006.mp4: 61572 frames, 11.27 -> 3.69 GiB (32.7%)
+[FSQ frame cache] 9/17 videos/observation.images.image/chunk-000/file-002.mp4: 64755 frames, 11.86 -> 3.64 GiB (30.7%)
+[FSQ frame cache] 10/17 videos/observation.images.image/chunk-000/file-004.mp4: 62854 frames, 11.51 -> 3.67 GiB (31.9%)
+[FSQ frame cache] 11/17 videos/observation.images.image/chunk-000/file-007.mp4: 63614 frames, 11.65 -> 3.66 GiB (31.4%)
+[FSQ frame cache] 12/17 videos/observation.images.wrist_image/chunk-000/file-002.mp4: 86738 frames, 15.88 -> 4.24 GiB (26.7%)
+[FSQ frame cache] 13/17 videos/observation.images.wrist_image/chunk-000/file-000.mp4: 82915 frames, 15.18 -> 4.20 GiB (27.7%)
+[FSQ frame cache] 14/17 videos/observation.images.wrist_image/chunk-000/file-004.mp4: 85530 frames, 15.66 -> 4.51 GiB (28.8%)
+[FSQ frame cache] 15/17 videos/observation.images.wrist_image/chunk-000/file-005.mp4: 90569 frames, 16.58 -> 4.40 GiB (26.5%)
+[FSQ frame cache] 16/17 videos/observation.images.wrist_image/chunk-000/file-001.mp4: 97212 frames, 17.80 -> 4.38 GiB (24.6%)
+[FSQ frame cache] 17/17 videos/observation.images.wrist_image/chunk-000/file-003.mp4: 88812 frames, 16.26 -> 4.36 GiB (26.8%)
+[FSQ frame cache] complete: /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_frame_cache/dataset_filtered/libero_90_full_full/rgb_zstd_v2/636f58e4449b3efb34b9a44c (1138498 frames, 208.47 raw GiB -> 61.26 compressed GiB)
+[FSQ frame cache] valid: /data1/dohyeon/Skill_Boundary_Detector/.cache/fsq_frame_cache/dataset_filtered/libero_90_full_full/rgb_zstd_v2/636f58e4449b3efb34b9a44c
+DONE FSQ FRAME CACHE

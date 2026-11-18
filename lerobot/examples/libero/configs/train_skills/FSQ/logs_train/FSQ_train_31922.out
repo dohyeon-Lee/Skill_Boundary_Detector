@@ -1,0 +1,86 @@
+START FSQ TRAIN
+Node       : node200
+Inputs     : /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs
+Output     : /data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/FSQ/libero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal_broadcast
+HF cache   : /data1/dohyeon/Skill_Boundary_Detector/.cache/huggingface
+Thu Jul 23 06:51:48 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA B200                    Off |   00000000:17:00.0 Off |                    0 |
+| N/A   52C    P0            837W / 1000W |  137720MiB / 183359MiB |    100%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA B200                    Off |   00000000:3D:00.0 Off |                    0 |
+| N/A   37C    P0            196W / 1000W |   43646MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA B200                    Off |   00000000:5F:00.0 Off |                    0 |
+| N/A   33C    P0            199W / 1000W |  181248MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA B200                    Off |   00000000:70:00.0 Off |                    0 |
+| N/A   29C    P0            194W / 1000W |   43634MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   4  NVIDIA B200                    Off |   00000000:97:00.0 Off |                    0 |
+| N/A   31C    P0            201W / 1000W |   43634MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   5  NVIDIA B200                    Off |   00000000:BA:00.0 Off |                    0 |
+| N/A   45C    P0            207W / 1000W |   43772MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   6  NVIDIA B200                    Off |   00000000:DC:00.0 Off |                    0 |
+| N/A   58C    P0            833W / 1000W |  137720MiB / 183359MiB |     70%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   7  NVIDIA B200                    Off |   00000000:ED:00.0 Off |                    0 |
+| N/A   48C    P0            616W / 1000W |  137718MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         1126295      C   ...CRFT/openpi/.venv/bin/python3      13769... |
+|    1   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43624MiB |
+|    2   N/A  N/A         2603732      C   .venv/bin/python                      13760... |
+|    2   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43610MiB |
+|    3   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43612MiB |
+|    4   N/A  N/A         3924348      C   ...ents/openpi/.venv/bin/python3      43612MiB |
+|    6   N/A  N/A         1157297      C   ...CRFT/openpi/.venv/bin/python3      13769... |
+|    7   N/A  N/A         3903877      C   ...CRFT/openpi/.venv/bin/python3      13769... |
++-----------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 9620 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_std_globalmean_ms1/skillset/skills
+[FSQ] Skill lengths — min:21 max:236 mean:59.2
+[FSQ] encoder input mode: optimal
+[FSQ] encoder_min: [-4.4140e-01 -5.7060e-01 -3.3630e-01 -3.3431e+00 -3.5830e+00 -2.3470e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] encoder_max: [4.1870e-01 5.4600e-01 3.7550e-01 2.0190e+00 4.0401e+00 2.6123e+00
+ 4.6400e-02 1.7000e-03]
+[FSQ] optimal start-EEF min/max: [-0.4709 -0.3542  0.446   0.104  -3.6998 -2.5381] / [0.19   0.4818 1.2813 4.1367 2.6948 1.7193]
+[FSQ] state q01/q99: [-4.0200e-01 -2.8250e-01  4.5820e-01  1.2572e+00 -2.7793e+00 -1.3225e+00
+  1.6000e-03 -4.0000e-02] / [ 1.2720e-01  3.1970e-01  1.2555e+00  3.8244e+00  2.3465e+00  6.1010e-01
+  4.0200e-02 -1.7000e-03]
+[FSQ] action q01/q99: [-0.6295 -0.8705 -0.8973 -0.1232 -0.1564 -0.2796 -1.    ] / [0.8518 0.8464 0.9375 0.1875 0.1773 0.3493 1.    ]
+[FSQ] state_min:  [-4.8620e-01 -3.9710e-01  4.4550e-01 -7.4810e-01 -4.3631e+00 -3.2124e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] state_max:  [2.0270e-01 4.8810e-01 1.3585e+00 4.8434e+00 4.0424e+00 2.4015e+00
+ 4.6400e-02 1.7000e-03]
+[FSQ] length_min/max: 21 / 236
+[FSQ-v3] trajectories=9620 train=8658 val=962 fp=85566bc82a12
+[FSQ-v3]    1/500 train=0.3330 val=0.6933 action=0.1348 prog=0.0385 end=0.5291 select=0.7024
+[FSQ-v3]   10/500 train=0.1978 val=0.4722 action=0.0741 prog=0.0183 end=0.3819 select=0.4743
+[FSQ-v3]   20/500 train=0.1827 val=0.4316 action=0.0663 prog=0.0172 end=0.3500 select=0.4335
+[FSQ-v3]   30/500 train=0.1729 val=0.3900 action=0.0637 prog=0.0151 end=0.3136 select=0.3924
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mlibero_90_full_full_state_obs20_std_global_ms1_fsq333_dino_frozen_small_optimal_broadcast[0m at: [34mhttps://wandb.ai/dohyeonlee-postech/VAE_train/runs/uozym9ad[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20260723_065235-uozym9ad/logs[0m

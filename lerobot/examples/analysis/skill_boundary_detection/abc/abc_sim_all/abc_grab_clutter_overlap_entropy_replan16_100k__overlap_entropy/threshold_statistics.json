@@ -1,0 +1,22 @@
+{
+  "overlap_entropy_r16": {
+    "scope": "dataset",
+    "estimator": "mean",
+    "target": "score",
+    "scale": 1.0,
+    "terminal_mask_frames": 0,
+    "groups": {
+      "dataset": {
+        "threshold": 0.8584419397471033,
+        "episodes": 120,
+        "points": 4348
+      }
+    },
+    "calibration": {
+      "source": "selected",
+      "episodes": 120,
+      "evaluation_episodes": 120,
+      "episode_ids_sha256": "7d3d700f2114dfd2dbe961533f7a1562d2ad81f4a2a03037b2f459d1282e063c"
+    }
+  }
+}

@@ -11,7 +11,6 @@ bash sync_server_ui.sh
 
 Forward **8765** and open `http://127.0.0.1:8765/slurm/`. To select another port,
 use `bash sync_server_ui.sh --port 8770`. The UI binds only to loopback.
-`slurm_monitor_ui.sh` remains a compatibility alias for the same unified app.
 Only one monitor owns `.slurm_monitor`; prompts and receipts survive restarts.
 An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
 
@@ -107,7 +106,7 @@ already running Python trainers retain their original behavior and are not
 restarted or signalled by installing this code. Arbitrary external programs and
 multi-GPU/DDP/MIG launches are not covered by this trainer integration.
 
-Enable protection in `lerobot/skillVLA/libero/configs/servers/rllab.yaml`:
+Enable protection in `lerobot/skillVLA/servers/rllab.yaml`:
 
 ```yaml
 srun_gpu_memory_guard: true

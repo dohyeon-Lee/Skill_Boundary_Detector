@@ -101,6 +101,24 @@ def test_source_edits_propagate_to_both_modes_but_not_snapshots(files):
     assert frozen["pt_qos"] == before["pt_qos"]
 
 
+def test_cyclic_snapshot_freezes_the_shared_server_folder(files, tmp_path):
+    source, paths, global_path = files
+    configs = tmp_path / "lerobot/skillVLA/libero/configs"
+    global_path.rename(configs / "global_config.yaml")
+    servers = configs.parents[1] / "servers"
+    (tmp_path / "servers").rename(servers)
+    profile = servers / "fixture.yaml"
+    profile.write_text("detect: []\nscheduler: slurm\ntrain_qos: snapshot_qos\n")
+    source.rename(configs / source.name)
+    config = configs / paths["cyclic"].name
+    paths["cyclic"].rename(config)
+    snapshot = CONFIG.freeze_config(config)
+    assert (snapshot.parent / "servers/fixture.yaml").read_text() == profile.read_text()
+    profile.write_text(profile.read_text().replace("snapshot_qos", "edited_qos"))
+    assert CONFIG.build_settings(CONFIG.load_config(config))["pt_qos"] == "edited_qos"
+    assert CONFIG.build_settings(CONFIG.load_config(snapshot))["pt_qos"] == "snapshot_qos"
+
+
 @pytest.mark.parametrize("patch", [
     {"mode": "reptile"}, {"cycle": {"reptile_beta": 0.5}},
     {"cycle": {"n_groups": 0}}, {"cycle": {"phase_steps": True}},

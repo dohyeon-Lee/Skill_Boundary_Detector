@@ -48,7 +48,7 @@ def atomic_write(path: Path, content: bytes) -> None:
 
 def register_key(path: Path) -> str:
     if not os.isatty(0):
-        raise ValueError("API 키가 없습니다. PC의 대화형 터미널에서 bash runpod_ssh.sh 를 실행하세요.")
+        raise ValueError("API 키가 없습니다. PC의 대화형 터미널에서 bash tools/runpod/runpod_ssh.sh 를 실행하세요.")
     key = getpass.getpass("RunPod API key (입력은 표시되지 않음): ").strip()
     if not key or any(char.isspace() for char in key):
         raise ValueError("비어 있거나 공백이 포함된 API 키는 저장하지 않습니다.")
@@ -65,7 +65,7 @@ def load_key(path: Path, register_missing: bool = False) -> str:
         if register_missing:
             print("처음 사용: RunPod API 키를 한 번 등록하면 다음부터 자동으로 사용합니다.")
             return register_key(path)
-        raise ValueError("API 키가 없습니다. 먼저 bash runpod_ssh.sh 를 실행해 등록하세요.")
+        raise ValueError("API 키가 없습니다. 먼저 bash tools/runpod/runpod_ssh.sh 를 실행해 등록하세요.")
     if any(char.isspace() for char in key):
         raise ValueError("API 키에 공백이 있습니다. --save-api-key 로 다시 등록하세요.")
     return key

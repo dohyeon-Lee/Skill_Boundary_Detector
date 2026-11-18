@@ -1,0 +1,91 @@
+START FSQ TRAIN
+Node       : node200
+Inputs     : /data1/dohyeon/Skill_Boundary_Detector/dataset/FSQ_dataset/langgap_56_full_full/FSQ_inputs
+Output     : /data1/dohyeon/Skill_Boundary_Detector/outputs/FSQ/langgap_56_full_full_state_obs20_std_episodemean_80p_fsq333
+HF cache   : /data1/dohyeon/Skill_Boundary_Detector/.cache/huggingface
+Grad ckpt  : false
+Fri Jul 31 04:46:20 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA B200                    Off |   00000000:17:00.0 Off |                    0 |
+| N/A   39C    P0            559W / 1000W |  137724MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA B200                    Off |   00000000:3D:00.0 Off |                    0 |
+| N/A   60C    P0            957W / 1000W |  166118MiB / 183359MiB |    100%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA B200                    Off |   00000000:5F:00.0 Off |                    0 |
+| N/A   63C    P0            961W / 1000W |  166112MiB / 183359MiB |    100%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA B200                    Off |   00000000:70:00.0 Off |                    0 |
+| N/A   52C    P0            950W / 1000W |  166112MiB / 183359MiB |    100%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   4  NVIDIA B200                    Off |   00000000:97:00.0 Off |                    0 |
+| N/A   53C    P0            956W / 1000W |  166112MiB / 183359MiB |    100%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   5  NVIDIA B200                    Off |   00000000:BA:00.0 Off |                    0 |
+| N/A   43C    P0            240W / 1000W |   10830MiB / 183359MiB |     37%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   6  NVIDIA B200                    Off |   00000000:DC:00.0 Off |                    0 |
+| N/A   41C    P0            201W / 1000W |       1MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   7  NVIDIA B200                    Off |   00000000:ED:00.0 Off |                    0 |
+| N/A   38C    P0            203W / 1000W |       1MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A          372023      C   ...CRFT/openpi/.venv/bin/python3      13770... |
+|    1   N/A  N/A          798636      C   ...ents/openpi/.venv/bin/python3      16606... |
+|    2   N/A  N/A          798636      C   ...ents/openpi/.venv/bin/python3      16606... |
+|    3   N/A  N/A          798636      C   ...ents/openpi/.venv/bin/python3      16606... |
+|    4   N/A  N/A          798636      C   ...ents/openpi/.venv/bin/python3      16606... |
+|    5   N/A  N/A           74232    C+G   ...ary_Detector/.venv/bin/python      10798MiB |
++-----------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 12104 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset/FSQ_dataset/langgap_56_full_full/FSQ_inputs/seg_langgap_56_full_full_state_obs20_ck100000_std_episodemean_80p/skillset/skills
+[FSQ] Skill lengths — min:10 max:205 mean:44.9
+[FSQ] encoder input mode: optimal
+[FSQ] encoder_min: [-4.5680e-01 -5.2310e-01 -3.8780e-01 -1.9506e+00 -2.9165e+00 -1.6931e+00
+ -1.4000e-03 -4.2000e-02]
+[FSQ] encoder_max: [3.9590e-01 5.7420e-01 3.5230e-01 1.3140e+00 5.8069e+00 1.8019e+00
+ 4.2300e-02 1.4000e-03]
+[FSQ] optimal start-EEF min/max: [-0.4701 -0.3279  0.0087  0.601  -3.6188 -1.7771] / [0.1905 0.4543 1.3307 3.4516 3.292  1.1136]
+[FSQ] state q01/q99: [-3.0800e-01 -3.1030e-01  5.2400e-02  1.6573e+00 -2.5564e+00 -9.8030e-01
+  1.7000e-03 -4.0000e-02] / [ 1.4960e-01  3.6760e-01  1.3211e+00  3.2463e+00  2.1234e+00  5.0630e-01
+  4.0000e-02 -1.8000e-03]
+[FSQ] action q01/q99: [-1.     -1.     -1.     -0.0932 -0.1594 -0.1768 -1.    ] / [1.     1.     1.     0.0996 0.1629 0.2486 1.    ]
+[FSQ] state_min:  [-4.8280e-01 -3.3850e-01  8.1000e-03  3.5280e-01 -3.6414e+00 -1.8427e+00
+ -1.4000e-03 -4.2000e-02]
+[FSQ] state_max:  [2.1030e-01 4.5460e-01 1.3660e+00 3.6714e+00 3.5607e+00 1.3863e+00
+ 4.2300e-02 1.4000e-03]
+[FSQ] length_min/max: 10 / 205
+[FSQ-v3] trajectories=12104 train=10894 val=1210 fp=84e71ba00aa0
+[FSQ-v3] data workers: train=8 val=0; validation every=25
+[FSQ-v3] gradient checkpointing: disabled
+[FSQ-v3]    1/500 train=0.3906
+[FSQ-v3]   10/500 train=0.2063
+[FSQ-v3]   20/500 train=0.1848
+[FSQ-v3]   30/500 train=0.1677
+[FSQ-v3]   40/500 train=0.1578
+[FSQ-v3]   50/500 train=0.1529 val=0.3154 action=0.0565 prog=0.0101 end=0.2488 select=0.3154
+[FSQ-v3]   60/500 train=0.1473
+[FSQ-v3]   70/500 train=0.1416
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mlanggap_56_full_full_state_obs20_std_episodemean_80p_fsq333[0m at: [34mhttps://wandb.ai/dohyeonlee-postech/VAE_train/runs/ipmjou8m[0m
+[1;34mwandb[0m: Find logs at: [1;35mwandb/run-20260731_044704-ipmjou8m/logs[0m

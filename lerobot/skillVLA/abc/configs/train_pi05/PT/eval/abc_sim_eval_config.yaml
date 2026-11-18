@@ -32,7 +32,7 @@ video:
   every_n_steps: 1
 
 output:
-  root: lerobot/examples/abc/configs/train_pi05/PT/eval/outputs
+  root: lerobot/skillVLA/abc/configs/train_pi05/PT/eval/outputs
   run_name: pi05_grab_clutter_50k_50episodes
 
 slurm:

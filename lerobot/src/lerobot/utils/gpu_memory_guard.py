@@ -46,11 +46,11 @@ def read_json(path):
 
 @dataclass
 class Settings:
-    reserve: int = 8 * GIB
-    stop_below: int = 4 * GIB
-    minimum: int = 8 * GIB
-    retry_margin: int = 2 * GIB
-    interval: float = 1.0
+    reserve: int = int(0.3 * GIB)
+    stop_below: int = int(0.15 * GIB)
+    minimum: int = int(0.3 * GIB)
+    retry_margin: int = int(0.3 * GIB)
+    interval: float = 0.5
     grace: float = 2.0
 
     @classmethod
@@ -58,7 +58,7 @@ class Settings:
         values = {}
         for name in ('reserve', 'stop_below', 'minimum', 'retry_margin'):
             values[name] = int(float(os.environ.get('SBD_GPU_GUARD_' + name.upper() + '_GIB', getattr(cls(), name) / GIB)) * GIB)
-        values['interval'] = float(os.environ.get('SBD_GPU_GUARD_INTERVAL', '1'))
+        values['interval'] = float(os.environ.get('SBD_GPU_GUARD_INTERVAL', cls().interval))
         result = cls(**values)
         if not 0 < result.stop_below < result.reserve or result.minimum <= 0 or result.retry_margin <= 0 or result.interval < .1:
             raise ValueError('GPU guard requires 0 < stop_below < reserve, positive budgets, interval >= 0.1s')

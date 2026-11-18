@@ -125,8 +125,9 @@ def freeze_config(path):
     bundle = Path(tempfile.mkdtemp(prefix=path.stem + ".", dir=root))
     shutil.copy2(path, bundle / path.name)
     shutil.copy2(global_path, bundle / "global_config.yaml")
-    if (global_path.parent / "servers").is_dir():
-        shutil.copytree(global_path.parent / "servers", bundle / "servers")
+    servers = base.server_config_dir(global_path)
+    if servers is not None:
+        shutil.copytree(servers, bundle / "servers")
     return bundle / path.name
 
 

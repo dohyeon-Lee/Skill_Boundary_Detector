@@ -15,7 +15,7 @@
 #   CONFIG_PATH="$(snapshot_config "${CONFIG_PATH}")"
 snapshot_config() {
   local src="$1"
-  local src_dir snap_root bundle snap config_lib global_src
+  local src_dir snap_root bundle snap config_lib global_src servers_src search_dir
   src_dir="$(cd "$(dirname "${src}")" && pwd)"
   src="${src_dir}/$(basename "${src}")"
   snap_root="${src_dir}/.config_snapshots"
@@ -41,10 +41,30 @@ snapshot_config() {
   cp "${src}" "${snap}" >&2
   if [ "${src}" != "${global_src}" ]; then
     cp "${global_src}" "${bundle}/global_config.yaml" >&2
-    # The per-server overlay (Slurm keys, storage) is part of the global layer too.
-    if [ -d "${config_lib}/servers" ]; then
-      cp -r "${config_lib}/servers" "${bundle}/servers" >&2
-    fi
+  fi
+  # Share live profiles across ABC/LIBERO, but freeze a private copy per job.
+  # A legacy self-contained snapshot must never inherit today's live profiles.
+  servers_src=""
+  case "${config_lib}/" in
+    */.config_snapshots/*)
+      [ ! -d "${config_lib}/servers" ] || servers_src="${config_lib}/servers"
+      ;;
+    *)
+      search_dir="${config_lib}"
+      while [ "${search_dir}" != / ]; do
+        if [ "$(basename "${search_dir}")" = skillVLA ] && [ -d "${search_dir}/servers" ]; then
+          servers_src="${search_dir}/servers"
+          break
+        fi
+        search_dir="$(dirname "${search_dir}")"
+      done
+      if [ -z "${servers_src}" ] && [ -d "${config_lib}/servers" ]; then
+        servers_src="${config_lib}/servers"
+      fi
+      ;;
+  esac
+  if [ -n "${servers_src}" ]; then
+    cp -r "${servers_src}" "${bundle}/servers" >&2
   fi
   # New Stage-1 component configs inherit shared defaults. Freeze that layer
   # together with the component and global YAML for queued Slurm jobs.

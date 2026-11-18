@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "generator_sha256": "ac464425948ce9bdeb02d521b08a4c7c1ef656e8757d06fe20fe78aed9af1127",
+  "suite": "libero_10",
+  "task_ids": [
+    5
+  ],
+  "episodes": 10,
+  "random_range": 3.0,
+  "seed": 1000,
+  "bddl_sha256": {
+    "5": "07ca32c940d70c065e870452ef9c63e6dfa1d8506e6a86cf9b3763f652ba2d9f"
+  },
+  "numpy": "2.2.6",
+  "mujoco": "3.6.0",
+  "state_timing": "before ten settling steps",
+  "scope": "movable workspace samplers XY only",
+  "tasks": {
+    "5": {
+      "task_name": "STUDY_SCENE1_pick_up_the_book_and_place_it_in_the_back_compartment_of_the_caddy",
+      "ranges": {
+        "black_book_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.125,
+                0.175
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.07500000000000001,
+                0.22499999999999998
+              ]
+            ]
+          }
+        },
+        "white_yellow_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                0.07500000000000001,
+                0.125
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                0.025000000000000022,
+                0.175
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ]
+          }
+        }
+      },
+      "attempts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  }
+}

@@ -1,0 +1,5610 @@
+{
+  "13125": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        224,
+        264,
+        483
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.030296476557850838,
+      "score_max": 0.12787190079689026,
+      "selected_k_histogram": {
+        "5": 82
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13161": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        208,
+        344,
+        464,
+        488,
+        520,
+        755
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.048855964094400406,
+      "score_max": 0.2237910032272339,
+      "selected_k_histogram": {
+        "5": 109
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13185": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        200,
+        483
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02691962569952011,
+      "score_max": 0.15623797476291656,
+      "selected_k_histogram": {
+        "5": 77
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13192": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        184,
+        440
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.025424979627132416,
+      "score_max": 0.15010108053684235,
+      "selected_k_histogram": {
+        "5": 66
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13209": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        168,
+        208,
+        456,
+        568,
+        656,
+        680,
+        899
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.023497190326452255,
+      "score_max": 0.16428320109844208,
+      "selected_k_histogram": {
+        "5": 127
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13126": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        184,
+        352,
+        384,
+        530
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03887811675667763,
+      "score_max": 0.18822073936462402,
+      "selected_k_histogram": {
+        "5": 88
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13131": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        128,
+        184,
+        216,
+        264,
+        312,
+        528,
+        584,
+        712,
+        767
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03751407936215401,
+      "score_max": 0.21206684410572052,
+      "selected_k_histogram": {
+        "5": 113
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13179": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        176,
+        469
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02521788701415062,
+      "score_max": 0.15669478476047516,
+      "selected_k_histogram": {
+        "5": 74
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13193": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        160,
+        208,
+        248,
+        352,
+        528,
+        664,
+        891
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.026706822216510773,
+      "score_max": 0.12735068798065186,
+      "selected_k_histogram": {
+        "5": 129
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13244": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        160,
+        345
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.022162387147545815,
+      "score_max": 0.10528795421123505,
+      "selected_k_histogram": {
+        "5": 55
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13127": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        168,
+        200,
+        232,
+        411
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03977063670754433,
+      "score_max": 0.14288896322250366,
+      "selected_k_histogram": {
+        "5": 76
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13138": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        104,
+        152,
+        296,
+        725
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.023783596232533455,
+      "score_max": 0.11042511463165283,
+      "selected_k_histogram": {
+        "5": 104
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13160": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        325
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.026965616270899773,
+      "score_max": 0.10648328065872192,
+      "selected_k_histogram": {
+        "5": 59
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13201": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        144,
+        192,
+        336
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.025002721697092056,
+      "score_max": 0.09267862141132355,
+      "selected_k_histogram": {
+        "5": 58
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13237": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        200,
+        224,
+        288,
+        765
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.022904865443706512,
+      "score_max": 0.13973602652549744,
+      "selected_k_histogram": {
+        "5": 109
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13128": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        216,
+        248,
+        360,
+        384,
+        408,
+        610
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.031038358807563782,
+      "score_max": 0.14307689666748047,
+      "selected_k_histogram": {
+        "5": 95
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13139": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        160,
+        192,
+        224,
+        449
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.029363784939050674,
+      "score_max": 0.13998371362686157,
+      "selected_k_histogram": {
+        "5": 75
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13147": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        200,
+        288,
+        368,
+        408,
+        488,
+        728
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.036841779947280884,
+      "score_max": 0.1770915687084198,
+      "selected_k_histogram": {
+        "5": 107
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13158": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        192,
+        318
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.040554068982601166,
+      "score_max": 0.24775657057762146,
+      "selected_k_histogram": {
+        "5": 55
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13168": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        192,
+        367
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03433430567383766,
+      "score_max": 0.1409851312637329,
+      "selected_k_histogram": {
+        "5": 63
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13129": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        168,
+        192,
+        364
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.025621581822633743,
+      "score_max": 0.10874219983816147,
+      "selected_k_histogram": {
+        "5": 61
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13206": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        168,
+        356
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.027930667623877525,
+      "score_max": 0.14895007014274597,
+      "selected_k_histogram": {
+        "5": 60
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13233": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        208,
+        487
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02095356397330761,
+      "score_max": 0.10049077123403549,
+      "selected_k_histogram": {
+        "5": 81
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13234": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        184,
+        360,
+        488,
+        765
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02040030248463154,
+      "score_max": 0.10771138221025467,
+      "selected_k_histogram": {
+        "5": 113
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13324": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        192,
+        336,
+        408,
+        432,
+        629
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.024324096739292145,
+      "score_max": 0.13256068527698517,
+      "selected_k_histogram": {
+        "5": 93
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13130": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        200,
+        431
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.022969936951994896,
+      "score_max": 0.11418408155441284,
+      "selected_k_histogram": {
+        "5": 72
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13162": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        200,
+        248,
+        312,
+        344,
+        537
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04487759619951248,
+      "score_max": 0.26802724599838257,
+      "selected_k_histogram": {
+        "5": 84
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13166": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        184,
+        232,
+        388
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03586869314312935,
+      "score_max": 0.20805461704730988,
+      "selected_k_histogram": {
+        "5": 66
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13183": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        160,
+        208,
+        240,
+        480
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.037424128502607346,
+      "score_max": 0.20261047780513763,
+      "selected_k_histogram": {
+        "5": 77
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13210": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        192,
+        390
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.031575772911310196,
+      "score_max": 0.18825775384902954,
+      "selected_k_histogram": {
+        "5": 70
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13132": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        208,
+        416,
+        480,
+        616,
+        648,
+        1090
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02877793274819851,
+      "score_max": 0.195344015955925,
+      "selected_k_histogram": {
+        "5": 152
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13135": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        272,
+        643
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.035279106348752975,
+      "score_max": 0.22029708325862885,
+      "selected_k_histogram": {
+        "5": 99
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13171": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        384,
+        504,
+        703
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.0308225080370903,
+      "score_max": 0.1634940803050995,
+      "selected_k_histogram": {
+        "5": 103
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13172": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        200,
+        398
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.034825488924980164,
+      "score_max": 0.16127429902553558,
+      "selected_k_histogram": {
+        "5": 64
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13177": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        304,
+        416,
+        634
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.027961915358901024,
+      "score_max": 0.12334942072629929,
+      "selected_k_histogram": {
+        "5": 96
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13133": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        192,
+        272,
+        471
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04328140988945961,
+      "score_max": 0.1816304624080658,
+      "selected_k_histogram": {
+        "5": 78
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13143": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        112,
+        136,
+        192,
+        248,
+        280,
+        467
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.035448309034109116,
+      "score_max": 0.18788348138332367,
+      "selected_k_histogram": {
+        "5": 70
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13189": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        216,
+        440,
+        544,
+        608,
+        704,
+        912
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.030915338546037674,
+      "score_max": 0.14737504720687866,
+      "selected_k_histogram": {
+        "5": 125
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13197": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        192,
+        216,
+        413
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.028828902170062065,
+      "score_max": 0.19161789119243622,
+      "selected_k_histogram": {
+        "5": 73
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13200": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        224,
+        256,
+        423
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04179960861802101,
+      "score_max": 0.2355087548494339,
+      "selected_k_histogram": {
+        "5": 73
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13134": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        176,
+        200,
+        232,
+        264,
+        512
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.0301241222769022,
+      "score_max": 0.1137070283293724,
+      "selected_k_histogram": {
+        "5": 84
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13149": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        248,
+        510
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.041822947561740875,
+      "score_max": 0.20715731382369995,
+      "selected_k_histogram": {
+        "5": 80
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13163": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        128,
+        160,
+        336,
+        456,
+        488,
+        512,
+        722
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.029642563313245773,
+      "score_max": 0.16629716753959656,
+      "selected_k_histogram": {
+        "5": 106
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13165": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        104,
+        136,
+        192,
+        321
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03314267843961716,
+      "score_max": 0.13622815907001495,
+      "selected_k_histogram": {
+        "5": 58
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13167": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        144,
+        184,
+        376,
+        544,
+        716
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03070785291492939,
+      "score_max": 0.17014582455158234,
+      "selected_k_histogram": {
+        "5": 105
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13136": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        208,
+        581
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.025585314258933067,
+      "score_max": 0.14162829518318176,
+      "selected_k_histogram": {
+        "5": 89
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13141": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        208,
+        584,
+        972
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02460785210132599,
+      "score_max": 0.12151645123958588,
+      "selected_k_histogram": {
+        "5": 132
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13153": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        208,
+        443
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03663434460759163,
+      "score_max": 0.18377164006233215,
+      "selected_k_histogram": {
+        "5": 75
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13175": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        216,
+        475
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03384771943092346,
+      "score_max": 0.16738632321357727,
+      "selected_k_histogram": {
+        "5": 77
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13184": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        120,
+        168,
+        200,
+        240,
+        288,
+        506
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.032409053295850754,
+      "score_max": 0.16730208694934845,
+      "selected_k_histogram": {
+        "5": 84
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13137": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        192,
+        232,
+        272,
+        328,
+        368,
+        448,
+        512,
+        568,
+        632,
+        672,
+        848,
+        899
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04567267373204231,
+      "score_max": 0.20836061239242554,
+      "selected_k_histogram": {
+        "5": 126
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13159": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        168,
+        216,
+        256,
+        352,
+        480,
+        520,
+        560,
+        724
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03945256769657135,
+      "score_max": 0.17066118121147156,
+      "selected_k_histogram": {
+        "5": 105
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13205": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        192,
+        398
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03427175059914589,
+      "score_max": 0.2261228859424591,
+      "selected_k_histogram": {
+        "5": 67
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13225": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        240,
+        264,
+        593
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.031437333673238754,
+      "score_max": 0.1452137529850006,
+      "selected_k_histogram": {
+        "5": 92
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13296": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        216,
+        288,
+        344,
+        440,
+        645
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.031789153814315796,
+      "score_max": 0.13486254215240479,
+      "selected_k_histogram": {
+        "5": 96
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13140": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        240,
+        449
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03329469636082649,
+      "score_max": 0.12913034856319427,
+      "selected_k_histogram": {
+        "5": 73
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13181": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        184,
+        216,
+        418
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03156484663486481,
+      "score_max": 0.14309217035770416,
+      "selected_k_histogram": {
+        "5": 72
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13213": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        120,
+        144,
+        184,
+        224,
+        416,
+        488,
+        512,
+        630
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03226879984140396,
+      "score_max": 0.16314144432544708,
+      "selected_k_histogram": {
+        "5": 91
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13249": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        136,
+        208,
+        400,
+        528,
+        677
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02729635126888752,
+      "score_max": 0.21054159104824066,
+      "selected_k_histogram": {
+        "5": 98
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13252": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        208,
+        352,
+        472,
+        640
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03578349947929382,
+      "score_max": 0.21701695024967194,
+      "selected_k_histogram": {
+        "5": 92
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13142": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        160,
+        208,
+        649
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02528061717748642,
+      "score_max": 0.15073557198047638,
+      "selected_k_histogram": {
+        "5": 94
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13146": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        176,
+        208,
+        248,
+        304,
+        352,
+        400,
+        573
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04053773730993271,
+      "score_max": 0.12314846366643906,
+      "selected_k_histogram": {
+        "5": 88
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13157": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        184,
+        342
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04021552577614784,
+      "score_max": 0.21582192182540894,
+      "selected_k_histogram": {
+        "5": 57
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13169": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        192,
+        232,
+        365
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.029212774708867073,
+      "score_max": 0.11807172745466232,
+      "selected_k_histogram": {
+        "5": 61
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13174": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        208,
+        360,
+        496,
+        528,
+        726
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.049341581761837006,
+      "score_max": 0.22582082450389862,
+      "selected_k_histogram": {
+        "5": 107
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13144": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        208,
+        240,
+        320,
+        392,
+        552,
+        808
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.05185965076088905,
+      "score_max": 0.23859639465808868,
+      "selected_k_histogram": {
+        "5": 116
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13152": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        208,
+        296,
+        352,
+        464,
+        536,
+        732
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04830067977309227,
+      "score_max": 0.210105761885643,
+      "selected_k_histogram": {
+        "5": 107
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13173": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        200,
+        344,
+        384,
+        440,
+        592,
+        806
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04203658550977707,
+      "score_max": 0.20031653344631195,
+      "selected_k_histogram": {
+        "5": 117
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13231": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        176,
+        312,
+        464,
+        692
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03509271889925003,
+      "score_max": 0.2367255538702011,
+      "selected_k_histogram": {
+        "5": 106
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13254": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        136,
+        168,
+        192,
+        240,
+        493
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.047105271369218826,
+      "score_max": 0.20144470036029816,
+      "selected_k_histogram": {
+        "5": 80
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13145": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        160,
+        208,
+        240,
+        280,
+        435
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02970878593623638,
+      "score_max": 0.0934598445892334,
+      "selected_k_histogram": {
+        "5": 72
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13203": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        208,
+        256,
+        296,
+        440,
+        472,
+        632
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03362065181136131,
+      "score_max": 0.2394191473722458,
+      "selected_k_histogram": {
+        "5": 92
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13221": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        144,
+        216,
+        240,
+        462
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.028273511677980423,
+      "score_max": 0.12375342100858688,
+      "selected_k_histogram": {
+        "5": 75
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13250": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        200,
+        394
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.025684282183647156,
+      "score_max": 0.13397540152072906,
+      "selected_k_histogram": {
+        "5": 66
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13279": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        208,
+        335
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.034579306840896606,
+      "score_max": 0.14052559435367584,
+      "selected_k_histogram": {
+        "5": 57
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13148": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        192,
+        240,
+        280,
+        320,
+        344,
+        512
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04093937948346138,
+      "score_max": 0.14552254974842072,
+      "selected_k_histogram": {
+        "5": 76
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13150": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        200,
+        240,
+        360,
+        664,
+        848,
+        872,
+        1046
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03223050758242607,
+      "score_max": 0.17105233669281006,
+      "selected_k_histogram": {
+        "5": 145
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13187": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        200,
+        240,
+        264,
+        328,
+        464,
+        495
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04538527876138687,
+      "score_max": 0.17485623061656952,
+      "selected_k_histogram": {
+        "5": 80
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13195": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        280,
+        400,
+        432,
+        480,
+        520,
+        560,
+        769
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.046287789940834045,
+      "score_max": 0.22950707376003265,
+      "selected_k_histogram": {
+        "5": 111
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13198": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        184,
+        208,
+        240,
+        272,
+        400,
+        560,
+        592,
+        648,
+        840
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03376581147313118,
+      "score_max": 0.13497623801231384,
+      "selected_k_histogram": {
+        "5": 123
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13151": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        160,
+        192,
+        240,
+        344,
+        392,
+        634
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.035157881677150726,
+      "score_max": 0.1647602766752243,
+      "selected_k_histogram": {
+        "5": 95
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13154": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        216,
+        248,
+        496
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.032874785363674164,
+      "score_max": 0.1531609147787094,
+      "selected_k_histogram": {
+        "5": 79
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13215": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        176,
+        232,
+        476
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03821868076920509,
+      "score_max": 0.18871746957302094,
+      "selected_k_histogram": {
+        "5": 75
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13223": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        168,
+        248,
+        473
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.023074956610798836,
+      "score_max": 0.13654470443725586,
+      "selected_k_histogram": {
+        "5": 76
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13236": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        144,
+        248,
+        272,
+        512,
+        592,
+        741
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.025218605995178223,
+      "score_max": 0.12805382907390594,
+      "selected_k_histogram": {
+        "5": 108
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13155": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        355
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.024724692106246948,
+      "score_max": 0.17882512509822845,
+      "selected_k_histogram": {
+        "5": 57
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13196": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        128,
+        176,
+        360
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.023964786902070045,
+      "score_max": 0.10291807353496552,
+      "selected_k_histogram": {
+        "5": 61
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13208": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        224,
+        698
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.017453761771321297,
+      "score_max": 0.14227662980556488,
+      "selected_k_histogram": {
+        "5": 105
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13224": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        224,
+        454
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02793346717953682,
+      "score_max": 0.1345043182373047,
+      "selected_k_histogram": {
+        "5": 77
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13257": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        208,
+        392,
+        535
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02158420905470848,
+      "score_max": 0.11000385135412216,
+      "selected_k_histogram": {
+        "5": 82
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13156": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        208,
+        378
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02913474664092064,
+      "score_max": 0.12893988192081451,
+      "selected_k_histogram": {
+        "5": 63
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13220": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        192,
+        232,
+        461
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.024471856653690338,
+      "score_max": 0.12302646040916443,
+      "selected_k_histogram": {
+        "5": 79
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13260": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        515
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.022117218002676964,
+      "score_max": 0.1610325574874878,
+      "selected_k_histogram": {
+        "5": 77
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13276": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        336,
+        376,
+        408,
+        696
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.01991141401231289,
+      "score_max": 0.11817298084497452,
+      "selected_k_histogram": {
+        "5": 97
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13288": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        336,
+        504,
+        592,
+        941
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.016180388629436493,
+      "score_max": 0.09275595843791962,
+      "selected_k_histogram": {
+        "5": 132
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13164": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        610
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.024288306012749672,
+      "score_max": 0.14595390856266022,
+      "selected_k_histogram": {
+        "5": 87
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13241": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        192,
+        420
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02199823595583439,
+      "score_max": 0.12898798286914825,
+      "selected_k_histogram": {
+        "5": 69
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13297": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        160,
+        320
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.0221501924097538,
+      "score_max": 0.12674729526042938,
+      "selected_k_histogram": {
+        "5": 52
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13309": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        48,
+        240,
+        408,
+        440,
+        623
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03393106162548065,
+      "score_max": 0.21698139607906342,
+      "selected_k_histogram": {
+        "5": 94
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13334": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        216,
+        535
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.01875576563179493,
+      "score_max": 0.12363481521606445,
+      "selected_k_histogram": {
+        "5": 79
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13170": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        168,
+        546
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.022939037531614304,
+      "score_max": 0.11051356047391891,
+      "selected_k_histogram": {
+        "5": 78
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13180": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        200,
+        652
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.023550745099782944,
+      "score_max": 0.14525310695171356,
+      "selected_k_histogram": {
+        "5": 106
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13222": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        232,
+        256,
+        621
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03068302758038044,
+      "score_max": 0.21120458841323853,
+      "selected_k_histogram": {
+        "5": 98
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13247": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        304,
+        432,
+        480,
+        504,
+        536,
+        568,
+        624,
+        656,
+        696,
+        760,
+        832,
+        880,
+        960,
+        1000,
+        1199
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04835185781121254,
+      "score_max": 0.22429361939430237,
+      "selected_k_histogram": {
+        "5": 163
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13259": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        248,
+        304,
+        344,
+        392,
+        580
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.030829574912786484,
+      "score_max": 0.11158427596092224,
+      "selected_k_histogram": {
+        "5": 89
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13178": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        120,
+        184,
+        224,
+        288,
+        320,
+        360,
+        570
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03162796422839165,
+      "score_max": 0.09673850983381271,
+      "selected_k_histogram": {
+        "5": 89
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13199": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        152,
+        184,
+        216,
+        288,
+        344,
+        416,
+        528,
+        552,
+        616,
+        773
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03735395148396492,
+      "score_max": 0.1770159900188446,
+      "selected_k_histogram": {
+        "5": 112
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13219": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        339
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.02517837844789028,
+      "score_max": 0.14193043112754822,
+      "selected_k_histogram": {
+        "5": 63
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13246": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        144,
+        192,
+        248,
+        280,
+        328,
+        400,
+        575
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.04061354324221611,
+      "score_max": 0.1519872099161148,
+      "selected_k_histogram": {
+        "5": 85
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13255": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        192,
+        232,
+        400,
+        536,
+        568,
+        688,
+        720,
+        906
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.0335431732237339,
+      "score_max": 0.14997947216033936,
+      "selected_k_histogram": {
+        "5": 129
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13188": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        224,
+        264,
+        450
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03204679861664772,
+      "score_max": 0.17298689484596252,
+      "selected_k_histogram": {
+        "5": 70
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13191": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        200,
+        368,
+        488,
+        528,
+        833
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.037107203155756,
+      "score_max": 0.2239096462726593,
+      "selected_k_histogram": {
+        "5": 119
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13229": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        216,
+        256,
+        481
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.027044687420129776,
+      "score_max": 0.13501115143299103,
+      "selected_k_histogram": {
+        "5": 78
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13263": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        216,
+        401
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.030879642814397812,
+      "score_max": 0.1711122691631317,
+      "selected_k_histogram": {
+        "5": 66
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13290": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        176,
+        208,
+        408,
+        512,
+        536,
+        720
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03147009015083313,
+      "score_max": 0.24374043941497803,
+      "selected_k_histogram": {
+        "5": 102
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13190": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        136,
+        200,
+        248,
+        280,
+        456,
+        496
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.038218069821596146,
+      "score_max": 0.16005031764507294,
+      "selected_k_histogram": {
+        "5": 75
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13204": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        104,
+        136,
+        184,
+        216,
+        248,
+        304,
+        488
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.040532469749450684,
+      "score_max": 0.11438295245170593,
+      "selected_k_histogram": {
+        "5": 73
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13216": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        32,
+        176,
+        248,
+        512,
+        541
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03706001862883568,
+      "score_max": 0.2699892520904541,
+      "selected_k_histogram": {
+        "5": 82
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13256": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        40,
+        184,
+        232,
+        336,
+        383
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.043488722294569016,
+      "score_max": 0.2700246572494507,
+      "selected_k_histogram": {
+        "5": 65
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  },
+  "13281": {
+    "previous_action_unanchored": {
+      "boundaries": [
+        160,
+        184,
+        224,
+        362
+      ],
+      "denoising_convergence_threshold_value": null,
+      "input_delta_bic": null,
+      "input_delta_bic_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "input_whitened_spread_by_probe": {
+        "iid96_r8_h1_previous_action": null
+      },
+      "descriptor_whitening_scale_by_probe": {
+        "iid96_r8_h1_previous_action": [
+          1.7312124967575073,
+          1.2359566688537598,
+          1.201216697692871,
+          1.1224355697631836,
+          1.067185640335083,
+          1.0048425197601318,
+          0.9430394768714905,
+          0.8870172500610352,
+          0.8601412773132324,
+          0.7990023493766785,
+          0.7457719445228577,
+          0.7080242037773132
+        ]
+      },
+      "output_delta_bic_mean": NaN,
+      "output_delta_bic_max": NaN,
+      "output_delta_bic_positive_fraction": 0.0,
+      "score_mean": 0.03207241743803024,
+      "score_max": 0.1614270955324173,
+      "selected_k_histogram": {
+        "5": 66
+      },
+      "threshold": 0.03356721252202988,
+      "threshold_scope": "dataset",
+      "threshold_group": "dataset",
+      "threshold_pool_points": 8514
+    }
+  }
+}

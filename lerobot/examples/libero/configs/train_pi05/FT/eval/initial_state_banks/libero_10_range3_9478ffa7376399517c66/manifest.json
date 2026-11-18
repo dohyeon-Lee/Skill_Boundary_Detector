@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "generator_sha256": "ac464425948ce9bdeb02d521b08a4c7c1ef656e8757d06fe20fe78aed9af1127",
+  "suite": "libero_10",
+  "task_ids": [
+    6
+  ],
+  "episodes": 10,
+  "random_range": 3.0,
+  "seed": 1000,
+  "bddl_sha256": {
+    "6": "dbc9464b424cdc9b771b92d0b8a8c185b1b539f6a4133b323dc858bcf8f6a9c2"
+  },
+  "numpy": "2.2.6",
+  "mujoco": "3.6.0",
+  "state_timing": "before ten settling steps",
+  "scope": "movable workspace samplers XY only",
+  "tasks": {
+    "6": {
+      "task_name": "LIVING_ROOM_SCENE6_put_the_white_mug_on_the_plate_and_put_the_chocolate_pudding_to_the_right_of_the_plate",
+      "ranges": {
+        "plate_1": {
+          "original": {
+            "x_ranges": [
+              [
+                0.125,
+                0.175
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                0.07500000000000001,
+                0.22499999999999998
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ]
+          }
+        },
+        "red_coffee_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.225,
+                -0.17500000000000002
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.275,
+                -0.12500000000000003
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ]
+          }
+        },
+        "chocolate_pudding_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.07500000000000001,
+                -0.025
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.07500000000000001,
+                0.125
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.125,
+                0.02500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.025000000000000022,
+                0.175
+              ]
+            ]
+          }
+        },
+        "porcelain_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.125,
+                -0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.175,
+                -0.125
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.175,
+                -0.025000000000000022
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.22499999999999998,
+                -0.07500000000000001
+              ]
+            ]
+          }
+        }
+      },
+      "attempts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  }
+}

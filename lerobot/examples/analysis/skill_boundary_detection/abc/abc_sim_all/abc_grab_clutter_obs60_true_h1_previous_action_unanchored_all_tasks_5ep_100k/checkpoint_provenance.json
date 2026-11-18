@@ -1,0 +1,22 @@
+{
+  "files": {
+    "pretrained_model/model.safetensors": "deb7c65f664726b7ce1d942ed544e1318947e10c636e42973e0c1671dc6e4941",
+    "pretrained_model/policy_postprocessor.json": "93cc2287f5c2004aacfad95128ef4b027a994fa98a4008282fb3bfc5faa44232",
+    "pretrained_model/policy_preprocessor.json": "edbb90f77520ab3f24a995d435d9f575484d81b9786d24f68a948e8296f047e1",
+    "pretrained_model/policy_preprocessor_step_4_normalizer_processor.safetensors": "54fae066a043bb5f58493a6b3eca1c0764f1c5669c5ffe482ae6761687e9952e",
+    "pretrained_model/config.json": "1f71384b60efade3193596bd4a128060e458d109b577697039bdc92ed15d29f2",
+    "pretrained_model/train_config.json": "3dfa6686053ef5c67813bd90e6b3230afbe2a3c2d546dbfe71623cc0495eeb47",
+    "pretrained_model/policy_postprocessor_step_0_unnormalizer_processor.safetensors": "54fae066a043bb5f58493a6b3eca1c0764f1c5669c5ffe482ae6761687e9952e"
+  },
+  "step": {
+    "step": 100000
+  },
+  "stats_path": "/scratch2/mdorazi/Skill_Boundary_Detector/dataset_ABC/abc_sim_all/meta/delta_joint_action_stats/task-grab_clutter-5c4b977de3e4.json",
+  "stats_sha256": "e96b2104271a9c43e414fbabd6ac9950fbce9d7a9d92e27dec994f4739aa31e1",
+  "source": "/scratch2/mdorazi/Skill_Boundary_Detector/outputs_ABC/DP/abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future1_transformer_constLR_small/checkpoints/100000",
+  "destination": "/data1/dohyeon/Skill_Boundary_Detector/outputs_ABC/DP/abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future1_transformer_constLR_small/checkpoints/100000/pretrained_model",
+  "verified_at": 1794847464.8484163,
+  "local_stats_path": "/data1/dohyeon/Skill_Boundary_Detector/dataset_ABC/abc_sim_all/meta/delta_joint_action_stats/task-grab_clutter-5c4b977de3e4.json",
+  "local_config_sha256": "0948ba6a619cf7fe33b3f5842a9872e650254993c821d3978fd3de51f804c334",
+  "localization_only": "delta_joint_stats_path"
+}

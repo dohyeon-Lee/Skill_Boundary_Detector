@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "generator_sha256": "ac464425948ce9bdeb02d521b08a4c7c1ef656e8757d06fe20fe78aed9af1127",
+  "suite": "libero_10",
+  "task_ids": [
+    7
+  ],
+  "episodes": 10,
+  "random_range": 3.0,
+  "seed": 1000,
+  "bddl_sha256": {
+    "7": "e27ab37f512fe42e35771d6130f531e6a9656929e7b4c60b348b81360cf5675d"
+  },
+  "numpy": "2.2.6",
+  "mujoco": "3.6.0",
+  "state_timing": "before ten settling steps",
+  "scope": "movable workspace samplers XY only",
+  "tasks": {
+    "7": {
+      "task_name": "LIVING_ROOM_SCENE1_put_both_the_alphabet_soup_and_the_cream_cheese_box_in_the_basket",
+      "ranges": {
+        "alphabet_soup_1": {
+          "original": {
+            "x_ranges": [
+              [
+                0.025,
+                0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.125,
+                -0.07500000000000001
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.02500000000000001,
+                0.125
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.175,
+                -0.025000000000000022
+              ]
+            ]
+          }
+        },
+        "cream_cheese_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.175,
+                -0.125
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.034999999999999996,
+                0.08499999999999999
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.22499999999999998,
+                -0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.015,
+                0.135
+              ]
+            ]
+          }
+        },
+        "tomato_sauce_1": {
+          "original": {
+            "x_ranges": [
+              [
+                0.07500000000000001,
+                0.125
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.225,
+                -0.17500000000000002
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                0.025000000000000022,
+                0.175
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.275,
+                -0.12500000000000003
+              ]
+            ]
+          }
+        },
+        "ketchup_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.225,
+                -0.17500000000000002
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.175,
+                -0.125
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.275,
+                -0.12500000000000003
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.22499999999999998,
+                -0.07500000000000001
+              ]
+            ]
+          }
+        },
+        "basket_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.01,
+                0.01
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.25,
+                0.27
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.03,
+                0.03
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.22999999999999998,
+                0.29000000000000004
+              ]
+            ]
+          }
+        }
+      },
+      "attempts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  }
+}

@@ -355,17 +355,20 @@ def test_cancelled_pod_choice_does_not_modify_config(local, monkeypatch):
     assert local.read_bytes() == before
 
 
-def test_launcher_finds_compatible_python_and_preserves_paths_and_arguments(tmp_path):
+@pytest.mark.parametrize("interpreter", ["python", ".venv/bin/python", ".venv/Scripts/python.exe"])
+def test_launcher_finds_compatible_python_and_preserves_paths_and_arguments(tmp_path, interpreter):
     root = tmp_path / "project with spaces"
-    root.mkdir()
-    launcher = root / "runpod_ssh.sh"
-    launcher.write_bytes((SCRIPT.parents[2] / "runpod_ssh.sh").read_bytes())
+    launcher = root / "tools/runpod/runpod_ssh.sh"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes((SCRIPT.parent / "runpod_ssh.sh").read_bytes())
     binaries = tmp_path / "bin"
     binaries.mkdir()
-    old_python = binaries / "python3"
-    old_python.write_text("#!/bin/bash\nexit 1\n")
-    old_python.chmod(0o755)
-    compatible_python = binaries / "python"
+    for name in ("python3", "python"):
+        old_python = binaries / name
+        old_python.write_text("#!/bin/bash\nexit 1\n")
+        old_python.chmod(0o755)
+    compatible_python = binaries / interpreter if interpreter == "python" else root / interpreter
+    compatible_python.parent.mkdir(parents=True, exist_ok=True)
     compatible_python.write_text(
         f"#!{sys.executable}\nimport json, sys\n"
         "if sys.argv[1:2] == ['-c']: sys.exit(0)\n"

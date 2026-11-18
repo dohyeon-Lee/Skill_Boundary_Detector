@@ -1,0 +1,19 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: W&B API key is configured. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data1/dohyeon/Skill_Boundary_Detector/lerobot/wandb/run-20260809_021959-92l583z5
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run libero_90_full_full_state_obs20_std_episodemean_100p_fsq39_constLR_recononly
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/92l583z5
+/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py:146: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+Traceback (most recent call last):
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/train_FSQ.py", line 416, in <module>
+    main(tyro.cli(Args))
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/train_FSQ.py", line 392, in main
+    train_spline_fsqae(
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py", line 2834, in train_spline_fsqae
+    "lr_epoch/terminator": log["lr/terminator"],
+                           ~~~^^^^^^^^^^^^^^^^^
+KeyError: 'lr/terminator'

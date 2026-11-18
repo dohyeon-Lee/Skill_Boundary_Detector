@@ -1,5 +1,5 @@
 # ./submit_train.sh --smoke first; ./submit_train.sh starts the configured PT run.
-# Roots and Slurm placement come from configs/global_config.yaml + servers/<server>.yaml.
+# Roots and Slurm placement come from configs/global_config.yaml + skillVLA/servers/<server>.yaml.
 stage: pt
 runtime:
   venv: .venv_molmoact2_lerobot

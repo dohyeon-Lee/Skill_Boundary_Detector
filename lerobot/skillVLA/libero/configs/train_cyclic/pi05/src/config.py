@@ -130,8 +130,8 @@ def freeze_config(path: Path) -> Path:
     if global_path is None:
         raise ValueError("Inherited PT YAML must have a global_config.yaml ancestor.")
     shutil.copy2(global_path, bundle / "global_config.yaml")
-    servers = global_path.parent / "servers"
-    if servers.is_dir():
+    servers = base.server_config_dir(global_path)
+    if servers is not None:
         shutil.copytree(servers, bundle / "servers")
     frozen = bundle / path.name
     frozen.write_text(yaml.safe_dump(local, sort_keys=False))

@@ -1,0 +1,92 @@
+START FSQ TRAIN
+Node       : node200
+Inputs     : /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs
+Output     : /data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/FSQ/libero_90_full_full_state_obs20_std_global_fsq865_dino_frozen_small_optimal_vsa_broadcast
+HF cache   : /data1/dohyeon/Skill_Boundary_Detector/.cache/huggingface
+Sun Jul 19 06:41:31 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA B200                    Off |   00000000:17:00.0 Off |                    0 |
+| N/A   57C    P0            808W / 1000W |   69086MiB / 183359MiB |     98%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA B200                    Off |   00000000:3D:00.0 Off |                    0 |
+| N/A   41C    P0            147W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   2  NVIDIA B200                    Off |   00000000:5F:00.0 Off |                    0 |
+| N/A   36C    P0            150W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   3  NVIDIA B200                    Off |   00000000:70:00.0 Off |                    0 |
+| N/A   32C    P0            145W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   4  NVIDIA B200                    Off |   00000000:97:00.0 Off |                    0 |
+| N/A   33C    P0            150W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   5  NVIDIA B200                    Off |   00000000:BA:00.0 Off |                    0 |
+| N/A   37C    P0            146W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   6  NVIDIA B200                    Off |   00000000:DC:00.0 Off |                    0 |
+| N/A   62C    P0            819W / 1000W |   69082MiB / 183359MiB |     98%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   7  NVIDIA B200                    Off |   00000000:ED:00.0 Off |                    0 |
+| N/A   39C    P0            151W / 1000W |       0MiB / 183359MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         1794418      C   ...ry_Detector/.venv/bin/python3      69072MiB |
+|    6   N/A  N/A         2762850      C   ...ry_Detector/.venv/bin/python3      69068MiB |
++-----------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 9344 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_std_globalmean/skillset/skills
+[FSQ] Skill lengths — min:21 max:231 mean:58.0
+[FSQ] encoder input mode: optimal
+[FSQ] encoder_min: [-4.4140e-01 -5.7060e-01 -3.3630e-01 -3.3431e+00 -3.4451e+00 -2.3351e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] encoder_max: [4.1870e-01 5.4600e-01 3.7550e-01 2.0190e+00 2.8658e+00 2.6123e+00
+ 4.3700e-02 1.7000e-03]
+[FSQ] optimal start-EEF min/max: [-0.4709 -0.3542  0.446   0.104  -3.6998 -2.5381] / [0.19   0.4818 1.2813 4.1367 2.6948 1.7193]
+[FSQ] state q01/q99: [-4.0200e-01 -2.8250e-01  4.5820e-01  1.2572e+00 -2.7793e+00 -1.3225e+00
+  1.6000e-03 -4.0000e-02] / [ 1.2720e-01  3.1970e-01  1.2555e+00  3.8244e+00  2.3465e+00  6.1010e-01
+  4.0200e-02 -1.7000e-03]
+[FSQ] action q01/q99: [-0.6295 -0.8705 -0.8973 -0.1232 -0.1564 -0.2796 -1.    ] / [0.8518 0.8464 0.9375 0.1875 0.1773 0.3493 1.    ]
+[FSQ] state_min:  [-4.8620e-01 -3.9710e-01  4.4550e-01 -7.4810e-01 -4.3631e+00 -3.2124e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] state_max:  [2.0270e-01 4.8810e-01 1.3585e+00 4.8434e+00 2.9724e+00 2.4015e+00
+ 4.3700e-02 1.7000e-03]
+[FSQ] length_min/max: 21 / 231
+[FSQ-v3] trajectories=9344 train=8410 val=934 fp=dfa2e86f6a62
+[FSQ-v3] initialized 208 action-expert tensors from /data1/dohyeon/Skill_Boundary_Detector/models/pi05_base
+[FSQ-v3]    1/500 train=0.4243 val=0.8992 action=0.1909 prog=0.0316 end=0.6767 select=0.8992
+[FSQ-v3]   10/500 train=0.2710 val=0.5067 action=0.1505 prog=0.0149 end=0.3413 select=0.5067
+[FSQ-v3]   20/500 train=0.2412 val=0.5915 action=0.1379 prog=0.0140 end=0.4396 select=0.5915
+[FSQ-v3]   30/500 train=0.2238 val=0.4290 action=0.1294 prog=0.0108 end=0.2887 select=0.4290
+[FSQ-v3]   40/500 train=0.2168 val=0.4530 action=0.1247 prog=0.0104 end=0.3179 select=0.4530
+[FSQ-v3]   50/500 train=0.2045 val=0.4290 action=0.1212 prog=0.0106 end=0.2972 select=0.4290
+[FSQ-v3]   60/500 train=0.2017 val=0.3829 action=0.1201 prog=0.0097 end=0.2530 select=0.3829
+[FSQ-v3]   70/500 train=0.1959 val=0.3971 action=0.1162 prog=0.0098 end=0.2711 select=0.3971
+[FSQ-v3]   80/500 train=0.1923 val=0.3890 action=0.1143 prog=0.0090 end=0.2657 select=0.3890
+[FSQ-v3]   90/500 train=0.1865 val=0.3600 action=0.1139 prog=0.0087 end=0.2374 select=0.3600
+[FSQ-v3]  100/500 train=0.1841 val=0.4182 action=0.1120 prog=0.0092 end=0.2970 select=0.4182
+[FSQ-v3]  110/500 train=0.1849 val=0.3580 action=0.1114 prog=0.0089 end=0.2377 select=0.3580
+[FSQ-v3]  120/500 train=0.1782 val=0.3689 action=0.1100 prog=0.0085 end=0.2504 select=0.3689
+[FSQ-v3]  130/500 train=0.1769 val=0.3715 action=0.1099 prog=0.0088 end=0.2527 select=0.3715
+[FSQ-v3]  140/500 train=0.1762 val=0.4111 action=0.1092 prog=0.0086 end=0.2932 select=0.4111
+[FSQ-v3]  150/500 train=0.1722 val=0.3714 action=0.1073 prog=0.0085 end=0.2556 select=0.3714
+[FSQ-v3]  160/500 train=0.1684 val=0.3554 action=0.1071 prog=0.0083 end=0.2400 select=0.3554
+[FSQ-v3]  170/500 train=0.1682 val=0.3478 action=0.1074 prog=0.0081 end=0.2323 select=0.3478

@@ -70,4 +70,4 @@ gt_dataset:
   source: libero_10_full_1
   run: FSQ333_contrastive_2000_ft_grounded
 seed: 1000
-initial_state_bank: lerobot/examples/libero/configs/train_pi05/FT/eval/initial_state_banks/libero_10_range3_shared_8cd6c711e97204f6/eval_init_states.npz
+initial_state_bank: lerobot/skillVLA/libero/configs/train_pi05/FT/eval/initial_state_banks/libero_10_range3_shared_8cd6c711e97204f6/eval_init_states.npz

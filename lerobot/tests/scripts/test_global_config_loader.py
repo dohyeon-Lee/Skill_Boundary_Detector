@@ -1,4 +1,4 @@
-"""Per-server global config (configs/servers/*.yaml) and RunPod storage links."""
+"""Shared server profiles (skillVLA/servers/*.yaml) and RunPod storage links."""
 
 from __future__ import annotations
 
@@ -15,6 +15,84 @@ CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 LOADER = runpy.run_path(str(CONFIGS / "src/global_config_loader.py"))
 LINKER = runpy.run_path(str(CONFIGS / "src/link_storage.py"))
 load_global_config = LOADER["load_global_config"]
+ABC_LOADER = runpy.run_path(str(CONFIGS.parents[1] / "abc/configs/src/global_config_loader.py"))
+
+
+def _shared_checkout(tmp_path):
+    workflow = tmp_path / "repo/lerobot/skillVLA"
+    profiles = workflow / "servers"
+    profiles.mkdir(parents=True)
+    profile = profiles / "shared.yaml"
+    profile.write_text("detect: []\ntrain_partition:\n  - shared_gpu\ntrain_qos: shared_qos\nscheduler: slurm\n")
+    configs = {}
+    for component in ("abc", "libero", "analysis"):
+        directory = workflow / component / "configs"
+        directory.mkdir(parents=True)
+        path = directory / "global_config.yaml"
+        path.write_text(f"server: shared\ndataset_root: dataset_{component}\noutputs_root: outputs_{component}\n")
+        configs[component] = path
+    return workflow, profile, configs
+
+
+@pytest.mark.parametrize("loader", [LOADER, ABC_LOADER], ids=["libero", "abc"])
+@pytest.mark.parametrize("without_yaml", [False, True])
+def test_one_shared_profile_applies_to_all_workflows(tmp_path, monkeypatch, loader, without_yaml):
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    workflow, profile, paths = _shared_checkout(tmp_path)
+    # An obsolete live per-environment copy must not shadow the shared profile.
+    stale = paths["abc"].parent / "servers"
+    stale.mkdir()
+    (stale / "shared.yaml").write_text("train_qos: obsolete_qos\n")
+    if without_yaml:
+        monkeypatch.setitem(sys.modules, "yaml", None)
+    for expected_qos in ("shared_qos", "edited_qos"):
+        for component, path in paths.items():
+            config = loader["load_global_config"](path)
+            assert loader["server_config_dir"](path) == workflow / "servers"
+            assert config["train_qos"] == expected_qos
+            assert config["train_partition"] == ["shared_gpu"]
+            assert config["dataset_root"] == f"dataset_{component}"
+            assert config["outputs_root"] == f"outputs_{component}"
+            assert Path(config["project_root"]) == tmp_path / "repo"
+        profile.write_text(profile.read_text().replace("shared_qos", "edited_qos"))
+
+
+@pytest.mark.parametrize("component,loader", [("abc", ABC_LOADER), ("libero", LOADER)])
+def test_submit_snapshot_freezes_shared_profiles_for_each_environment(tmp_path, monkeypatch, component, loader):
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    monkeypatch.delenv("SBD_GLOBAL_CONFIG", raising=False)
+    workflow, profile, paths = _shared_checkout(tmp_path)
+    for name in ("abc", "libero"):
+        destination = paths[name].parent / "src/snapshot_config.sh"
+        destination.parent.mkdir()
+        shutil.copy2(CONFIGS.parents[1] / name / "configs/src/snapshot_config.sh", destination)
+    path = paths[component]
+    module = path.parent / "train_example/config.yaml"
+    module.parent.mkdir()
+    module.write_text("steps: 100000\n")
+    result = subprocess.run(
+        ["bash", "-c", 'source "$1"; snapshot_config "$2"', "_",
+         str(path.parent / "src/snapshot_config.sh"), str(module)],
+        check=True, capture_output=True, text=True,
+    )
+    snapshot = Path(result.stdout.strip())
+    assert (snapshot.parent / "servers/shared.yaml").read_text() == profile.read_text()
+    profile.write_text(profile.read_text().replace("shared_qos", "edited_qos"))
+    assert loader["load_global_config"](path)["train_qos"] == "edited_qos"
+    assert loader["load_global_config"](snapshot.parent / "global_config.yaml")["train_qos"] == "shared_qos"
+
+
+@pytest.mark.parametrize("loader", [LOADER, ABC_LOADER], ids=["libero", "abc"])
+def test_legacy_flat_snapshot_never_reads_live_shared_profiles(tmp_path, monkeypatch, loader):
+    monkeypatch.delenv("SBD_SERVER", raising=False)
+    _, _, paths = _shared_checkout(tmp_path)
+    snapshot = paths["abc"].parent / "train/.config_snapshots/old/global_config.yaml"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("project_root: /saved/root\nserver: shared\ntrain_qos: saved_qos\n")
+    assert loader["server_config_dir"](snapshot) is None
+    assert loader["load_global_config"](snapshot) == {
+        "project_root": "/saved/root", "server": "shared", "train_qos": "saved_qos",
+    }
 
 
 def _checkout(tmp_path: Path, servers: dict[str, str], shared: str = "server: auto\ndataset_root: dataset_filtered\n") -> Path:
@@ -114,7 +192,7 @@ SLURM_PROFILES = {
 
 
 def _yonsei_profile_yaml(profile: str) -> str:
-    lines = (CONFIGS / "servers/yonsei.yaml").read_text().splitlines()
+    lines = (CONFIGS.parents[1] / "servers/yonsei.yaml").read_text().splitlines()
     assert lines[0].startswith("slurm_profile:")  # the only selector stays at the very top
     lines[0] = f"slurm_profile: {profile}"
     return "\n".join(lines) + "\n"

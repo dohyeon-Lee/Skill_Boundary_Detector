@@ -256,6 +256,26 @@ def relocate_pt_output_path(project_root: Path, path: Path) -> Path:
     return relocate_skillvla_output_path(project_root, path)
 
 
+def relocate_workflow_path(project_root: Path, path: Path) -> Path:
+    """Resolve saved workflow inputs across the examples -> skillVLA move.
+
+    Preserve an existing explicit input, including local video/state banks left
+    outside Git. Otherwise try both layouts under this checkout, rather than a
+    saved absolute directory belonging to another server.
+    """
+    if exists_here(path):
+        return path
+    parts = path.parts
+    for index in range(len(parts) - 2):
+        if (parts[index] == "lerobot" and parts[index + 1] in {"examples", "skillVLA"}
+                and parts[index + 2] in {"abc", "libero", "analysis"}):
+            suffix = parts[index + 2:]
+            canonical = project_root.joinpath("lerobot", "skillVLA", *suffix)
+            legacy = project_root.joinpath("lerobot", "examples", *suffix)
+            return next((candidate for candidate in (canonical, legacy) if exists_here(candidate)), canonical)
+    return path
+
+
 def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> str:
     """Resolve a config path against project_root for cross-server portability.
 
@@ -267,7 +287,9 @@ def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> s
     if not s:
         return ""
     p = Path(s).expanduser()
-    return str(relocate_skillvla_output_path(Path(project_root), p if p.is_absolute() else Path(project_root) / p))
+    path = p if p.is_absolute() else Path(project_root) / p
+    path = relocate_workflow_path(Path(project_root), path)
+    return str(relocate_skillvla_output_path(Path(project_root), path))
 
 
 def resolve_skillvla_dataset_run(

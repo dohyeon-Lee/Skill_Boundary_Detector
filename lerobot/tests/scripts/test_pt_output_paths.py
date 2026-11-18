@@ -85,3 +85,25 @@ def test_sync_scanner_finds_the_renamed_group(tmp_path, group):
     found, pulled = scan(tmp_path, ["outputs_filtered"])
     assert found == {f"outputs_filtered/{group}/VSA/run/checkpoints/010000": step}
     assert not pulled
+
+
+@pytest.mark.parametrize("component", ["abc", "libero", "analysis"])
+@pytest.mark.parametrize("layout", ["examples", "skillVLA"])
+@pytest.mark.parametrize("form", ["relative", "other_server"])
+def test_workflow_inputs_relocate_to_new_checkout(tmp_path, component, layout, form):
+    suffix = Path("lerobot") / layout / component / "state_bank.npz"
+    target = tmp_path / "lerobot/skillVLA" / component / "state_bank.npz"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"original state bank")
+    value = suffix if form == "relative" else Path("/other/server") / suffix
+    assert resolve_path(tmp_path, value) == str(target)
+    relocate = runpy.run_path(str(CONFIGS / "train_skillVLA/PT/eval/src/stage1_eval_config.py"))["_relocate_project_path"]
+    assert relocate(tmp_path, value) == target
+
+
+def test_new_workflow_input_can_read_preserved_legacy_artifact(tmp_path):
+    suffix = "libero/configs/train_pi05/FT/eval/initial_state_banks/bank.npz"
+    legacy = tmp_path / "lerobot/examples" / suffix
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"unchanged initial states")
+    assert resolve_path(tmp_path, "lerobot/skillVLA/" + suffix) == str(legacy)

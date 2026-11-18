@@ -1,0 +1,176 @@
+{
+  "version": 1,
+  "generator_sha256": "ac464425948ce9bdeb02d521b08a4c7c1ef656e8757d06fe20fe78aed9af1127",
+  "suite": "libero_10",
+  "task_ids": [
+    2,
+    3
+  ],
+  "episodes": 10,
+  "random_range": 3.0,
+  "seed": 1000,
+  "bddl_sha256": {
+    "2": "491835cc2eb6956f7ce3d1ee4e266377116168fe453e6529fe105e3b0333635d",
+    "3": "5255fe54d7f25fad4dee8fa30a30033d8cb908f1708d953c91ab609264fb4fb8"
+  },
+  "numpy": "2.2.6",
+  "mujoco": "3.6.0",
+  "state_timing": "before ten settling steps",
+  "scope": "movable workspace samplers XY only",
+  "tasks": {
+    "2": {
+      "task_name": "KITCHEN_SCENE3_turn_on_the_stove_and_put_the_moka_pot_on_it",
+      "ranges": {
+        "chefmate_8_frypan_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.07500000000000001,
+                -0.025
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.275,
+                -0.225
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.125,
+                0.02500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.325,
+                -0.175
+              ]
+            ]
+          }
+        },
+        "moka_pot_1": {
+          "original": {
+            "x_ranges": [
+              [
+                0.025,
+                0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.02500000000000001,
+                0.125
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ]
+          }
+        }
+      },
+      "attempts": [
+        1,
+        2,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    "3": {
+      "task_name": "KITCHEN_SCENE4_put_the_black_bowl_in_the_bottom_drawer_of_the_cabinet_and_close_it",
+      "ranges": {
+        "akita_black_bowl_1": {
+          "original": {
+            "x_ranges": [
+              [
+                0.0049999999999999975,
+                0.055
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.07500000000000001,
+                -0.025
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.04500000000000001,
+                0.10500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.125,
+                0.02500000000000001
+              ]
+            ]
+          }
+        },
+        "wine_bottle_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.175,
+                -0.125
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.025,
+                0.07500000000000001
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.22499999999999998,
+                -0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.02500000000000001,
+                0.125
+              ]
+            ]
+          }
+        }
+      },
+      "attempts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  }
+}

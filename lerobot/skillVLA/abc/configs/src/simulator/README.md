@@ -67,7 +67,7 @@ This supports tasks such as `grab_clutter`, whose object counts and meshes vary
 between worlds. `backend: auto` falls back to independent MuJoCo scenes for
 unsupported runtimes or incompatible MJWarp scene topologies. Slurm partition, QoS, node list, and
 excluded nodes always come from the active server profile (for Yonsei,
-`lerobot/skillVLA/abc/configs/servers/yonsei.yaml`).
+`lerobot/skillVLA/servers/yonsei.yaml`).
 
 The current config evaluates the ABC `grab_clutter` PI0.5 50k checkpoint:
 50 randomized episodes, four parallel scenes, at most 3540 actions per episode.
@@ -104,15 +104,15 @@ resume without rerunning the completed episode.
 To organize an existing **idle** run and generate the same report without a GPU:
 
 ```bash
-.venv_abc_sim/bin/python lerobot/examples/abc/configs/train_pi05/PT/eval/src/report.py \
-  lerobot/examples/abc/configs/train_pi05/PT/eval/outputs/<run_name> --workers 4
+.venv_abc_sim/bin/python lerobot/skillVLA/abc/configs/train_pi05/PT/eval/src/report.py \
+  lerobot/skillVLA/abc/configs/train_pi05/PT/eval/outputs/<run_name> --workers 4
 ```
 
 Inside an **already allocated GPU shell**, use the existing entry point directly
 instead of requesting another allocation:
 
 ```bash
-bash lerobot/examples/abc/configs/train_pi05/PT/eval/src/eval.sbatch
+bash lerobot/skillVLA/abc/configs/train_pi05/PT/eval/src/eval.sbatch
 ```
 
 This entry point enables the shared newest-run VRAM guard with 0.3 GiB reserve

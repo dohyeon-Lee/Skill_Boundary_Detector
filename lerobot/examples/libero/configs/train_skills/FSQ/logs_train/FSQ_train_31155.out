@@ -1,0 +1,52 @@
+START FSQ TRAIN
+Node       : node100
+Inputs     : /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs
+Output     : /data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/FSQ/libero_90_full_full_state_obs20_std_global_fsq333_dino_frozen_small_optimal_vsa_state_skill_weighted3
+HF cache   : /data1/dohyeon/Skill_Boundary_Detector/.cache/huggingface
+Fri Jul 17 00:12:37 2026       
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.129.03             Driver Version: 535.129.03   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA L40S                    On  | 00000000:81:00.0 Off |                    0 |
+| N/A   39C    P8              34W / 350W |      3MiB / 46068MiB |      0%      Default |
+|                                         |                      |                  N/A |
++-----------------------------------------+----------------------+----------------------+
+                                                                                         
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 9344 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_std_globalmean/skillset/skills
+[FSQ] Skill lengths — min:21 max:231 mean:58.0
+[FSQ] encoder input mode: optimal
+[FSQ] encoder_min: [-4.4140e-01 -5.7060e-01 -3.3630e-01 -3.3431e+00 -3.4451e+00 -2.3351e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] encoder_max: [4.1870e-01 5.4600e-01 3.7550e-01 2.0190e+00 2.8658e+00 2.6123e+00
+ 4.3700e-02 1.7000e-03]
+[FSQ] optimal start-EEF min/max: [-0.4709 -0.3542  0.446   0.104  -3.6998 -2.5381] / [0.19   0.4818 1.2813 4.1367 2.6948 1.7193]
+[FSQ] state q01/q99: [-4.0200e-01 -2.8250e-01  4.5820e-01  1.2572e+00 -2.7793e+00 -1.3225e+00
+  1.6000e-03 -4.0000e-02] / [ 1.2720e-01  3.1970e-01  1.2555e+00  3.8244e+00  2.3465e+00  6.1010e-01
+  4.0200e-02 -1.7000e-03]
+[FSQ] action q01/q99: [-0.6295 -0.8705 -0.8973 -0.1232 -0.1564 -0.2796 -1.    ] / [0.8518 0.8464 0.9375 0.1875 0.1773 0.3493 1.    ]
+[FSQ] state_min:  [-4.8620e-01 -3.9710e-01  4.4550e-01 -7.4810e-01 -4.3631e+00 -3.2124e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] state_max:  [2.0270e-01 4.8810e-01 1.3585e+00 4.8434e+00 2.9724e+00 2.4015e+00
+ 4.3700e-02 1.7000e-03]
+[FSQ] length_min/max: 21 / 231
+[FSQ-v3] trajectories=9344 train=8410 val=934 fp=dfa2e86f6a62
+[FSQ-v3] initialized 208 action-expert tensors from /data1/dohyeon/Skill_Boundary_Detector/models/pi05_base
+[FSQ-v3]    1/500 train=0.2922 val=0.2823 action=0.2252 prog=0.0505 end=0.6499 select=0.2953
+[FSQ-v3]   10/500 train=0.1787 val=0.1972 action=0.1609 prog=0.0211 end=0.4282 select=0.2058
+[FSQ-v3]   20/500 train=0.1658 val=0.1926 action=0.1535 prog=0.0170 end=0.4610 select=0.2013
+[FSQ-v3]   30/500 train=0.1546 val=0.1789 action=0.1427 prog=0.0158 end=0.4355 select=0.1878
+[FSQ-v3]   40/500 train=0.1478 val=0.1736 action=0.1389 prog=0.0164 end=0.4164 select=0.1822
+[FSQ-v3]   50/500 train=0.1429 val=0.1715 action=0.1332 prog=0.0150 end=0.4481 select=0.1795
+[FSQ-v3]   60/500 train=0.1385 val=0.1590 action=0.1298 prog=0.0160 end=0.3534 select=0.1668

@@ -1,0 +1,51 @@
+FSQ venv cache: reusing /dev/shm/dohyeon/fsq_venv/venv-0833cce93775353b.
+FSQ frame cache stage: reusing /dev/shm/dohyeon/fsq_frame_cache/636f58e4449b3efb34b9a44c.
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: W&B API key is configured. Use `wandb login --relogin` to force relogin
+wandb: setting up run dali84gb
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data1/dohyeon/Skill_Boundary_Detector/lerobot/wandb/run-20261007_182258-dali84gb
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run FSQ333_norm_action01_recon_term22__contrastiveON_routeON_loss_new_rand10
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/dali84gb
+/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py:804: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+Loading weights:   0%|          | 0/211 [00:00<?, ?it/s]Loading weights: 100%|██████████| 211/211 [00:00<00:00, 11433.35it/s]
+wandb: updating run metadata
+wandb: uploading output.log; uploading wandb-summary.json
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml; uploading history steps 1999-2000, summary, console lines 250-252
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: uploading data
+wandb: 
+wandb: Run history:
+wandb: codebook/axis_0_boundary_margin_mean_pct ▁▁▃▅▅▆▆▆▆▆▆▇▇▇▇▇██▇█▇███████████████████
+wandb:  codebook/axis_0_boundary_margin_p10_pct ▁▁▂▃▃▄▃▄▅▅▅▆▆▇▇▇▇▇▇▇▇▇▇▇▇███████████████
+wandb:               codebook/axis_0_change_pct █▃▂▅▂▁▂▂▁▂▁▁▂▁▁▁▁▁▁▁▁▁▂▁▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:        codebook/axis_0_near_boundary_pct █▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:            codebook/axis_0_retention_pct ▁▁▂▆▇▇▇█▇▇▇███████████████▇▇████████████
+wandb: codebook/axis_1_boundary_margin_mean_pct ▁▄▄▅▅▅▆▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇██████████████
+wandb:  codebook/axis_1_boundary_margin_p10_pct ▁▂▃▅▅▆▆▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇█████████████████
+wandb:               codebook/axis_1_change_pct ██▇▃▄▂▃▂▂▃▂▁▂▂▂▂▂▂▁▂▁▁▁▂▁▁▁▁▂▁▁▂▁▁▁▁▂▁▁▁
+wandb:        codebook/axis_1_near_boundary_pct ▇█▆▄▃▃▃▃▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▂▁▁▁▁▂▁▁▁▁▁▁▁▁▁▁
+wandb:            codebook/axis_1_retention_pct ▁▆▆▆▇▇█▇█▇█▇██████▇█████████████████████
+wandb:                                     +234 ...
+wandb: 
+wandb: Run summary:
+wandb: codebook/axis_0_boundary_margin_mean_pct 88.82508
+wandb:  codebook/axis_0_boundary_margin_p10_pct 64.47189
+wandb:               codebook/axis_0_change_pct 0.12743
+wandb:        codebook/axis_0_near_boundary_pct 0.41705
+wandb:            codebook/axis_0_retention_pct 99.87257
+wandb: codebook/axis_1_boundary_margin_mean_pct 92.29983
+wandb:  codebook/axis_1_boundary_margin_p10_pct 72.98132
+wandb:               codebook/axis_1_change_pct 0.10426
+wandb:        codebook/axis_1_near_boundary_pct 0.34754
+wandb:            codebook/axis_1_retention_pct 99.89574
+wandb:                                     +234 ...
+wandb: 
+wandb: 🚀 View run FSQ333_norm_action01_recon_term22__contrastiveON_routeON_loss_new_rand10 at: https://wandb.ai/dohyeonlee-postech/VAE_train/runs/dali84gb
+wandb: ⭐️ View project at: https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20261007_182258-dali84gb/logs

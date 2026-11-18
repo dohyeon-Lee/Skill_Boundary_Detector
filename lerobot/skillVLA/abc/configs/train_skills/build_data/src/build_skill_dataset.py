@@ -10,8 +10,11 @@ from pathlib import Path
 import sys
 
 CONFIG_SRC = Path(__file__).resolve().parents[2] / 'src'
-sys.path.insert(0, str(CONFIG_SRC))
-from train_skills_config import load_episode_selection
+_config_spec = importlib.util.spec_from_file_location(
+    'abc_skill_dataset_config', CONFIG_SRC / 'train_skills_config.py')
+_config_module = importlib.util.module_from_spec(_config_spec)
+_config_spec.loader.exec_module(_config_module)
+load_episode_selection = _config_module.load_episode_selection
 
 
 def load_shared_builder():

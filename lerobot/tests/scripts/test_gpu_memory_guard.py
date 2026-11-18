@@ -34,6 +34,16 @@ def settings():
     return M.Settings(reserve=100, stop_below=50, minimum=100, retry_margin=40, interval=.01, grace=.1)
 
 
+def test_default_budget_is_valid_without_environment_overrides(monkeypatch):
+    for key in tuple(os.environ):
+        if key.startswith('SBD_GPU_GUARD_'):
+            monkeypatch.delenv(key)
+    result = M.Settings.from_env()
+    assert result.reserve == result.minimum == result.retry_margin == int(0.3 * M.GIB)
+    assert result.stop_below == int(0.15 * M.GIB)
+    assert result.interval == 0.5
+
+
 def child_script(tmp_path, name, body):
     p = tmp_path / (name + '.py')
     p.write_text('''import json,os,time,sys

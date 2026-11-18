@@ -4,7 +4,7 @@
 # Every module config under this `configs/` tree merges this file as its base
 # (resolvers walk up to find `global_config.yaml`). Machine-specific settings — the
 # Slurm 4-keys (train_partition/qos/nodelist/exclude_nodes) and storage locations —
-# live in servers/<name>.yaml and are merged on top by src/global_config_loader.py:
+# live in skillVLA/servers/<name>.yaml and are merged on top by src/global_config_loader.py:
 #   server = $SBD_SERVER, else `server:` below, else auto-detected from the checkout
 #   path (each server file's detect: prefixes). project_root defaults to the checkout.
 # Module yamls override `roots` locally if they declare the same key, but the Slurm

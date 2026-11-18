@@ -2,8 +2,8 @@
 """Load ``global_config.yaml`` together with its per-server overlay.
 
 ``global_config.yaml`` holds the settings every machine shares. Machine-specific keys (Slurm
-partition/qos/nodes, storage locations) live in ``servers/<name>.yaml`` next to it, so no server
-ever edits the shared file. The server is chosen by, in order:
+partition/qos/nodes, storage locations) live in ``skillVLA/servers/<name>.yaml``
+and apply to every environment. The server is chosen by, in order:
 
 1. the ``SBD_SERVER`` environment variable,
 2. ``server:`` in ``global_config.yaml`` (``auto`` = detect),
@@ -20,8 +20,9 @@ An optional ``slurm_profile: <name>`` in a server overlay selects its flat
 ``slurm_profile_<name>_partitions`` / ``slurm_profile_<name>_qos`` definitions, exposing the usual
 ``train_partition`` / ``train_qos`` keys to every caller. Other server overlays are unchanged.
 
-A ``global_config.yaml`` without a ``servers/`` directory beside it is returned unchanged: that
-is the self-contained layout of config snapshots taken before the overlay existed.
+Snapshots use their bundled ``servers/`` copy, never the live shared profiles.
+Older standalone configs with adjacent ``servers/`` remain readable; a snapshot
+without bundled profiles is returned unchanged.
 
 Every config module loads this file by path (``load_global_config``); the CLI prints the merged
 result:  ``python src/global_config_loader.py [--server NAME] [--key project_root]``.
@@ -38,8 +39,8 @@ from typing import Any
 
 SERVERS_DIR = "servers"
 SERVER_ENV = "SBD_SERVER"
-# <repo>/lerobot/skillVLA/libero/configs — used to find the repository from any config path.
-_CONFIGS_RELATIVE = Path("lerobot") / "skillVLA" / "libero" / "configs"
+# Shared marker also supports ABC, analysis and future workflow folders.
+_CONFIGS_RELATIVE = Path("lerobot") / "skillVLA"
 
 
 def _parse_scalar(value: str) -> Any:
@@ -176,12 +177,25 @@ def select_server(servers_dir: Path, repo: Path, requested: str = "auto") -> tup
     return matches[0], servers[matches[0]]
 
 
+def server_config_dir(path: Path | str) -> Path | None:
+    """Find shared live profiles or the private profiles of a frozen bundle."""
+    path = Path(path).resolve()
+    bundled = path.parent / SERVERS_DIR
+    if ".config_snapshots" in path.parts:
+        return bundled if bundled.is_dir() else None
+    for directory in (path.parent, *path.parents):
+        shared = directory / SERVERS_DIR
+        if directory.name == "skillVLA" and shared.is_dir():
+            return shared
+    return bundled if bundled.is_dir() else None
+
+
 def load_global_config(path: Path | str, server: str | None = None) -> dict[str, Any]:
     """``global_config.yaml`` merged with the selected ``servers/<name>.yaml``."""
     path = Path(path)
     config = read_yaml(path)
-    servers_dir = path.parent / SERVERS_DIR
-    if not servers_dir.is_dir():
+    servers_dir = server_config_dir(path)
+    if servers_dir is None:
         return config
     repo = repo_root(path)
     requested = server or str(config.pop("server", "auto") or "auto")

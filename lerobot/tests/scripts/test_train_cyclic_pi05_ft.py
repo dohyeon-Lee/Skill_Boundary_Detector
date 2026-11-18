@@ -106,6 +106,23 @@ def test_default_recipe_matches_real_ft_and_uses_full_libero10(experiment):
     assert CONFIG.build_settings(changed)["ft_output_dir"] != settings["ft_output_dir"]
 
 
+def test_ft_snapshot_freezes_the_shared_server_folder(experiment, tmp_path):
+    path = experiment[0]
+    configs = tmp_path / "lerobot/skillVLA/libero/configs"
+    (tmp_path / "global_config.yaml").rename(configs / "global_config.yaml")
+    servers = configs.parents[1] / "servers"
+    (tmp_path / "servers").rename(servers)
+    profile = servers / "fixture.yaml"
+    profile.write_text("detect: []\nscheduler: slurm\ntrain_qos: snapshot_qos\n")
+    config = configs / path.name
+    path.rename(config)
+    snapshot = CONFIG.freeze_config(config)
+    assert (snapshot.parent / "servers/fixture.yaml").read_text() == profile.read_text()
+    profile.write_text(profile.read_text().replace("snapshot_qos", "edited_qos"))
+    assert CONFIG.build_settings(CONFIG.load_config(config))["ft_qos"] == "edited_qos"
+    assert CONFIG.build_settings(CONFIG.load_config(snapshot))["ft_qos"] == "snapshot_qos"
+
+
 @pytest.mark.parametrize("patch", [
     {"ft_source": {"model_dir": "../bad"}}, {"ft_source": "cyclic_run"},
     {"ft_source_checkpoint": "last"}, {"ft_source_checkpoint": 100000},

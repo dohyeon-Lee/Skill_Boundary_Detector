@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "generator_sha256": "ac464425948ce9bdeb02d521b08a4c7c1ef656e8757d06fe20fe78aed9af1127",
+  "suite": "libero_10",
+  "task_ids": [
+    9
+  ],
+  "episodes": 10,
+  "random_range": 3.0,
+  "seed": 1000,
+  "bddl_sha256": {
+    "9": "456d145f92be049f445fc77673dc583d9d17ea7afe92f6ffcb2fd1fa5565d420"
+  },
+  "numpy": "2.2.6",
+  "mujoco": "3.6.0",
+  "state_timing": "before ten settling steps",
+  "scope": "movable workspace samplers XY only",
+  "tasks": {
+    "9": {
+      "task_name": "KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it",
+      "ranges": {
+        "porcelain_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.125,
+                -0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.275,
+                -0.225
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.175,
+                -0.025000000000000022
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.325,
+                -0.175
+              ]
+            ]
+          }
+        },
+        "white_yellow_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ]
+          }
+        }
+      },
+      "attempts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  }
+}

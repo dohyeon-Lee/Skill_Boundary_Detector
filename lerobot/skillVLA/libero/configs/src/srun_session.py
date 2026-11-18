@@ -104,12 +104,14 @@ def memory_guard_environment(environment):
     loader = runpy.run_path(str(SELF.with_name("global_config_loader.py")))
     config = loader["load_global_config"](SELF.parent.parent / "global_config.yaml")
     result = dict(environment)
+    reserve = float(environment.get("SBD_GPU_GUARD_RESERVE_GIB", config.get("srun_gpu_reserve_gib", 0.3)))
+    # One public reserve knob; retain explicit legacy overrides for frozen launches.
     mapping = {"srun_gpu_memory_guard": ("SBD_GPU_MEMORY_GUARD", False),
-        "srun_gpu_reserve_gib": ("SBD_GPU_GUARD_RESERVE_GIB", 8),
-        "srun_gpu_stop_below_gib": ("SBD_GPU_GUARD_STOP_BELOW_GIB", 4),
-        "srun_gpu_minimum_gib": ("SBD_GPU_GUARD_MINIMUM_GIB", 8),
-        "srun_gpu_retry_margin_gib": ("SBD_GPU_GUARD_RETRY_MARGIN_GIB", 2),
-        "srun_gpu_poll_seconds": ("SBD_GPU_GUARD_INTERVAL", 1)}
+        "srun_gpu_reserve_gib": ("SBD_GPU_GUARD_RESERVE_GIB", 0.3),
+        "srun_gpu_stop_below_gib": ("SBD_GPU_GUARD_STOP_BELOW_GIB", reserve / 2),
+        "srun_gpu_minimum_gib": ("SBD_GPU_GUARD_MINIMUM_GIB", reserve),
+        "srun_gpu_retry_margin_gib": ("SBD_GPU_GUARD_RETRY_MARGIN_GIB", reserve),
+        "srun_gpu_poll_seconds": ("SBD_GPU_GUARD_INTERVAL", 0.5)}
     for key, (name, default) in mapping.items():
         value = config.get(key, default)
         result.setdefault(name, str(value).lower())

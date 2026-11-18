@@ -237,7 +237,7 @@ Use `training.dataloader.gpus: 1` and `slurm.gres: gpu:1`; the models share one
 allocated GPU. Batch size and loader workers are **per model**; Slurm CPU/RAM
 are totals. The current setup is batch 16 and six loader workers per model,
 16 CPUs / 192G RAM total, and FT 10k. Node selection follows the server config
-(currently `node200` in `servers/rllab.yaml`). Dataset staging happens once;
+(currently `node200` in `skillVLA/servers/rllab.yaml`). Dataset staging happens once;
 worker logs are `logs/predictor_group_<job_id>/<mode>.{out,err}`. Existing
 scalar configs and already-submitted snapshots retain their behavior.
 

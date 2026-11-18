@@ -1,0 +1,4817 @@
+{
+  "model": "obs60_future1",
+  "episode_ids": [
+    13125,
+    13161,
+    13185,
+    13192,
+    13209,
+    13126,
+    13131,
+    13179,
+    13193,
+    13244,
+    13127,
+    13138,
+    13160,
+    13201,
+    13237,
+    13128,
+    13139,
+    13147,
+    13158,
+    13168,
+    13129,
+    13206,
+    13233,
+    13234,
+    13324,
+    13130,
+    13162,
+    13166,
+    13183,
+    13210,
+    13132,
+    13135,
+    13171,
+    13172,
+    13177,
+    13133,
+    13143,
+    13189,
+    13197,
+    13200,
+    13134,
+    13149,
+    13163,
+    13165,
+    13167,
+    13136,
+    13141,
+    13153,
+    13175,
+    13184,
+    13137,
+    13159,
+    13205,
+    13225,
+    13296,
+    13140,
+    13181,
+    13213,
+    13249,
+    13252,
+    13142,
+    13146,
+    13157,
+    13169,
+    13174,
+    13144,
+    13152,
+    13173,
+    13231,
+    13254,
+    13145,
+    13203,
+    13221,
+    13250,
+    13279,
+    13148,
+    13150,
+    13187,
+    13195,
+    13198,
+    13151,
+    13154,
+    13215,
+    13223,
+    13236,
+    13155,
+    13196,
+    13208,
+    13224,
+    13257,
+    13156,
+    13220,
+    13260,
+    13276,
+    13288,
+    13164,
+    13241,
+    13297,
+    13309,
+    13334,
+    13170,
+    13180,
+    13222,
+    13247,
+    13259,
+    13178,
+    13199,
+    13219,
+    13246,
+    13255,
+    13188,
+    13191,
+    13229,
+    13263,
+    13290,
+    13190,
+    13204,
+    13216,
+    13256,
+    13281
+  ],
+  "episodes": [
+    {
+      "episode_id": 13125,
+      "task_id": 59,
+      "n_frames": 699,
+      "boundaries": [
+        224,
+        256,
+        483
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 256
+        },
+        {
+          "start": 256,
+          "end": 483
+        },
+        {
+          "start": 483,
+          "end": 699
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 483
+    },
+    {
+      "episode_id": 13161,
+      "task_id": 59,
+      "n_frames": 910,
+      "boundaries": [
+        208,
+        344,
+        456,
+        512,
+        744
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 344
+        },
+        {
+          "start": 344,
+          "end": 456
+        },
+        {
+          "start": 456,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 744
+        },
+        {
+          "start": 744,
+          "end": 910
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 755
+    },
+    {
+      "episode_id": 13185,
+      "task_id": 59,
+      "n_frames": 657,
+      "boundaries": [
+        200,
+        483
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 483
+        },
+        {
+          "start": 483,
+          "end": 657
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 483
+    },
+    {
+      "episode_id": 13192,
+      "task_id": 59,
+      "n_frames": 567,
+      "boundaries": [
+        152,
+        184,
+        440
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 567
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 440
+    },
+    {
+      "episode_id": 13209,
+      "task_id": 59,
+      "n_frames": 1054,
+      "boundaries": [
+        32,
+        176,
+        208,
+        448,
+        568,
+        656,
+        680,
+        899
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 448
+        },
+        {
+          "start": 448,
+          "end": 568
+        },
+        {
+          "start": 568,
+          "end": 656
+        },
+        {
+          "start": 656,
+          "end": 680
+        },
+        {
+          "start": 680,
+          "end": 899
+        },
+        {
+          "start": 899,
+          "end": 1054
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 899
+    },
+    {
+      "episode_id": 13126,
+      "task_id": 60,
+      "n_frames": 746,
+      "boundaries": [
+        184,
+        384,
+        530
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 384
+        },
+        {
+          "start": 384,
+          "end": 530
+        },
+        {
+          "start": 530,
+          "end": 746
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 530
+    },
+    {
+      "episode_id": 13131,
+      "task_id": 60,
+      "n_frames": 942,
+      "boundaries": [
+        104,
+        184,
+        216,
+        312,
+        336,
+        504,
+        528,
+        584,
+        712,
+        752
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 104
+        },
+        {
+          "start": 104,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 312
+        },
+        {
+          "start": 312,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 504
+        },
+        {
+          "start": 504,
+          "end": 528
+        },
+        {
+          "start": 528,
+          "end": 584
+        },
+        {
+          "start": 584,
+          "end": 712
+        },
+        {
+          "start": 712,
+          "end": 752
+        },
+        {
+          "start": 752,
+          "end": 942
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 767
+    },
+    {
+      "episode_id": 13179,
+      "task_id": 60,
+      "n_frames": 631,
+      "boundaries": [
+        184,
+        469
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 469
+        },
+        {
+          "start": 469,
+          "end": 631
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 469
+    },
+    {
+      "episode_id": 13193,
+      "task_id": 60,
+      "n_frames": 1074,
+      "boundaries": [
+        32,
+        160,
+        352,
+        664,
+        891
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 352
+        },
+        {
+          "start": 352,
+          "end": 664
+        },
+        {
+          "start": 664,
+          "end": 891
+        },
+        {
+          "start": 891,
+          "end": 1074
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 891
+    },
+    {
+      "episode_id": 13244,
+      "task_id": 60,
+      "n_frames": 482,
+      "boundaries": [
+        168,
+        345
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 345
+        },
+        {
+          "start": 345,
+          "end": 482
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 345
+    },
+    {
+      "episode_id": 13127,
+      "task_id": 61,
+      "n_frames": 646,
+      "boundaries": [
+        32,
+        168,
+        200,
+        224,
+        411
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 411
+        },
+        {
+          "start": 411,
+          "end": 646
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 411
+    },
+    {
+      "episode_id": 13138,
+      "task_id": 61,
+      "n_frames": 873,
+      "boundaries": [
+        104,
+        144,
+        264,
+        296,
+        336,
+        725
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 104
+        },
+        {
+          "start": 104,
+          "end": 144
+        },
+        {
+          "start": 144,
+          "end": 264
+        },
+        {
+          "start": 264,
+          "end": 296
+        },
+        {
+          "start": 296,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 725
+        },
+        {
+          "start": 725,
+          "end": 873
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 725
+    },
+    {
+      "episode_id": 13160,
+      "task_id": 61,
+      "n_frames": 510,
+      "boundaries": [
+        176,
+        325
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 325
+        },
+        {
+          "start": 325,
+          "end": 510
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 325
+    },
+    {
+      "episode_id": 13201,
+      "task_id": 61,
+      "n_frames": 502,
+      "boundaries": [
+        192,
+        336
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 502
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 336
+    },
+    {
+      "episode_id": 13237,
+      "task_id": 61,
+      "n_frames": 915,
+      "boundaries": [
+        224,
+        248,
+        288,
+        765
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 288
+        },
+        {
+          "start": 288,
+          "end": 765
+        },
+        {
+          "start": 765,
+          "end": 915
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 765
+    },
+    {
+      "episode_id": 13128,
+      "task_id": 62,
+      "n_frames": 800,
+      "boundaries": [
+        168,
+        256,
+        304,
+        360,
+        384,
+        610
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 256
+        },
+        {
+          "start": 256,
+          "end": 304
+        },
+        {
+          "start": 304,
+          "end": 360
+        },
+        {
+          "start": 360,
+          "end": 384
+        },
+        {
+          "start": 384,
+          "end": 610
+        },
+        {
+          "start": 610,
+          "end": 800
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 610
+    },
+    {
+      "episode_id": 13139,
+      "task_id": 62,
+      "n_frames": 639,
+      "boundaries": [
+        192,
+        224,
+        449
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 449
+        },
+        {
+          "start": 449,
+          "end": 639
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 449
+    },
+    {
+      "episode_id": 13147,
+      "task_id": 62,
+      "n_frames": 895,
+      "boundaries": [
+        32,
+        184,
+        208,
+        240,
+        272,
+        296,
+        360,
+        448,
+        496,
+        728
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 272
+        },
+        {
+          "start": 272,
+          "end": 296
+        },
+        {
+          "start": 296,
+          "end": 360
+        },
+        {
+          "start": 360,
+          "end": 448
+        },
+        {
+          "start": 448,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 728
+        },
+        {
+          "start": 728,
+          "end": 895
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 728
+    },
+    {
+      "episode_id": 13158,
+      "task_id": 62,
+      "n_frames": 483,
+      "boundaries": [
+        136,
+        160,
+        192,
+        318
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 136
+        },
+        {
+          "start": 136,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 318
+        },
+        {
+          "start": 318,
+          "end": 483
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 318
+    },
+    {
+      "episode_id": 13168,
+      "task_id": 62,
+      "n_frames": 546,
+      "boundaries": [
+        192,
+        367
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 367
+        },
+        {
+          "start": 367,
+          "end": 546
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 367
+    },
+    {
+      "episode_id": 13129,
+      "task_id": 63,
+      "n_frames": 526,
+      "boundaries": [
+        32,
+        168,
+        192,
+        364
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 364
+        },
+        {
+          "start": 364,
+          "end": 526
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 364
+    },
+    {
+      "episode_id": 13206,
+      "task_id": 63,
+      "n_frames": 518,
+      "boundaries": [
+        40,
+        176,
+        356
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 40
+        },
+        {
+          "start": 40,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 356
+        },
+        {
+          "start": 356,
+          "end": 518
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 356
+    },
+    {
+      "episode_id": 13233,
+      "task_id": 63,
+      "n_frames": 686,
+      "boundaries": [
+        208,
+        487
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 487
+        },
+        {
+          "start": 487,
+          "end": 686
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 487
+    },
+    {
+      "episode_id": 13234,
+      "task_id": 63,
+      "n_frames": 940,
+      "boundaries": [
+        184,
+        344,
+        488,
+        765
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 344
+        },
+        {
+          "start": 344,
+          "end": 488
+        },
+        {
+          "start": 488,
+          "end": 765
+        },
+        {
+          "start": 765,
+          "end": 940
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 765
+    },
+    {
+      "episode_id": 13324,
+      "task_id": 63,
+      "n_frames": 780,
+      "boundaries": [
+        192,
+        328,
+        432,
+        629
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 328
+        },
+        {
+          "start": 328,
+          "end": 432
+        },
+        {
+          "start": 432,
+          "end": 629
+        },
+        {
+          "start": 629,
+          "end": 780
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 629
+    },
+    {
+      "episode_id": 13130,
+      "task_id": 64,
+      "n_frames": 612,
+      "boundaries": [
+        32,
+        200,
+        431
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 431
+        },
+        {
+          "start": 431,
+          "end": 612
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 431
+    },
+    {
+      "episode_id": 13162,
+      "task_id": 64,
+      "n_frames": 713,
+      "boundaries": [
+        168,
+        192,
+        248,
+        312,
+        344,
+        368,
+        537
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 312
+        },
+        {
+          "start": 312,
+          "end": 344
+        },
+        {
+          "start": 344,
+          "end": 368
+        },
+        {
+          "start": 368,
+          "end": 537
+        },
+        {
+          "start": 537,
+          "end": 713
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 537
+    },
+    {
+      "episode_id": 13166,
+      "task_id": 64,
+      "n_frames": 567,
+      "boundaries": [
+        224,
+        388
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 388
+        },
+        {
+          "start": 388,
+          "end": 567
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 388
+    },
+    {
+      "episode_id": 13183,
+      "task_id": 64,
+      "n_frames": 652,
+      "boundaries": [
+        216,
+        256,
+        480
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 256
+        },
+        {
+          "start": 256,
+          "end": 480
+        },
+        {
+          "start": 480,
+          "end": 652
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 480
+    },
+    {
+      "episode_id": 13210,
+      "task_id": 64,
+      "n_frames": 602,
+      "boundaries": [
+        208,
+        390
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 390
+        },
+        {
+          "start": 390,
+          "end": 602
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 390
+    },
+    {
+      "episode_id": 13132,
+      "task_id": 65,
+      "n_frames": 1257,
+      "boundaries": [
+        152,
+        176,
+        208,
+        464,
+        608,
+        664,
+        712,
+        880,
+        1090
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 464
+        },
+        {
+          "start": 464,
+          "end": 608
+        },
+        {
+          "start": 608,
+          "end": 664
+        },
+        {
+          "start": 664,
+          "end": 712
+        },
+        {
+          "start": 712,
+          "end": 880
+        },
+        {
+          "start": 880,
+          "end": 1090
+        },
+        {
+          "start": 1090,
+          "end": 1257
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 1090
+    },
+    {
+      "episode_id": 13135,
+      "task_id": 65,
+      "n_frames": 830,
+      "boundaries": [
+        32,
+        240,
+        272,
+        592,
+        643
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 272
+        },
+        {
+          "start": 272,
+          "end": 592
+        },
+        {
+          "start": 592,
+          "end": 643
+        },
+        {
+          "start": 643,
+          "end": 830
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 643
+    },
+    {
+      "episode_id": 13171,
+      "task_id": 65,
+      "n_frames": 865,
+      "boundaries": [
+        152,
+        376,
+        496,
+        703
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 376
+        },
+        {
+          "start": 376,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 703
+        },
+        {
+          "start": 703,
+          "end": 865
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 703
+    },
+    {
+      "episode_id": 13172,
+      "task_id": 65,
+      "n_frames": 550,
+      "boundaries": [
+        176,
+        208,
+        398
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 398
+        },
+        {
+          "start": 398,
+          "end": 550
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 398
+    },
+    {
+      "episode_id": 13177,
+      "task_id": 65,
+      "n_frames": 804,
+      "boundaries": [
+        120,
+        152,
+        304,
+        384,
+        416,
+        634
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 120
+        },
+        {
+          "start": 120,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 304
+        },
+        {
+          "start": 304,
+          "end": 384
+        },
+        {
+          "start": 384,
+          "end": 416
+        },
+        {
+          "start": 416,
+          "end": 634
+        },
+        {
+          "start": 634,
+          "end": 804
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 634
+    },
+    {
+      "episode_id": 13133,
+      "task_id": 66,
+      "n_frames": 664,
+      "boundaries": [
+        32,
+        192,
+        224,
+        264,
+        471
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 264
+        },
+        {
+          "start": 264,
+          "end": 471
+        },
+        {
+          "start": 471,
+          "end": 664
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 471
+    },
+    {
+      "episode_id": 13143,
+      "task_id": 66,
+      "n_frames": 603,
+      "boundaries": [
+        112,
+        144,
+        192,
+        248,
+        280,
+        467
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 112
+        },
+        {
+          "start": 112,
+          "end": 144
+        },
+        {
+          "start": 144,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 280
+        },
+        {
+          "start": 280,
+          "end": 467
+        },
+        {
+          "start": 467,
+          "end": 603
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 467
+    },
+    {
+      "episode_id": 13189,
+      "task_id": 66,
+      "n_frames": 1036,
+      "boundaries": [
+        184,
+        216,
+        280,
+        440,
+        544,
+        608,
+        656,
+        704,
+        912
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 280
+        },
+        {
+          "start": 280,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 544
+        },
+        {
+          "start": 544,
+          "end": 608
+        },
+        {
+          "start": 608,
+          "end": 656
+        },
+        {
+          "start": 656,
+          "end": 704
+        },
+        {
+          "start": 704,
+          "end": 912
+        },
+        {
+          "start": 912,
+          "end": 1036
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 912
+    },
+    {
+      "episode_id": 13197,
+      "task_id": 66,
+      "n_frames": 622,
+      "boundaries": [
+        192,
+        216,
+        413
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 413
+        },
+        {
+          "start": 413,
+          "end": 622
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 413
+    },
+    {
+      "episode_id": 13200,
+      "task_id": 66,
+      "n_frames": 620,
+      "boundaries": [
+        216,
+        256,
+        423
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 256
+        },
+        {
+          "start": 256,
+          "end": 423
+        },
+        {
+          "start": 423,
+          "end": 620
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 423
+    },
+    {
+      "episode_id": 13134,
+      "task_id": 67,
+      "n_frames": 712,
+      "boundaries": [
+        224,
+        264,
+        512
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 264
+        },
+        {
+          "start": 264,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 712
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 512
+    },
+    {
+      "episode_id": 13149,
+      "task_id": 67,
+      "n_frames": 679,
+      "boundaries": [
+        232,
+        510
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 510
+        },
+        {
+          "start": 510,
+          "end": 679
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 510
+    },
+    {
+      "episode_id": 13163,
+      "task_id": 67,
+      "n_frames": 890,
+      "boundaries": [
+        128,
+        160,
+        336,
+        512,
+        722
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 128
+        },
+        {
+          "start": 128,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 722
+        },
+        {
+          "start": 722,
+          "end": 890
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 722
+    },
+    {
+      "episode_id": 13165,
+      "task_id": 67,
+      "n_frames": 503,
+      "boundaries": [
+        104,
+        128,
+        152,
+        200,
+        321
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 104
+        },
+        {
+          "start": 104,
+          "end": 128
+        },
+        {
+          "start": 128,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 321
+        },
+        {
+          "start": 321,
+          "end": 503
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 321
+    },
+    {
+      "episode_id": 13167,
+      "task_id": 67,
+      "n_frames": 879,
+      "boundaries": [
+        144,
+        208,
+        368,
+        504,
+        536,
+        716
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 144
+        },
+        {
+          "start": 144,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 368
+        },
+        {
+          "start": 368,
+          "end": 504
+        },
+        {
+          "start": 504,
+          "end": 536
+        },
+        {
+          "start": 536,
+          "end": 716
+        },
+        {
+          "start": 716,
+          "end": 879
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 716
+    },
+    {
+      "episode_id": 13136,
+      "task_id": 68,
+      "n_frames": 749,
+      "boundaries": [
+        176,
+        208,
+        448,
+        581
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 448
+        },
+        {
+          "start": 448,
+          "end": 581
+        },
+        {
+          "start": 581,
+          "end": 749
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 581
+    },
+    {
+      "episode_id": 13141,
+      "task_id": 68,
+      "n_frames": 1098,
+      "boundaries": [
+        160,
+        208,
+        544,
+        592,
+        760,
+        972
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 544
+        },
+        {
+          "start": 544,
+          "end": 592
+        },
+        {
+          "start": 592,
+          "end": 760
+        },
+        {
+          "start": 760,
+          "end": 972
+        },
+        {
+          "start": 972,
+          "end": 1098
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 972
+    },
+    {
+      "episode_id": 13153,
+      "task_id": 68,
+      "n_frames": 636,
+      "boundaries": [
+        208,
+        443
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 443
+        },
+        {
+          "start": 443,
+          "end": 636
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 443
+    },
+    {
+      "episode_id": 13175,
+      "task_id": 68,
+      "n_frames": 659,
+      "boundaries": [
+        176,
+        208,
+        475
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 475
+        },
+        {
+          "start": 475,
+          "end": 659
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 475
+    },
+    {
+      "episode_id": 13184,
+      "task_id": 68,
+      "n_frames": 709,
+      "boundaries": [
+        168,
+        200,
+        232,
+        288,
+        506
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 288
+        },
+        {
+          "start": 288,
+          "end": 506
+        },
+        {
+          "start": 506,
+          "end": 709
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 506
+    },
+    {
+      "episode_id": 13137,
+      "task_id": 69,
+      "n_frames": 1049,
+      "boundaries": [
+        32,
+        192,
+        232,
+        272,
+        336,
+        368,
+        456,
+        488,
+        520,
+        624,
+        680,
+        848,
+        872,
+        899
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 272
+        },
+        {
+          "start": 272,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 368
+        },
+        {
+          "start": 368,
+          "end": 456
+        },
+        {
+          "start": 456,
+          "end": 488
+        },
+        {
+          "start": 488,
+          "end": 520
+        },
+        {
+          "start": 520,
+          "end": 624
+        },
+        {
+          "start": 624,
+          "end": 680
+        },
+        {
+          "start": 680,
+          "end": 848
+        },
+        {
+          "start": 848,
+          "end": 872
+        },
+        {
+          "start": 872,
+          "end": 899
+        },
+        {
+          "start": 899,
+          "end": 1049
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 899
+    },
+    {
+      "episode_id": 13159,
+      "task_id": 69,
+      "n_frames": 878,
+      "boundaries": [
+        168,
+        216,
+        256,
+        352,
+        480,
+        512,
+        552,
+        724
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 256
+        },
+        {
+          "start": 256,
+          "end": 352
+        },
+        {
+          "start": 352,
+          "end": 480
+        },
+        {
+          "start": 480,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 552
+        },
+        {
+          "start": 552,
+          "end": 724
+        },
+        {
+          "start": 724,
+          "end": 878
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 724
+    },
+    {
+      "episode_id": 13205,
+      "task_id": 69,
+      "n_frames": 574,
+      "boundaries": [
+        184,
+        398
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 398
+        },
+        {
+          "start": 398,
+          "end": 574
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 398
+    },
+    {
+      "episode_id": 13225,
+      "task_id": 69,
+      "n_frames": 772,
+      "boundaries": [
+        240,
+        264,
+        288,
+        593
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 264
+        },
+        {
+          "start": 264,
+          "end": 288
+        },
+        {
+          "start": 288,
+          "end": 593
+        },
+        {
+          "start": 593,
+          "end": 772
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 593
+    },
+    {
+      "episode_id": 13296,
+      "task_id": 69,
+      "n_frames": 811,
+      "boundaries": [
+        224,
+        280,
+        344,
+        400,
+        440,
+        600,
+        645
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 280
+        },
+        {
+          "start": 280,
+          "end": 344
+        },
+        {
+          "start": 344,
+          "end": 400
+        },
+        {
+          "start": 400,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 600
+        },
+        {
+          "start": 600,
+          "end": 645
+        },
+        {
+          "start": 645,
+          "end": 811
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 645
+    },
+    {
+      "episode_id": 13140,
+      "task_id": 70,
+      "n_frames": 625,
+      "boundaries": [
+        184,
+        224,
+        449
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 449
+        },
+        {
+          "start": 449,
+          "end": 625
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 449
+    },
+    {
+      "episode_id": 13181,
+      "task_id": 70,
+      "n_frames": 618,
+      "boundaries": [
+        184,
+        216,
+        418
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 418
+        },
+        {
+          "start": 418,
+          "end": 618
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 418
+    },
+    {
+      "episode_id": 13213,
+      "task_id": 70,
+      "n_frames": 767,
+      "boundaries": [
+        136,
+        192,
+        224,
+        416,
+        512,
+        630
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 136
+        },
+        {
+          "start": 136,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 416
+        },
+        {
+          "start": 416,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 630
+        },
+        {
+          "start": 630,
+          "end": 767
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 630
+    },
+    {
+      "episode_id": 13249,
+      "task_id": 70,
+      "n_frames": 822,
+      "boundaries": [
+        208,
+        392,
+        528,
+        677
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 392
+        },
+        {
+          "start": 392,
+          "end": 528
+        },
+        {
+          "start": 528,
+          "end": 677
+        },
+        {
+          "start": 677,
+          "end": 822
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 677
+    },
+    {
+      "episode_id": 13252,
+      "task_id": 70,
+      "n_frames": 776,
+      "boundaries": [
+        200,
+        312,
+        352,
+        472,
+        640
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 312
+        },
+        {
+          "start": 312,
+          "end": 352
+        },
+        {
+          "start": 352,
+          "end": 472
+        },
+        {
+          "start": 472,
+          "end": 640
+        },
+        {
+          "start": 640,
+          "end": 776
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 640
+    },
+    {
+      "episode_id": 13142,
+      "task_id": 71,
+      "n_frames": 791,
+      "boundaries": [
+        160,
+        200,
+        504,
+        649
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 504
+        },
+        {
+          "start": 504,
+          "end": 649
+        },
+        {
+          "start": 649,
+          "end": 791
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 649
+    },
+    {
+      "episode_id": 13146,
+      "task_id": 71,
+      "n_frames": 747,
+      "boundaries": [
+        184,
+        248,
+        288,
+        312,
+        352,
+        392,
+        512,
+        573
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 288
+        },
+        {
+          "start": 288,
+          "end": 312
+        },
+        {
+          "start": 312,
+          "end": 352
+        },
+        {
+          "start": 352,
+          "end": 392
+        },
+        {
+          "start": 392,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 573
+        },
+        {
+          "start": 573,
+          "end": 747
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 573
+    },
+    {
+      "episode_id": 13157,
+      "task_id": 71,
+      "n_frames": 495,
+      "boundaries": [
+        152,
+        184,
+        342
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 342
+        },
+        {
+          "start": 342,
+          "end": 495
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 342
+    },
+    {
+      "episode_id": 13169,
+      "task_id": 71,
+      "n_frames": 529,
+      "boundaries": [
+        192,
+        232,
+        352
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 352
+        },
+        {
+          "start": 352,
+          "end": 529
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 365
+    },
+    {
+      "episode_id": 13174,
+      "task_id": 71,
+      "n_frames": 898,
+      "boundaries": [
+        200,
+        360,
+        440,
+        464,
+        496,
+        528,
+        680,
+        712
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 360
+        },
+        {
+          "start": 360,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 464
+        },
+        {
+          "start": 464,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 528
+        },
+        {
+          "start": 528,
+          "end": 680
+        },
+        {
+          "start": 680,
+          "end": 712
+        },
+        {
+          "start": 712,
+          "end": 898
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 726
+    },
+    {
+      "episode_id": 13144,
+      "task_id": 72,
+      "n_frames": 969,
+      "boundaries": [
+        208,
+        240,
+        376,
+        400,
+        496,
+        544,
+        752,
+        776,
+        824
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 376
+        },
+        {
+          "start": 376,
+          "end": 400
+        },
+        {
+          "start": 400,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 544
+        },
+        {
+          "start": 544,
+          "end": 752
+        },
+        {
+          "start": 752,
+          "end": 776
+        },
+        {
+          "start": 776,
+          "end": 824
+        },
+        {
+          "start": 824,
+          "end": 969
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 824
+    },
+    {
+      "episode_id": 13152,
+      "task_id": 72,
+      "n_frames": 897,
+      "boundaries": [
+        176,
+        216,
+        296,
+        344,
+        464,
+        536,
+        732
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 296
+        },
+        {
+          "start": 296,
+          "end": 344
+        },
+        {
+          "start": 344,
+          "end": 464
+        },
+        {
+          "start": 464,
+          "end": 536
+        },
+        {
+          "start": 536,
+          "end": 732
+        },
+        {
+          "start": 732,
+          "end": 897
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 732
+    },
+    {
+      "episode_id": 13173,
+      "task_id": 72,
+      "n_frames": 973,
+      "boundaries": [
+        208,
+        392,
+        440,
+        584,
+        806
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 392
+        },
+        {
+          "start": 392,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 584
+        },
+        {
+          "start": 584,
+          "end": 806
+        },
+        {
+          "start": 806,
+          "end": 973
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 806
+    },
+    {
+      "episode_id": 13231,
+      "task_id": 72,
+      "n_frames": 884,
+      "boundaries": [
+        184,
+        312,
+        464,
+        504,
+        692
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 312
+        },
+        {
+          "start": 312,
+          "end": 464
+        },
+        {
+          "start": 464,
+          "end": 504
+        },
+        {
+          "start": 504,
+          "end": 692
+        },
+        {
+          "start": 692,
+          "end": 884
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 692
+    },
+    {
+      "episode_id": 13254,
+      "task_id": 72,
+      "n_frames": 680,
+      "boundaries": [
+        128,
+        160,
+        192,
+        232,
+        264,
+        493
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 128
+        },
+        {
+          "start": 128,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 264
+        },
+        {
+          "start": 264,
+          "end": 493
+        },
+        {
+          "start": 493,
+          "end": 680
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 493
+    },
+    {
+      "episode_id": 13145,
+      "task_id": 73,
+      "n_frames": 612,
+      "boundaries": [
+        160,
+        192,
+        216,
+        248,
+        288,
+        435
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 288
+        },
+        {
+          "start": 288,
+          "end": 435
+        },
+        {
+          "start": 435,
+          "end": 612
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 435
+    },
+    {
+      "episode_id": 13203,
+      "task_id": 73,
+      "n_frames": 778,
+      "boundaries": [
+        248,
+        456,
+        632
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 456
+        },
+        {
+          "start": 456,
+          "end": 632
+        },
+        {
+          "start": 632,
+          "end": 778
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 632
+    },
+    {
+      "episode_id": 13221,
+      "task_id": 73,
+      "n_frames": 641,
+      "boundaries": [
+        144,
+        208,
+        248,
+        462
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 144
+        },
+        {
+          "start": 144,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 462
+        },
+        {
+          "start": 462,
+          "end": 641
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 462
+    },
+    {
+      "episode_id": 13250,
+      "task_id": 73,
+      "n_frames": 566,
+      "boundaries": [
+        168,
+        200,
+        394
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 394
+        },
+        {
+          "start": 394,
+          "end": 566
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 394
+    },
+    {
+      "episode_id": 13279,
+      "task_id": 73,
+      "n_frames": 494,
+      "boundaries": [
+        168,
+        335
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 335
+        },
+        {
+          "start": 335,
+          "end": 494
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 335
+    },
+    {
+      "episode_id": 13148,
+      "task_id": 74,
+      "n_frames": 651,
+      "boundaries": [
+        160,
+        192,
+        248,
+        272,
+        296,
+        328,
+        512
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 272
+        },
+        {
+          "start": 272,
+          "end": 296
+        },
+        {
+          "start": 296,
+          "end": 328
+        },
+        {
+          "start": 328,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 651
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 512
+    },
+    {
+      "episode_id": 13150,
+      "task_id": 74,
+      "n_frames": 1201,
+      "boundaries": [
+        160,
+        200,
+        240,
+        376,
+        440,
+        496,
+        544,
+        568,
+        664,
+        824,
+        880,
+        1046
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 376
+        },
+        {
+          "start": 376,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 544
+        },
+        {
+          "start": 544,
+          "end": 568
+        },
+        {
+          "start": 568,
+          "end": 664
+        },
+        {
+          "start": 664,
+          "end": 824
+        },
+        {
+          "start": 824,
+          "end": 880
+        },
+        {
+          "start": 880,
+          "end": 1046
+        },
+        {
+          "start": 1046,
+          "end": 1201
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 1046
+    },
+    {
+      "episode_id": 13187,
+      "task_id": 74,
+      "n_frames": 678,
+      "boundaries": [
+        200,
+        232,
+        264,
+        328,
+        448,
+        495
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 264
+        },
+        {
+          "start": 264,
+          "end": 328
+        },
+        {
+          "start": 328,
+          "end": 448
+        },
+        {
+          "start": 448,
+          "end": 495
+        },
+        {
+          "start": 495,
+          "end": 678
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 495
+    },
+    {
+      "episode_id": 13195,
+      "task_id": 74,
+      "n_frames": 931,
+      "boundaries": [
+        104,
+        168,
+        280,
+        384,
+        416,
+        448,
+        480,
+        512,
+        560,
+        769
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 104
+        },
+        {
+          "start": 104,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 280
+        },
+        {
+          "start": 280,
+          "end": 384
+        },
+        {
+          "start": 384,
+          "end": 416
+        },
+        {
+          "start": 416,
+          "end": 448
+        },
+        {
+          "start": 448,
+          "end": 480
+        },
+        {
+          "start": 480,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 560
+        },
+        {
+          "start": 560,
+          "end": 769
+        },
+        {
+          "start": 769,
+          "end": 931
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 769
+    },
+    {
+      "episode_id": 13198,
+      "task_id": 74,
+      "n_frames": 1026,
+      "boundaries": [
+        208,
+        240,
+        280,
+        400,
+        552,
+        592,
+        648,
+        840
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 280
+        },
+        {
+          "start": 280,
+          "end": 400
+        },
+        {
+          "start": 400,
+          "end": 552
+        },
+        {
+          "start": 552,
+          "end": 592
+        },
+        {
+          "start": 592,
+          "end": 648
+        },
+        {
+          "start": 648,
+          "end": 840
+        },
+        {
+          "start": 840,
+          "end": 1026
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 840
+    },
+    {
+      "episode_id": 13151,
+      "task_id": 75,
+      "n_frames": 798,
+      "boundaries": [
+        192,
+        248,
+        296,
+        320,
+        344,
+        392,
+        634
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 296
+        },
+        {
+          "start": 296,
+          "end": 320
+        },
+        {
+          "start": 320,
+          "end": 344
+        },
+        {
+          "start": 344,
+          "end": 392
+        },
+        {
+          "start": 392,
+          "end": 634
+        },
+        {
+          "start": 634,
+          "end": 798
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 634
+    },
+    {
+      "episode_id": 13154,
+      "task_id": 75,
+      "n_frames": 671,
+      "boundaries": [
+        168,
+        192,
+        256,
+        496
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 256
+        },
+        {
+          "start": 256,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 671
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 496
+    },
+    {
+      "episode_id": 13215,
+      "task_id": 75,
+      "n_frames": 643,
+      "boundaries": [
+        152,
+        176,
+        224,
+        476
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 476
+        },
+        {
+          "start": 476,
+          "end": 643
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 476
+    },
+    {
+      "episode_id": 13223,
+      "task_id": 75,
+      "n_frames": 646,
+      "boundaries": [
+        224,
+        248,
+        473
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 473
+        },
+        {
+          "start": 473,
+          "end": 646
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 473
+    },
+    {
+      "episode_id": 13236,
+      "task_id": 75,
+      "n_frames": 906,
+      "boundaries": [
+        104,
+        128,
+        248,
+        280,
+        592,
+        741
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 104
+        },
+        {
+          "start": 104,
+          "end": 128
+        },
+        {
+          "start": 128,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 280
+        },
+        {
+          "start": 280,
+          "end": 592
+        },
+        {
+          "start": 592,
+          "end": 741
+        },
+        {
+          "start": 741,
+          "end": 906
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 741
+    },
+    {
+      "episode_id": 13155,
+      "task_id": 76,
+      "n_frames": 497,
+      "boundaries": [
+        168,
+        192,
+        355
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 355
+        },
+        {
+          "start": 355,
+          "end": 497
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 355
+    },
+    {
+      "episode_id": 13196,
+      "task_id": 76,
+      "n_frames": 529,
+      "boundaries": [
+        128,
+        152,
+        176,
+        360
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 128
+        },
+        {
+          "start": 128,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 360
+        },
+        {
+          "start": 360,
+          "end": 529
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 360
+    },
+    {
+      "episode_id": 13208,
+      "task_id": 76,
+      "n_frames": 882,
+      "boundaries": [
+        232,
+        698
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 698
+        },
+        {
+          "start": 698,
+          "end": 882
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 698
+    },
+    {
+      "episode_id": 13224,
+      "task_id": 76,
+      "n_frames": 659,
+      "boundaries": [
+        168,
+        224,
+        454
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 454
+        },
+        {
+          "start": 454,
+          "end": 659
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 454
+    },
+    {
+      "episode_id": 13257,
+      "task_id": 76,
+      "n_frames": 699,
+      "boundaries": [
+        208,
+        392,
+        535
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 392
+        },
+        {
+          "start": 392,
+          "end": 535
+        },
+        {
+          "start": 535,
+          "end": 699
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 535
+    },
+    {
+      "episode_id": 13156,
+      "task_id": 77,
+      "n_frames": 546,
+      "boundaries": [
+        200,
+        378
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 378
+        },
+        {
+          "start": 378,
+          "end": 546
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 378
+    },
+    {
+      "episode_id": 13220,
+      "task_id": 77,
+      "n_frames": 669,
+      "boundaries": [
+        176,
+        232,
+        461
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 461
+        },
+        {
+          "start": 461,
+          "end": 669
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 461
+    },
+    {
+      "episode_id": 13260,
+      "task_id": 77,
+      "n_frames": 655,
+      "boundaries": [
+        168,
+        515
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 515
+        },
+        {
+          "start": 515,
+          "end": 655
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 515
+    },
+    {
+      "episode_id": 13276,
+      "task_id": 77,
+      "n_frames": 818,
+      "boundaries": [
+        336,
+        424,
+        696
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 424
+        },
+        {
+          "start": 424,
+          "end": 696
+        },
+        {
+          "start": 696,
+          "end": 818
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 696
+    },
+    {
+      "episode_id": 13288,
+      "task_id": 77,
+      "n_frames": 1094,
+      "boundaries": [
+        144,
+        336,
+        496,
+        592,
+        941
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 144
+        },
+        {
+          "start": 144,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 592
+        },
+        {
+          "start": 592,
+          "end": 941
+        },
+        {
+          "start": 941,
+          "end": 1094
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 941
+    },
+    {
+      "episode_id": 13164,
+      "task_id": 78,
+      "n_frames": 737,
+      "boundaries": [
+        160,
+        610
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 610
+        },
+        {
+          "start": 610,
+          "end": 737
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 610
+    },
+    {
+      "episode_id": 13241,
+      "task_id": 78,
+      "n_frames": 595,
+      "boundaries": [
+        192,
+        420
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 420
+        },
+        {
+          "start": 420,
+          "end": 595
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 420
+    },
+    {
+      "episode_id": 13297,
+      "task_id": 78,
+      "n_frames": 454,
+      "boundaries": [
+        160,
+        320
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 320
+        },
+        {
+          "start": 320,
+          "end": 454
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 320
+    },
+    {
+      "episode_id": 13309,
+      "task_id": 78,
+      "n_frames": 788,
+      "boundaries": [
+        40,
+        240,
+        384,
+        440,
+        623
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 40
+        },
+        {
+          "start": 40,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 384
+        },
+        {
+          "start": 384,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 623
+        },
+        {
+          "start": 623,
+          "end": 788
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 623
+    },
+    {
+      "episode_id": 13334,
+      "task_id": 78,
+      "n_frames": 668,
+      "boundaries": [
+        216,
+        535
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 216
+        },
+        {
+          "start": 216,
+          "end": 535
+        },
+        {
+          "start": 535,
+          "end": 668
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 535
+    },
+    {
+      "episode_id": 13170,
+      "task_id": 79,
+      "n_frames": 663,
+      "boundaries": [
+        136,
+        160,
+        184,
+        546
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 136
+        },
+        {
+          "start": 136,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 546
+        },
+        {
+          "start": 546,
+          "end": 663
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 546
+    },
+    {
+      "episode_id": 13180,
+      "task_id": 79,
+      "n_frames": 890,
+      "boundaries": [
+        168,
+        192,
+        652
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 652
+        },
+        {
+          "start": 652,
+          "end": 890
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 652
+    },
+    {
+      "episode_id": 13222,
+      "task_id": 79,
+      "n_frames": 823,
+      "boundaries": [
+        32,
+        224,
+        272,
+        608
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 272
+        },
+        {
+          "start": 272,
+          "end": 608
+        },
+        {
+          "start": 608,
+          "end": 823
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 621
+    },
+    {
+      "episode_id": 13247,
+      "task_id": 79,
+      "n_frames": 1343,
+      "boundaries": [
+        152,
+        184,
+        304,
+        408,
+        440,
+        488,
+        512,
+        536,
+        568,
+        600,
+        624,
+        648,
+        744,
+        768,
+        880,
+        960,
+        1008,
+        1199
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 304
+        },
+        {
+          "start": 304,
+          "end": 408
+        },
+        {
+          "start": 408,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 488
+        },
+        {
+          "start": 488,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 536
+        },
+        {
+          "start": 536,
+          "end": 568
+        },
+        {
+          "start": 568,
+          "end": 600
+        },
+        {
+          "start": 600,
+          "end": 624
+        },
+        {
+          "start": 624,
+          "end": 648
+        },
+        {
+          "start": 648,
+          "end": 744
+        },
+        {
+          "start": 744,
+          "end": 768
+        },
+        {
+          "start": 768,
+          "end": 880
+        },
+        {
+          "start": 880,
+          "end": 960
+        },
+        {
+          "start": 960,
+          "end": 1008
+        },
+        {
+          "start": 1008,
+          "end": 1199
+        },
+        {
+          "start": 1199,
+          "end": 1343
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 1199
+    },
+    {
+      "episode_id": 13259,
+      "task_id": 79,
+      "n_frames": 748,
+      "boundaries": [
+        104,
+        248,
+        272,
+        296,
+        400,
+        580
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 104
+        },
+        {
+          "start": 104,
+          "end": 248
+        },
+        {
+          "start": 248,
+          "end": 272
+        },
+        {
+          "start": 272,
+          "end": 296
+        },
+        {
+          "start": 296,
+          "end": 400
+        },
+        {
+          "start": 400,
+          "end": 580
+        },
+        {
+          "start": 580,
+          "end": 748
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 580
+    },
+    {
+      "episode_id": 13178,
+      "task_id": 80,
+      "n_frames": 752,
+      "boundaries": [
+        192,
+        224,
+        288,
+        320,
+        360,
+        570
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 288
+        },
+        {
+          "start": 288,
+          "end": 320
+        },
+        {
+          "start": 320,
+          "end": 360
+        },
+        {
+          "start": 360,
+          "end": 570
+        },
+        {
+          "start": 570,
+          "end": 752
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 570
+    },
+    {
+      "episode_id": 13199,
+      "task_id": 80,
+      "n_frames": 936,
+      "boundaries": [
+        152,
+        280,
+        304,
+        336,
+        416,
+        528,
+        568,
+        616,
+        760
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 152
+        },
+        {
+          "start": 152,
+          "end": 280
+        },
+        {
+          "start": 280,
+          "end": 304
+        },
+        {
+          "start": 304,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 416
+        },
+        {
+          "start": 416,
+          "end": 528
+        },
+        {
+          "start": 528,
+          "end": 568
+        },
+        {
+          "start": 568,
+          "end": 616
+        },
+        {
+          "start": 616,
+          "end": 760
+        },
+        {
+          "start": 760,
+          "end": 936
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 773
+    },
+    {
+      "episode_id": 13219,
+      "task_id": 80,
+      "n_frames": 543,
+      "boundaries": [
+        168,
+        339
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 168
+        },
+        {
+          "start": 168,
+          "end": 339
+        },
+        {
+          "start": 339,
+          "end": 543
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 339
+    },
+    {
+      "episode_id": 13246,
+      "task_id": 80,
+      "n_frames": 720,
+      "boundaries": [
+        112,
+        144,
+        192,
+        240,
+        272,
+        328,
+        400,
+        575
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 112
+        },
+        {
+          "start": 112,
+          "end": 144
+        },
+        {
+          "start": 144,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 272
+        },
+        {
+          "start": 272,
+          "end": 328
+        },
+        {
+          "start": 328,
+          "end": 400
+        },
+        {
+          "start": 400,
+          "end": 575
+        },
+        {
+          "start": 575,
+          "end": 720
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 575
+    },
+    {
+      "episode_id": 13255,
+      "task_id": 80,
+      "n_frames": 1072,
+      "boundaries": [
+        192,
+        232,
+        400,
+        504,
+        536,
+        560,
+        640,
+        728,
+        906
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 400
+        },
+        {
+          "start": 400,
+          "end": 504
+        },
+        {
+          "start": 504,
+          "end": 536
+        },
+        {
+          "start": 536,
+          "end": 560
+        },
+        {
+          "start": 560,
+          "end": 640
+        },
+        {
+          "start": 640,
+          "end": 728
+        },
+        {
+          "start": 728,
+          "end": 906
+        },
+        {
+          "start": 906,
+          "end": 1072
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 906
+    },
+    {
+      "episode_id": 13188,
+      "task_id": 81,
+      "n_frames": 597,
+      "boundaries": [
+        32,
+        232,
+        450
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 32
+        },
+        {
+          "start": 32,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 450
+        },
+        {
+          "start": 450,
+          "end": 597
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 450
+    },
+    {
+      "episode_id": 13191,
+      "task_id": 81,
+      "n_frames": 991,
+      "boundaries": [
+        136,
+        200,
+        320,
+        360,
+        528,
+        768,
+        824
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 136
+        },
+        {
+          "start": 136,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 320
+        },
+        {
+          "start": 320,
+          "end": 360
+        },
+        {
+          "start": 360,
+          "end": 528
+        },
+        {
+          "start": 528,
+          "end": 768
+        },
+        {
+          "start": 768,
+          "end": 824
+        },
+        {
+          "start": 824,
+          "end": 991
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 833
+    },
+    {
+      "episode_id": 13229,
+      "task_id": 81,
+      "n_frames": 666,
+      "boundaries": [
+        40,
+        192,
+        224,
+        256,
+        481
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 40
+        },
+        {
+          "start": 40,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 256
+        },
+        {
+          "start": 256,
+          "end": 481
+        },
+        {
+          "start": 481,
+          "end": 666
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 481
+    },
+    {
+      "episode_id": 13263,
+      "task_id": 81,
+      "n_frames": 565,
+      "boundaries": [
+        192,
+        224,
+        401
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 401
+        },
+        {
+          "start": 401,
+          "end": 565
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 401
+    },
+    {
+      "episode_id": 13290,
+      "task_id": 81,
+      "n_frames": 853,
+      "boundaries": [
+        176,
+        208,
+        400,
+        512,
+        536,
+        720
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 176
+        },
+        {
+          "start": 176,
+          "end": 208
+        },
+        {
+          "start": 208,
+          "end": 400
+        },
+        {
+          "start": 400,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 536
+        },
+        {
+          "start": 536,
+          "end": 720
+        },
+        {
+          "start": 720,
+          "end": 853
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 720
+    },
+    {
+      "episode_id": 13190,
+      "task_id": 82,
+      "n_frames": 640,
+      "boundaries": [
+        128,
+        200,
+        240,
+        288,
+        464,
+        496
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 128
+        },
+        {
+          "start": 128,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 288
+        },
+        {
+          "start": 288,
+          "end": 464
+        },
+        {
+          "start": 464,
+          "end": 496
+        },
+        {
+          "start": 496,
+          "end": 640
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 496
+    },
+    {
+      "episode_id": 13204,
+      "task_id": 82,
+      "n_frames": 622,
+      "boundaries": [
+        128,
+        160,
+        192,
+        240,
+        304,
+        336,
+        440,
+        472
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 128
+        },
+        {
+          "start": 128,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 240
+        },
+        {
+          "start": 240,
+          "end": 304
+        },
+        {
+          "start": 304,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 440
+        },
+        {
+          "start": 440,
+          "end": 472
+        },
+        {
+          "start": 472,
+          "end": 622
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 488
+    },
+    {
+      "episode_id": 13216,
+      "task_id": 82,
+      "n_frames": 692,
+      "boundaries": [
+        192,
+        264,
+        512,
+        541
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 192
+        },
+        {
+          "start": 192,
+          "end": 264
+        },
+        {
+          "start": 264,
+          "end": 512
+        },
+        {
+          "start": 512,
+          "end": 541
+        },
+        {
+          "start": 541,
+          "end": 692
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 541
+    },
+    {
+      "episode_id": 13256,
+      "task_id": 82,
+      "n_frames": 563,
+      "boundaries": [
+        40,
+        144,
+        200,
+        232,
+        336,
+        383
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 40
+        },
+        {
+          "start": 40,
+          "end": 144
+        },
+        {
+          "start": 144,
+          "end": 200
+        },
+        {
+          "start": 200,
+          "end": 232
+        },
+        {
+          "start": 232,
+          "end": 336
+        },
+        {
+          "start": 336,
+          "end": 383
+        },
+        {
+          "start": 383,
+          "end": 563
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 383
+    },
+    {
+      "episode_id": 13281,
+      "task_id": 82,
+      "n_frames": 567,
+      "boundaries": [
+        160,
+        184,
+        224,
+        362
+      ],
+      "skills": [
+        {
+          "start": 0,
+          "end": 160
+        },
+        {
+          "start": 160,
+          "end": 184
+        },
+        {
+          "start": 184,
+          "end": 224
+        },
+        {
+          "start": 224,
+          "end": 362
+        },
+        {
+          "start": 362,
+          "end": 567
+        }
+      ],
+      "threshold": 0.07313217286928554,
+      "terminal_mask_start": 362
+    }
+  ]
+}

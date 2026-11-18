@@ -1,0 +1,50 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: Currently logged in as: dohyeonlee (dohyeonlee-postech) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run r99m82xi
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data1/dohyeon/Skill_Boundary_Detector/lerobot/wandb/run-20260816_225415-r99m82xi
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run libero_90_full_full_state_obs20_std_episodemean_100p_fsq333_pos_couple_LR6_raw_entH
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/r99m82xi
+/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py:149: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+Loading weights:   0%|          | 0/211 [00:00<?, ?it/s]Loading weights:  19%|█▉        | 40/211 [00:00<00:00, 343.13it/s]Loading weights: 100%|██████████| 211/211 [00:00<00:00, 1086.65it/s]
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+Traceback (most recent call last):
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/train_FSQ.py", line 453, in <module>
+    main(tyro.cli(Args))
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/train_FSQ.py", line 429, in main
+    train_spline_fsqae(
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py", line 2987, in train_spline_fsqae
+    metrics, end_metrics, count, code_indices = step(batch, True, batch_index)
+                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py", line 2956, in step
+    loss, metrics = fsq_reconstruction_loss(output, moved, cfg)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py", line 2416, in fsq_reconstruction_loss
+    pos_weight = torch.as_tensor(cfg.end_pos_weight, device=output["term_logits"].device)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: CUDA error: unknown error
+Search for `cudaErrorUnknown' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+

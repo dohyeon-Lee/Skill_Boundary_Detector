@@ -1,0 +1,47 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: W&B API key is configured. Use `wandb login --relogin` to force relogin
+wandb: setting up run a11i57bx
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data1/dohyeon/Skill_Boundary_Detector/lerobot/wandb/run-20260809_040741-a11i57bx
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run libero_90_full_full_state_obs20_std_episodemean_100p_fsq39_constLR_recononly_LRdown
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/a11i57bx
+/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py:146: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+wandb: updating run metadata
+wandb: uploading output.log; uploading wandb-summary.json
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml; uploading history steps 1995-1999, summary, console lines 245-247
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: 
+wandb: Run history:
+wandb:       codebook/boundary_margin_mean_pct ▇▆█▇▇▆▇▆▆▆▆▇▆▅▆▅▄▅▅▄▃▃▄▄▃▃▃▃▃▃▃▂▂▂▂▂▂▁▁▁
+wandb:        codebook/boundary_margin_p10_pct ▇▇▇█▇▇▇▆▆▅▆▅▅▅▆▄▄▄▃▄▄▃▃▃▃▃▃▃▃▃▃▂▃▂▃▃▂▂▂▁
+wandb:                     codebook/change_pct █▄▄▃▁▃▂▂▂▂▂▂▂▂▃▂▁▂▂▃▂▂▂▂▃▂▁▁▂▂▁▂▂▁▂▂▂▂▁▂
+wandb:            codebook/full_active_entries ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:           codebook/full_utilization_pct ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:                codebook/interval_epochs ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:          codebook/matched_retention_pct ▁▅▅▅▇▇▇▇▇▇▇▇▇▇▇▇▇▇██▇▇█▇▇▇▆▇███▇██▇▇▇▇▇▇
+wandb:              codebook/near_boundary_pct ▁▁▂▁▁▂▂▂▂▃▃▃▃▃▃▄▄▄▄▅▄▄▅▄▅▆▆▅▆▆▇▆▅▆█▇▇▇██
+wandb:                  codebook/retention_pct ▁▅▅▆▆█▆▇▇▇▇▇█▇▇▆▇▇██▇▇▇▇▇▇▇█▇█▇▇███▇██▇█
+wandb: codebook_epoch/boundary_margin_mean_pct ▆▆██▆▇▆▆▇▆▆▆▆▆▅▅▅▅▅▄▅▅▅▃▄▃▃▄▄▃▃▃▃▂▂▂▂▂▂▁
+wandb:                                     +44 ...
+wandb: 
+wandb: Run summary:
+wandb:       codebook/boundary_margin_mean_pct 33.27748
+wandb:        codebook/boundary_margin_p10_pct 3.11774
+wandb:                     codebook/change_pct 25.23839
+wandb:            codebook/full_active_entries 27
+wandb:           codebook/full_utilization_pct 100
+wandb:                codebook/interval_epochs 25
+wandb:          codebook/matched_retention_pct 74.76161
+wandb:              codebook/near_boundary_pct 27.29703
+wandb:                  codebook/retention_pct 74.76161
+wandb: codebook_epoch/boundary_margin_mean_pct 33.27748
+wandb:                                     +44 ...
+wandb: 
+wandb: 🚀 View run libero_90_full_full_state_obs20_std_episodemean_100p_fsq39_constLR_recononly_LRdown at: https://wandb.ai/dohyeonlee-postech/VAE_train/runs/a11i57bx
+wandb: ⭐️ View project at: https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20260809_040741-a11i57bx/logs

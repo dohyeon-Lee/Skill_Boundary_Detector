@@ -69,7 +69,7 @@ VSA 업로드는 사용자가 승인한 기존 **비공개 dataset 저장소**�
 벤치마크용 HF 우선/직접 전송 코드는 `.cache/runpod_checks/`의 검증 도구다.
 기존 `submit_eval.sh`에 자동 전송 기능을 연결한 상태는 아니다.
 
-검증 중 `runpod_ssh.sh`가 목록 API에서 직접 SSH 주소를 받지 못하는 문제도 수정했다.
+검증 중 `tools/runpod/runpod_ssh.sh`가 목록 API에서 직접 SSH 주소를 받지 못하는 문제도 수정했다.
 선택한 Pod를 개별 조회하면 주소가 제공되는 실제 응답을 확인했고, 회귀 테스트 37개가 통과했다.
 
 로컬 상세 기록은 `.cache/runpod_checks/direct-transfer-20261109-065316/`의

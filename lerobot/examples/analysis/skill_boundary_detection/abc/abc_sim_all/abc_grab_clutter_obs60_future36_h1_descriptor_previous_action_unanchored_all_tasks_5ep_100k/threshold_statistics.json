@@ -1,0 +1,22 @@
+{
+  "previous_action_unanchored": {
+    "scope": "dataset",
+    "estimator": "mean",
+    "target": "score",
+    "scale": 1.0,
+    "terminal_mask_frames": 0,
+    "groups": {
+      "dataset": {
+        "threshold": 0.03292190291965563,
+        "episodes": 120,
+        "points": 8514
+      }
+    },
+    "calibration": {
+      "source": "selected",
+      "episodes": 120,
+      "evaluation_episodes": 120,
+      "episode_ids_sha256": "7d3d700f2114dfd2dbe961533f7a1562d2ad81f4a2a03037b2f459d1282e063c"
+    }
+  }
+}

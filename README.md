@@ -19,7 +19,7 @@
 Python 3.9 이상이 필요하며 Windows에서는 Git Bash를 사용한다.
 
 ```bash
-bash runpod_ssh.sh   # 새 Pod의 IP·포트로 Host runpod 갱신
+bash tools/runpod/runpod_ssh.sh   # 새 Pod의 IP·포트로 Host runpod 갱신
 ssh runpod
 ```
 

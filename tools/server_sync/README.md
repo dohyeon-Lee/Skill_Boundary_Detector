@@ -48,7 +48,7 @@ SSH 세션을 끊어도 앱을 유지하려면 외부 서버에서 tmux 안에 �
 설정·전송 접수 이력은 같은 `.slurm_monitor/state.json`에서 이어받습니다. 기존 모니터를
 유지해야 할 때는 `--reuse-slurm-port 8767`로 연결할 수 있습니다. 이때 통합 앱은 별도
 감시·알림 프로세스를 추가하지 않습니다. `--slurm-state-dir`로 상태 폴더를 바꿀 수 있습니다.
-기존 `slurm_monitor_ui.sh` 명령도 이제 통합 앱으로 연결됩니다.
+Slurm Desk를 포함한 통합 화면은 `sync_server_ui.sh`로 실행합니다.
 
 ## 실행 서버의 디스크 용량
 

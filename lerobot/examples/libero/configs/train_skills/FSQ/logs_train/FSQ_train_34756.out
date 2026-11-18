@@ -1,0 +1,240 @@
+START FSQ TRAIN
+Node       : node100
+Inputs     : /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs
+Output     : /data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/FSQ/libero_90_full_full_state_obs20_std_episodemean_100p_fsq39_constLR_recononly
+HF cache   : /data1/dohyeon/Skill_Boundary_Detector/.cache/huggingface
+Grad ckpt  : false
+Sun Aug  9 03:17:44 2026       
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.129.03             Driver Version: 535.129.03   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA L40S                    On  | 00000000:41:00.0 Off |                    0 |
+| N/A   41C    P8              35W / 350W |      3MiB / 46068MiB |      0%      Default |
+|                                         |                      |                  N/A |
++-----------------------------------------+----------------------+----------------------+
+                                                                                         
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
+|  No running processes found                                                           |
++---------------------------------------------------------------------------------------+
+No checkpoint found, training from scratch
+[FSQ] Loaded 11221 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/FSQ_dataset/libero_90_full_full/FSQ_inputs/seg_libero_90_full_full_state_obs20_ck100000_std_episodemean_100p/skillset/skills
+[FSQ] Skill lengths — min:10 max:186 mean:50.7
+[FSQ] encoder input mode: optimal
+[FSQ] encoder_min: [-4.4140e-01 -5.4160e-01 -3.6770e-01 -3.3431e+00 -3.4451e+00 -2.3470e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] encoder_max: [4.1700e-01 5.3900e-01 3.7550e-01 1.9227e+00 3.9632e+00 2.6123e+00
+ 4.6400e-02 1.7000e-03]
+[FSQ] optimal start-EEF min/max: [-0.4829 -0.3646  0.446   0.104  -4.0966 -2.5381] / [0.1926 0.4818 1.3089 4.5462 3.1218 1.8202]
+[FSQ] state q01/q99: [-4.0200e-01 -2.8250e-01  4.5820e-01  1.2572e+00 -2.7793e+00 -1.3225e+00
+  1.6000e-03 -4.0000e-02] / [ 1.2720e-01  3.1970e-01  1.2555e+00  3.8244e+00  2.3465e+00  6.1010e-01
+  4.0200e-02 -1.7000e-03]
+[FSQ] action q01/q99: [-0.6295 -0.8705 -0.8973 -0.1232 -0.1564 -0.2796 -1.    ] / [0.8518 0.8464 0.9375 0.1875 0.1773 0.3493 1.    ]
+[FSQ] state_min:  [-4.8620e-01 -3.9710e-01  4.4550e-01 -7.4810e-01 -4.3631e+00 -3.2124e+00
+ -2.6000e-03 -4.2600e-02]
+[FSQ] state_max:  [2.0270e-01 4.8810e-01 1.3585e+00 4.8434e+00 4.0424e+00 2.4015e+00
+ 4.6400e-02 1.7000e-03]
+[FSQ] length_min/max: 10 / 186
+[FSQ-v3] trajectories=11221 train=10099 val=1122 fp=a98f0ca8be48
+[FSQ-v3] data workers: train=8 val=0; validation every=25
+[FSQ-v3] gradient checkpointing: disabled
+[FSQ-v3]    1/2000 train=0.1434
+[FSQ-v3]   10/2000 train=0.0739
+[FSQ-v3]   20/2000 train=0.0649
+[FSQ-v3]   25/2000 train=0.0621 val=0.0597 action=0.0597 prog=0.0000 end=0.0000 select=0.0597 code-retain=baseline(22/27 active) boundary-margin=45.7% p10=9.7% near=10.2%
+[FSQ-v3]   30/2000 train=0.0600
+[FSQ-v3]   40/2000 train=0.0571
+[FSQ-v3]   50/2000 train=0.0555 val=0.0532 action=0.0532 prog=0.0000 end=0.0000 select=0.0532 code-retain(25->50)=38.8% changed=61.2% matched=48.3% boundary-margin=43.3% p10=7.1% near=14.1%
+[FSQ-v3]   60/2000 train=0.0532
+[FSQ-v3]   70/2000 train=0.0516
+[FSQ-v3]   75/2000 train=0.0517 val=0.0494 action=0.0494 prog=0.0000 end=0.0000 select=0.0494 code-retain(50->75)=57.1% changed=42.9% matched=58.2% boundary-margin=44.4% p10=8.2% near=12.3%
+[FSQ-v3]   80/2000 train=0.0507
+[FSQ-v3]   90/2000 train=0.0500
+[FSQ-v3]  100/2000 train=0.0491 val=0.0482 action=0.0482 prog=0.0000 end=0.0000 select=0.0482 code-retain(75->100)=54.5% changed=45.5% matched=58.7% boundary-margin=39.6% p10=6.3% near=16.2%
+[FSQ-v3]  110/2000 train=0.0480
+[FSQ-v3]  120/2000 train=0.0476
+[FSQ-v3]  125/2000 train=0.0475 val=0.0479 action=0.0479 prog=0.0000 end=0.0000 select=0.0479 code-retain(100->125)=60.4% changed=39.6% matched=60.4% boundary-margin=39.5% p10=6.4% near=16.0%
+[FSQ-v3]  130/2000 train=0.0469
+[FSQ-v3]  140/2000 train=0.0463
+[FSQ-v3]  150/2000 train=0.0463 val=0.0470 action=0.0470 prog=0.0000 end=0.0000 select=0.0470 code-retain(125->150)=68.8% changed=31.2% matched=68.8% boundary-margin=38.8% p10=6.0% near=16.5%
+[FSQ-v3]  160/2000 train=0.0454
+[FSQ-v3]  170/2000 train=0.0456
+[FSQ-v3]  175/2000 train=0.0449 val=0.0468 action=0.0468 prog=0.0000 end=0.0000 select=0.0468 code-retain(150->175)=70.5% changed=29.5% matched=70.5% boundary-margin=39.2% p10=6.5% near=15.8%
+[FSQ-v3]  180/2000 train=0.0447
+[FSQ-v3]  190/2000 train=0.0444
+[FSQ-v3]  200/2000 train=0.0439 val=0.0470 action=0.0470 prog=0.0000 end=0.0000 select=0.0470 code-retain(175->200)=71.9% changed=28.1% matched=71.9% boundary-margin=37.2% p10=5.2% near=19.0%
+[FSQ-v3]  210/2000 train=0.0444
+[FSQ-v3]  220/2000 train=0.0435
+[FSQ-v3]  225/2000 train=0.0436 val=0.0465 action=0.0465 prog=0.0000 end=0.0000 select=0.0465 code-retain(200->225)=63.9% changed=36.1% matched=63.9% boundary-margin=35.9% p10=4.8% near=20.9%
+[FSQ-v3]  230/2000 train=0.0429
+[FSQ-v3]  240/2000 train=0.0431
+[FSQ-v3]  250/2000 train=0.0432 val=0.0461 action=0.0461 prog=0.0000 end=0.0000 select=0.0461 code-retain(225->250)=54.3% changed=45.7% matched=54.3% boundary-margin=33.9% p10=3.9% near=24.2%
+[FSQ-v3]  260/2000 train=0.0433
+[FSQ-v3]  270/2000 train=0.0425
+[FSQ-v3]  275/2000 train=0.0428 val=0.0468 action=0.0468 prog=0.0000 end=0.0000 select=0.0468 code-retain(250->275)=61.8% changed=38.2% matched=61.8% boundary-margin=36.2% p10=4.8% near=21.0%
+[FSQ-v3]  280/2000 train=0.0423
+[FSQ-v3]  290/2000 train=0.0418
+[FSQ-v3]  300/2000 train=0.0414 val=0.0474 action=0.0474 prog=0.0000 end=0.0000 select=0.0474 code-retain(275->300)=70.9% changed=29.1% matched=70.9% boundary-margin=34.3% p10=3.4% near=25.6%
+[FSQ-v3]  310/2000 train=0.0420
+[FSQ-v3]  320/2000 train=0.0410
+[FSQ-v3]  325/2000 train=0.0410 val=0.0461 action=0.0461 prog=0.0000 end=0.0000 select=0.0461 code-retain(300->325)=64.0% changed=36.0% matched=64.0% boundary-margin=33.3% p10=3.7% near=25.0%
+[FSQ-v3]  330/2000 train=0.0406
+[FSQ-v3]  340/2000 train=0.0405
+[FSQ-v3]  350/2000 train=0.0407 val=0.0464 action=0.0464 prog=0.0000 end=0.0000 select=0.0464 code-retain(325->350)=65.6% changed=34.4% matched=65.6% boundary-margin=33.5% p10=3.1% near=27.5%
+[FSQ-v3]  360/2000 train=0.0402
+[FSQ-v3]  370/2000 train=0.0398
+[FSQ-v3]  375/2000 train=0.0398 val=0.0447 action=0.0447 prog=0.0000 end=0.0000 select=0.0447 code-retain(350->375)=68.8% changed=31.2% matched=68.8% boundary-margin=32.5% p10=3.3% near=27.8%
+[FSQ-v3]  380/2000 train=0.0395
+[FSQ-v3]  390/2000 train=0.0394
+[FSQ-v3]  400/2000 train=0.0390 val=0.0457 action=0.0457 prog=0.0000 end=0.0000 select=0.0457 code-retain(375->400)=70.8% changed=29.2% matched=70.8% boundary-margin=31.7% p10=2.6% near=29.2%
+[FSQ-v3]  410/2000 train=0.0393
+[FSQ-v3]  420/2000 train=0.0385
+[FSQ-v3]  425/2000 train=0.0385 val=0.0449 action=0.0449 prog=0.0000 end=0.0000 select=0.0449 code-retain(400->425)=67.7% changed=32.3% matched=67.7% boundary-margin=31.3% p10=2.8% near=29.6%
+[FSQ-v3]  430/2000 train=0.0386
+[FSQ-v3]  440/2000 train=0.0384
+[FSQ-v3]  450/2000 train=0.0385 val=0.0451 action=0.0451 prog=0.0000 end=0.0000 select=0.0451 code-retain(425->450)=64.0% changed=36.0% matched=64.0% boundary-margin=31.0% p10=2.8% near=30.5%
+[FSQ-v3]  460/2000 train=0.0379
+[FSQ-v3]  470/2000 train=0.0384
+[FSQ-v3]  475/2000 train=0.0381 val=0.0459 action=0.0459 prog=0.0000 end=0.0000 select=0.0459 code-retain(450->475)=64.2% changed=35.8% matched=64.2% boundary-margin=32.8% p10=3.7% near=26.6%
+[FSQ-v3]  480/2000 train=0.0374
+[FSQ-v3]  490/2000 train=0.0378
+[FSQ-v3]  500/2000 train=0.0379 val=0.0450 action=0.0450 prog=0.0000 end=0.0000 select=0.0450 code-retain(475->500)=61.4% changed=38.6% matched=61.4% boundary-margin=31.0% p10=2.5% near=31.7%
+[FSQ-v3]  510/2000 train=0.0374
+[FSQ-v3]  520/2000 train=0.0375
+[FSQ-v3]  525/2000 train=0.0375 val=0.0457 action=0.0457 prog=0.0000 end=0.0000 select=0.0457 code-retain(500->525)=63.2% changed=36.8% matched=63.2% boundary-margin=31.6% p10=2.6% near=30.1%
+[FSQ-v3]  530/2000 train=0.0376
+[FSQ-v3]  540/2000 train=0.0372
+[FSQ-v3]  550/2000 train=0.0380 val=0.0455 action=0.0455 prog=0.0000 end=0.0000 select=0.0455 code-retain(525->550)=65.1% changed=34.9% matched=65.1% boundary-margin=31.2% p10=2.8% near=29.6%
+[FSQ-v3]  560/2000 train=0.0371
+[FSQ-v3]  570/2000 train=0.0370
+[FSQ-v3]  575/2000 train=0.0370 val=0.0470 action=0.0470 prog=0.0000 end=0.0000 select=0.0470 code-retain(550->575)=68.1% changed=31.9% matched=68.1% boundary-margin=31.3% p10=2.5% near=30.5%
+[FSQ-v3]  580/2000 train=0.0370
+[FSQ-v3]  590/2000 train=0.0367
+[FSQ-v3]  600/2000 train=0.0365 val=0.0456 action=0.0456 prog=0.0000 end=0.0000 select=0.0456 code-retain(575->600)=72.6% changed=27.4% matched=72.6% boundary-margin=30.3% p10=2.7% near=32.8%
+[FSQ-v3]  610/2000 train=0.0366
+[FSQ-v3]  620/2000 train=0.0368
+[FSQ-v3]  625/2000 train=0.0364 val=0.0462 action=0.0462 prog=0.0000 end=0.0000 select=0.0462 code-retain(600->625)=68.7% changed=31.3% matched=68.7% boundary-margin=31.2% p10=2.7% near=31.6%
+[FSQ-v3]  630/2000 train=0.0370
+[FSQ-v3]  640/2000 train=0.0370
+[FSQ-v3]  650/2000 train=0.0370 val=0.0465 action=0.0465 prog=0.0000 end=0.0000 select=0.0465 code-retain(625->650)=58.5% changed=41.5% matched=58.5% boundary-margin=31.0% p10=2.5% near=30.8%
+[FSQ-v3]  660/2000 train=0.0365
+[FSQ-v3]  670/2000 train=0.0363
+[FSQ-v3]  675/2000 train=0.0364 val=0.0460 action=0.0460 prog=0.0000 end=0.0000 select=0.0460 code-retain(650->675)=62.7% changed=37.3% matched=62.7% boundary-margin=31.2% p10=3.1% near=30.1%
+[FSQ-v3]  680/2000 train=0.0363
+[FSQ-v3]  690/2000 train=0.0363
+[FSQ-v3]  700/2000 train=0.0365 val=0.0460 action=0.0460 prog=0.0000 end=0.0000 select=0.0460 code-retain(675->700)=64.4% changed=35.6% matched=64.4% boundary-margin=31.9% p10=2.5% near=30.0%
+[FSQ-v3]  710/2000 train=0.0362
+[FSQ-v3]  720/2000 train=0.0360
+[FSQ-v3]  725/2000 train=0.0363 val=0.0457 action=0.0457 prog=0.0000 end=0.0000 select=0.0457 code-retain(700->725)=65.6% changed=34.4% matched=65.6% boundary-margin=32.5% p10=3.1% near=28.6%
+[FSQ-v3]  730/2000 train=0.0365
+[FSQ-v3]  740/2000 train=0.0359
+[FSQ-v3]  750/2000 train=0.0363 val=0.0472 action=0.0472 prog=0.0000 end=0.0000 select=0.0472 code-retain(725->750)=63.7% changed=36.3% matched=63.7% boundary-margin=32.5% p10=3.3% near=27.5%
+[FSQ-v3]  760/2000 train=0.0365
+[FSQ-v3]  770/2000 train=0.0358
+[FSQ-v3]  775/2000 train=0.0364 val=0.0455 action=0.0455 prog=0.0000 end=0.0000 select=0.0455 code-retain(750->775)=68.2% changed=31.8% matched=68.2% boundary-margin=31.8% p10=2.6% near=30.4%
+[FSQ-v3]  780/2000 train=0.0359
+[FSQ-v3]  790/2000 train=0.0356
+[FSQ-v3]  800/2000 train=0.0354 val=0.0456 action=0.0456 prog=0.0000 end=0.0000 select=0.0456 code-retain(775->800)=68.5% changed=31.5% matched=68.5% boundary-margin=32.7% p10=2.9% near=30.0%
+[FSQ-v3]  810/2000 train=0.0355
+[FSQ-v3]  820/2000 train=0.0357
+[FSQ-v3]  825/2000 train=0.0359 val=0.0476 action=0.0476 prog=0.0000 end=0.0000 select=0.0476 code-retain(800->825)=63.0% changed=37.0% matched=63.0% boundary-margin=30.6% p10=3.1% near=30.2%
+[FSQ-v3]  830/2000 train=0.0358
+[FSQ-v3]  840/2000 train=0.0356
+[FSQ-v3]  850/2000 train=0.0355 val=0.0457 action=0.0457 prog=0.0000 end=0.0000 select=0.0457 code-retain(825->850)=61.7% changed=38.3% matched=61.7% boundary-margin=30.3% p10=2.5% near=32.0%
+[FSQ-v3]  860/2000 train=0.0354
+[FSQ-v3]  870/2000 train=0.0346
+[FSQ-v3]  875/2000 train=0.0352 val=0.0450 action=0.0450 prog=0.0000 end=0.0000 select=0.0450 code-retain(850->875)=67.2% changed=32.8% matched=67.2% boundary-margin=31.0% p10=2.7% near=30.4%
+[FSQ-v3]  880/2000 train=0.0351
+[FSQ-v3]  890/2000 train=0.0351
+[FSQ-v3]  900/2000 train=0.0346 val=0.0460 action=0.0460 prog=0.0000 end=0.0000 select=0.0460 code-retain(875->900)=67.9% changed=32.1% matched=67.9% boundary-margin=30.7% p10=2.5% near=32.9%
+[FSQ-v3]  910/2000 train=0.0351
+[FSQ-v3]  920/2000 train=0.0350
+[FSQ-v3]  925/2000 train=0.0348 val=0.0469 action=0.0469 prog=0.0000 end=0.0000 select=0.0469 code-retain(900->925)=66.2% changed=33.8% matched=66.2% boundary-margin=30.4% p10=2.7% near=32.6%
+[FSQ-v3]  930/2000 train=0.0343
+[FSQ-v3]  940/2000 train=0.0347
+[FSQ-v3]  950/2000 train=0.0342 val=0.0452 action=0.0452 prog=0.0000 end=0.0000 select=0.0452 code-retain(925->950)=66.3% changed=33.7% matched=66.3% boundary-margin=29.0% p10=2.1% near=36.2%
+[FSQ-v3]  960/2000 train=0.0341
+[FSQ-v3]  970/2000 train=0.0341
+[FSQ-v3]  975/2000 train=0.0345 val=0.0463 action=0.0463 prog=0.0000 end=0.0000 select=0.0463 code-retain(950->975)=68.5% changed=31.5% matched=68.5% boundary-margin=30.7% p10=2.5% near=33.9%
+[FSQ-v3]  980/2000 train=0.0342
+[FSQ-v3]  990/2000 train=0.0342
+[FSQ-v3] 1000/2000 train=0.0343 val=0.0453 action=0.0453 prog=0.0000 end=0.0000 select=0.0453 code-retain(975->1000)=68.5% changed=31.5% matched=68.5% boundary-margin=29.0% p10=2.5% near=35.2%
+[FSQ-v3] 1010/2000 train=0.0343
+[FSQ-v3] 1020/2000 train=0.0340
+[FSQ-v3] 1025/2000 train=0.0344 val=0.0465 action=0.0465 prog=0.0000 end=0.0000 select=0.0465 code-retain(1000->1025)=68.3% changed=31.7% matched=68.3% boundary-margin=28.3% p10=1.9% near=37.3%
+[FSQ-v3] 1030/2000 train=0.0341
+[FSQ-v3] 1040/2000 train=0.0339
+[FSQ-v3] 1050/2000 train=0.0340 val=0.0462 action=0.0462 prog=0.0000 end=0.0000 select=0.0462 code-retain(1025->1050)=68.1% changed=31.9% matched=68.1% boundary-margin=28.8% p10=2.1% near=36.6%
+[FSQ-v3] 1060/2000 train=0.0341
+[FSQ-v3] 1070/2000 train=0.0337
+[FSQ-v3] 1075/2000 train=0.0337 val=0.0469 action=0.0469 prog=0.0000 end=0.0000 select=0.0469 code-retain(1050->1075)=66.8% changed=33.2% matched=66.8% boundary-margin=30.7% p10=2.1% near=34.1%
+[FSQ-v3] 1080/2000 train=0.0341
+[FSQ-v3] 1090/2000 train=0.0344
+[FSQ-v3] 1100/2000 train=0.0337 val=0.0473 action=0.0473 prog=0.0000 end=0.0000 select=0.0473 code-retain(1075->1100)=67.6% changed=32.4% matched=67.6% boundary-margin=30.2% p10=2.5% near=34.0%
+[FSQ-v3] 1110/2000 train=0.0341
+[FSQ-v3] 1120/2000 train=0.0336
+[FSQ-v3] 1125/2000 train=0.0337 val=0.0473 action=0.0473 prog=0.0000 end=0.0000 select=0.0473 code-retain(1100->1125)=64.1% changed=35.9% matched=64.1% boundary-margin=31.4% p10=2.1% near=33.2%
+[FSQ-v3] 1130/2000 train=0.0337
+[FSQ-v3] 1140/2000 train=0.0335
+[FSQ-v3] 1150/2000 train=0.0343 val=0.0470 action=0.0470 prog=0.0000 end=0.0000 select=0.0470 code-retain(1125->1150)=57.7% changed=42.3% matched=57.7% boundary-margin=30.6% p10=2.5% near=33.6%
+[FSQ-v3] 1160/2000 train=0.0339
+[FSQ-v3] 1170/2000 train=0.0336
+[FSQ-v3] 1175/2000 train=0.0337 val=0.0472 action=0.0472 prog=0.0000 end=0.0000 select=0.0472 code-retain(1150->1175)=68.7% changed=31.3% matched=68.7% boundary-margin=29.4% p10=2.1% near=35.0%
+[FSQ-v3] 1180/2000 train=0.0338
+[FSQ-v3] 1190/2000 train=0.0329
+[FSQ-v3] 1200/2000 train=0.0339 val=0.0467 action=0.0467 prog=0.0000 end=0.0000 select=0.0467 code-retain(1175->1200)=67.5% changed=32.5% matched=67.5% boundary-margin=31.5% p10=3.1% near=31.5%
+[FSQ-v3] 1210/2000 train=0.0336
+[FSQ-v3] 1220/2000 train=0.0334
+[FSQ-v3] 1225/2000 train=0.0337 val=0.0475 action=0.0475 prog=0.0000 end=0.0000 select=0.0475 code-retain(1200->1225)=70.2% changed=29.8% matched=70.2% boundary-margin=28.6% p10=2.0% near=38.6%
+[FSQ-v3] 1230/2000 train=0.0337
+[FSQ-v3] 1240/2000 train=0.0334
+[FSQ-v3] 1250/2000 train=0.0334 val=0.0472 action=0.0472 prog=0.0000 end=0.0000 select=0.0472 code-retain(1225->1250)=67.8% changed=32.2% matched=67.8% boundary-margin=28.6% p10=2.1% near=37.2%
+[FSQ-v3] 1260/2000 train=0.0339
+[FSQ-v3] 1270/2000 train=0.0333
+[FSQ-v3] 1275/2000 train=0.0334 val=0.0467 action=0.0467 prog=0.0000 end=0.0000 select=0.0467 code-retain(1250->1275)=67.9% changed=32.1% matched=67.9% boundary-margin=29.9% p10=2.0% near=36.9%
+[FSQ-v3] 1280/2000 train=0.0330
+[FSQ-v3] 1290/2000 train=0.0330
+[FSQ-v3] 1300/2000 train=0.0332 val=0.0478 action=0.0478 prog=0.0000 end=0.0000 select=0.0478 code-retain(1275->1300)=66.5% changed=33.5% matched=66.5% boundary-margin=28.3% p10=1.9% near=38.8%
+[FSQ-v3] 1310/2000 train=0.0330
+[FSQ-v3] 1320/2000 train=0.0330
+[FSQ-v3] 1325/2000 train=0.0330 val=0.0469 action=0.0469 prog=0.0000 end=0.0000 select=0.0469 code-retain(1300->1325)=68.1% changed=31.9% matched=68.1% boundary-margin=28.6% p10=2.0% near=37.2%
+[FSQ-v3] 1330/2000 train=0.0332
+[FSQ-v3] 1340/2000 train=0.0327
+[FSQ-v3] 1350/2000 train=0.0330 val=0.0454 action=0.0454 prog=0.0000 end=0.0000 select=0.0454 code-retain(1325->1350)=66.4% changed=33.6% matched=66.4% boundary-margin=27.7% p10=2.0% near=39.9%
+[FSQ-v3] 1360/2000 train=0.0332
+[FSQ-v3] 1370/2000 train=0.0335
+[FSQ-v3] 1375/2000 train=0.0329 val=0.0466 action=0.0466 prog=0.0000 end=0.0000 select=0.0466 code-retain(1350->1375)=68.6% changed=31.4% matched=68.6% boundary-margin=28.0% p10=2.0% near=39.5%
+[FSQ-v3] 1380/2000 train=0.0330
+[FSQ-v3] 1390/2000 train=0.0333
+[FSQ-v3] 1400/2000 train=0.0328 val=0.0471 action=0.0471 prog=0.0000 end=0.0000 select=0.0471 code-retain(1375->1400)=66.2% changed=33.8% matched=66.2% boundary-margin=28.9% p10=2.1% near=37.7%
+[FSQ-v3] 1410/2000 train=0.0329
+[FSQ-v3] 1420/2000 train=0.0325
+[FSQ-v3] 1425/2000 train=0.0331 val=0.0479 action=0.0479 prog=0.0000 end=0.0000 select=0.0479 code-retain(1400->1425)=63.9% changed=36.1% matched=63.9% boundary-margin=28.7% p10=2.0% near=38.7%
+[FSQ-v3] 1430/2000 train=0.0333
+[FSQ-v3] 1440/2000 train=0.0328
+[FSQ-v3] 1450/2000 train=0.0328 val=0.0478 action=0.0478 prog=0.0000 end=0.0000 select=0.0478 code-retain(1425->1450)=64.3% changed=35.7% matched=64.3% boundary-margin=27.7% p10=2.0% near=39.1%
+[FSQ-v3] 1460/2000 train=0.0330
+[FSQ-v3] 1470/2000 train=0.0323
+[FSQ-v3] 1475/2000 train=0.0327 val=0.0470 action=0.0470 prog=0.0000 end=0.0000 select=0.0470 code-retain(1450->1475)=65.0% changed=35.0% matched=65.0% boundary-margin=29.2% p10=2.0% near=36.8%
+[FSQ-v3] 1480/2000 train=0.0327
+[FSQ-v3] 1490/2000 train=0.0325
+[FSQ-v3] 1500/2000 train=0.0324 val=0.0473 action=0.0473 prog=0.0000 end=0.0000 select=0.0473 code-retain(1475->1500)=67.6% changed=32.4% matched=67.6% boundary-margin=30.3% p10=2.1% near=36.4%
+[FSQ-v3] 1510/2000 train=0.0327
+[FSQ-v3] 1520/2000 train=0.0327
+[FSQ-v3] 1525/2000 train=0.0329 val=0.0472 action=0.0472 prog=0.0000 end=0.0000 select=0.0472 code-retain(1500->1525)=63.1% changed=36.9% matched=63.1% boundary-margin=28.2% p10=2.0% near=39.6%
+[FSQ-v3] 1530/2000 train=0.0325
+[FSQ-v3] 1540/2000 train=0.0320
+[FSQ-v3] 1550/2000 train=0.0330 val=0.0480 action=0.0480 prog=0.0000 end=0.0000 select=0.0480 code-retain(1525->1550)=62.6% changed=37.4% matched=62.6% boundary-margin=28.9% p10=2.5% near=37.2%
+[FSQ-v3] 1560/2000 train=0.0319
+[FSQ-v3] 1570/2000 train=0.0325
+[FSQ-v3] 1575/2000 train=0.0323 val=0.0466 action=0.0466 prog=0.0000 end=0.0000 select=0.0466 code-retain(1550->1575)=62.7% changed=37.3% matched=62.7% boundary-margin=28.4% p10=2.1% near=38.0%
+[FSQ-v3] 1580/2000 train=0.0323
+[FSQ-v3] 1590/2000 train=0.0319
+[FSQ-v3] 1600/2000 train=0.0321 val=0.0478 action=0.0478 prog=0.0000 end=0.0000 select=0.0478 code-retain(1575->1600)=65.4% changed=34.6% matched=65.4% boundary-margin=27.5% p10=2.0% near=39.5%

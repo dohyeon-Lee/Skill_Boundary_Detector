@@ -1,0 +1,187 @@
+{
+  "version": 1,
+  "generator_sha256": "ac464425948ce9bdeb02d521b08a4c7c1ef656e8757d06fe20fe78aed9af1127",
+  "suite": "libero_10",
+  "task_ids": [
+    4
+  ],
+  "episodes": 10,
+  "random_range": 3.0,
+  "seed": 1000,
+  "bddl_sha256": {
+    "4": "0c6749b920bff1e1efe47ffb0e0b801a3e6959a650e710f376dd2b812c74e865"
+  },
+  "numpy": "2.2.6",
+  "mujoco": "3.6.0",
+  "state_timing": "before ten settling steps",
+  "scope": "movable workspace samplers XY only",
+  "tasks": {
+    "4": {
+      "task_name": "LIVING_ROOM_SCENE5_put_the_white_mug_on_the_left_plate_and_put_the_yellow_and_white_mug_on_the_right_plate",
+      "ranges": {
+        "plate_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.325,
+                -0.27499999999999997
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.37500000000000006,
+                -0.22499999999999992
+              ]
+            ]
+          }
+        },
+        "plate_2": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.27499999999999997,
+                0.325
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.22499999999999992,
+                0.37500000000000006
+              ]
+            ]
+          }
+        },
+        "red_coffee_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.225,
+                -0.17500000000000002
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.025,
+                0.025
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.275,
+                -0.12500000000000003
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.07500000000000001,
+                0.07500000000000001
+              ]
+            ]
+          }
+        },
+        "white_yellow_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.07500000000000001,
+                -0.025
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.07500000000000001,
+                0.125
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.125,
+                0.02500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                0.025000000000000022,
+                0.175
+              ]
+            ]
+          }
+        },
+        "porcelain_mug_1": {
+          "original": {
+            "x_ranges": [
+              [
+                -0.125,
+                -0.07500000000000001
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.175,
+                -0.125
+              ]
+            ]
+          },
+          "scaled": {
+            "x_ranges": [
+              [
+                -0.175,
+                -0.025000000000000022
+              ]
+            ],
+            "y_ranges": [
+              [
+                -0.22499999999999998,
+                -0.07500000000000001
+              ]
+            ]
+          }
+        }
+      },
+      "attempts": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  }
+}

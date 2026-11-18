@@ -1,0 +1,65 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: Currently logged in as: dohyeonlee (dohyeonlee-postech) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run bnblov2d
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data1/dohyeon/Skill_Boundary_Detector/lerobot/wandb/run-20260731_044818-bnblov2d
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run langgap_56_full_full_state_obs20_std_episodemean_80p_fsq322
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train/runs/bnblov2d
+/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py:145: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+Loading weights:   0%|          | 0/415 [00:00<?, ?it/s]Loading weights: 100%|██████████| 415/415 [00:00<00:00, 7911.62it/s]
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torch/nn/functional.py:2954: UserWarning: Mismatch dtype between input and weight: input dtype = c10::BFloat16, weight dtype = float, Cannot dispatch to fused implementation. (Triggered internally at /pytorch/aten/src/ATen/native/layer_norm.cpp:344.)
+  return torch.rms_norm(input, normalized_shape, weight, eps)
+/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torchvision/io/_video_deprecation_warning.py:9: UserWarning: The video decoding and encoding capabilities of torchvision are deprecated from version 0.22 and will be removed in version 0.24. We recommend that you migrate to TorchCodec, where we'll consolidate the future decoding/encoding capabilities of PyTorch: https://github.com/pytorch/torchcodec
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/dohyeon/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/multiprocessing/queues.py", line 264, in _feed
+    obj = _ForkingPickler.dumps(obj)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dohyeon/.local/share/uv/python/cpython-3.12.13-linux-x86_64-gnu/lib/python3.12/multiprocessing/reduction.py", line 51, in dumps
+    cls(buf, protocol).dump(obj)
+  File "/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torch/multiprocessing/reductions.py", line 615, in reduce_storage
+    fd, size = storage._share_fd_cpu_()
+               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torch/storage.py", line 449, in wrapper
+    return fn(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torch/storage.py", line 524, in _share_fd_cpu_
+    return super()._share_fd_cpu_(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: could not unlink the shared memory file /torch_2013711_958626642_21761 : No such file or directory (2)
+Traceback (most recent call last):
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/train_FSQ.py", line 411, in <module>
+    main(tyro.cli(Args))
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/train_FSQ.py", line 387, in main
+    train_spline_fsqae(
+  File "/data1/dohyeon/Skill_Boundary_Detector/lerobot/examples/libero/FSQ.py", line 1897, in train_spline_fsqae
+    for batch_index, batch in enumerate(train_loader):
+                              ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 741, in __next__
+    data = self._next_data()
+           ^^^^^^^^^^^^^^^^^
+  File "/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1524, in _next_data
+    idx, data = self._get_data()
+                ^^^^^^^^^^^^^^^^
+  File "/data1/dohyeon/Skill_Boundary_Detector/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py", line 1468, in _get_data
+    raise RuntimeError(
+RuntimeError: DataLoader timed out after 300 seconds

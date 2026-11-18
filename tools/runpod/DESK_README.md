@@ -18,7 +18,7 @@ bash sync_server_ui.sh
 
 ## 연결
 
-Desk 서버에 `bash runpod_ssh.sh`로 등록한 RunPod API 키를 재사용한다.
+Desk 서버에 `bash tools/runpod/runpod_ssh.sh`로 등록한 RunPod API 키를 재사용한다.
 키에는 Pod 조회·중단 및 billing 조회 권한이 필요하다. 키를 브라우저에 보내지 않는다.
 Pod에는 이 서버의 SSH 공개키가 등록되어 있어야 하며 `22/tcp` 직접 접속을 사용한다.
 

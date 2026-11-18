@@ -50,7 +50,7 @@ dp_wandb_project: DP_ABC
 dp_base_config: lerobot/skillVLA/abc/configs/train_skills/DP/src/train_dp_base.yaml
 
 # Per-job resource requests. Scheduler placement still comes from ABC
-# global_config.yaml + servers/<server>.yaml (train_partition/qos/nodes).
+# global_config.yaml + skillVLA/servers/<server>.yaml (train_partition/qos/nodes).
 dp_gres: gpu:1
 dp_cpus_per_task: 8
 dp_mem: 64G
