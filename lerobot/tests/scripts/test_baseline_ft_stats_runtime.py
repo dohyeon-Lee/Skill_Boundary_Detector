@@ -12,7 +12,7 @@ FAMILY = os.environ.get("SBD_BASELINE_FAMILY")
 if FAMILY not in ("molmoact2", "groot"):
     pytest.skip("Select a pinned baseline environment with SBD_BASELINE_FAMILY.", allow_module_level=True)
 ROOT = Path(__file__).resolve().parents[3]
-SRC = ROOT / f"lerobot/examples/libero/configs/train_{FAMILY}/PT/src"
+SRC = ROOT / f"lerobot/skillVLA/libero/configs/train_{FAMILY}/PT/src"
 sys.path.insert(0, str(SRC))
 config_module = __import__(f"{FAMILY}_config")
 spec = importlib.util.spec_from_file_location("stats_probe_training_hooks", SRC / "training_adapter.py")

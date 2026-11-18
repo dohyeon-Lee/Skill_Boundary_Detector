@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "examples/libero/configs/train_skills/FSQ/src"))
+sys.path.insert(0, str(ROOT / "skillVLA/libero/configs/train_skills/FSQ/src"))
 
 from skills_bundle import (  # noqa: E402
     BUNDLE_NAME,

@@ -9,7 +9,7 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "examples/libero/configs/train_skills/skill_eval/eef_projection/src"
+SRC = ROOT / "skillVLA/libero/configs/train_skills/skill_eval/eef_projection/src"
 sys.path.insert(0, str(SRC))
 
 

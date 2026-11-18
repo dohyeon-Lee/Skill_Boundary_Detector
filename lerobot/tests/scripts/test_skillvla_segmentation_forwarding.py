@@ -13,7 +13,7 @@ import tyro
 
 from test_train_skillvla_build_config import _config, build_settings
 
-CONFIGS = Path(__file__).resolve().parents[2] / 'examples/libero/configs'
+CONFIGS = Path(__file__).resolve().parents[2] / 'skillVLA/libero/configs'
 SRC = CONFIGS / 'train_skillVLA/build_data/src'
 sys.path.insert(0, str(CONFIGS / 'train_skills/build_data/src'))
 sys.path.insert(0, str(CONFIGS / 'train_skills/src'))
@@ -79,7 +79,7 @@ elif target in ('ensure_episode_map.py','build_skill_focus_uv.py'):
     (root / '.venv/bin/python').symlink_to(recorder)
     (root / '.venv/bin/activate').write_text('export PATH=' + shlex.quote(str(fake)) + ':"$PATH"\n')
     for file in ('runtime_env.sh', 'gpu_guard.sh'):
-        p = root / 'lerobot/examples/libero/configs/src' / file; p.parent.mkdir(parents=True, exist_ok=True)
+        p = root / 'lerobot/skillVLA/libero/configs/src' / file; p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text('require_cuda_or_requeue() { :; }\n')
     Path(settings['dp_policy_path']).mkdir(parents=True)
     snapshot = tmp_path / 'env.sh'

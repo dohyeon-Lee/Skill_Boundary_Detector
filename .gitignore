@@ -98,8 +98,8 @@ Thumbs.db
 
 # Local Slurm monitor prompts and delivery receipts
 /.slurm_monitor/
-lerobot/examples/libero/configs/generate_training_dataset/visualized_dataset/previews/
-lerobot/examples/libero/configs/train_skillVLA/PT/eval/attention_outputs/
+lerobot/skillVLA/libero/configs/generate_training_dataset/visualized_dataset/previews/
+lerobot/skillVLA/libero/configs/train_skillVLA/PT/eval/attention_outputs/
 # LIBERO's bundled MuJoCo assets are required at runtime on every server.
 # Keep them in Git even when their extensions match the global data-file rules above.
 !tools/lerobot-libero/libero/libero/assets/
@@ -110,10 +110,10 @@ lerobot/examples/libero/configs/train_skillVLA/PT/eval/attention_outputs/
 .hf_configs/
 
 # ── Training/slurm logs under libero configs (folders + job stdout/stderr) ──
-/lerobot/examples/libero/configs/**/logs/
-/lerobot/examples/libero/configs/**/logs_train/
-/lerobot/examples/libero/configs/**/*.out
-/lerobot/examples/libero/configs/**/*.err
+/lerobot/skillVLA/libero/configs/**/logs/
+/lerobot/skillVLA/libero/configs/**/logs_train/
+/lerobot/skillVLA/libero/configs/**/*.out
+/lerobot/skillVLA/libero/configs/**/*.err
 
 # ──────────────────────────────────────────────────────────────
 abcdl_RLLAB/abc_subset

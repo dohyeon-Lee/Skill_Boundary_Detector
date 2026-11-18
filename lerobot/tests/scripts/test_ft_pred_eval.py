@@ -19,7 +19,7 @@ import pyarrow.parquet as pq
 import pytest
 import torch
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 EVAL = CONFIGS / "train_skillVLA/FT/eval"
 sys.path.insert(0, str(EVAL / "src"))
 import ft_pred_eval as offline  # noqa: E402
@@ -1116,7 +1116,7 @@ def test_shell_syntax(script):
 )
 def test_launcher_submits_correct_resources_without_real_slurm(tmp_path, device, workers, scheduler):
     root = tmp_path / "repo"
-    configs = root / "lerobot/examples/libero/configs"
+    configs = root / "lerobot/skillVLA/libero/configs"
     target = configs / "train_skillVLA/FT/eval"
     (target / "src").mkdir(parents=True)
     (configs / "src").mkdir()
@@ -1195,7 +1195,7 @@ def test_batch_script_forwards_worker_identity_without_loading_a_model(tmp_path,
     python = root / ".venv/bin/python"
     python.write_text('#!/bin/bash\nprintf "%s\\n" "$@"\n')
     python.chmod(0o755)
-    runtime = root / "lerobot/examples/libero/configs/src"
+    runtime = root / "lerobot/skillVLA/libero/configs/src"
     runtime.mkdir(parents=True)
     (runtime / "runtime_env.sh").write_text("# No runtime caches needed by this stub.\n")
     env = {key: value for key, value in os.environ.items() if not key.startswith(("FT_PRED_", "SLURM_"))}

@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_molmoact2"
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_molmoact2"
 sys.path.insert(0, str(CONFIG_DIR / "PT/src"))
 import molmoact2_config as MODULE
 

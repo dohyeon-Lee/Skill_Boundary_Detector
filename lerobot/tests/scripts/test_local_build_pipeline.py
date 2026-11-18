@@ -11,14 +11,14 @@ import pandas as pd
 import pytest
 
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 
 
 @pytest.mark.parametrize("scheduler", ["local", "slurm"])
 @pytest.mark.parametrize("threshold", ["episode_mean", "global_mean"])
 def test_skillvla_pipeline_keeps_array_dependencies_and_frozen_env(tmp_path, scheduler, threshold):
     root = tmp_path / "repo"
-    configs = root / "lerobot/examples/libero/configs"
+    configs = root / "lerobot/skillVLA/libero/configs"
     build = configs / "train_skillVLA/build_data"
     src = build / "src"
     src.mkdir(parents=True)

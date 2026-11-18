@@ -7,7 +7,7 @@ import pytest
 
 _SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/PT/eval/src"
+    / "skillVLA/libero/configs/train_skillVLA/PT/eval/src"
 )
 sys.path.insert(0, str(_SRC))
 from stage1_eval_config import (  # noqa: E402
@@ -83,7 +83,7 @@ def test_cond_goal_settings_survive_model_and_checkpoint_expansion():
 def test_task01_cond_xyz_diagnostic_keeps_paired_inputs_and_two_gpu_plan():
     import yaml
     path = (Path(__file__).resolve().parents[2]
-            / "examples/libero/configs/train_skillVLA/FT/eval/both3_task01_cond_xyz_diagnostic.yaml")
+            / "skillVLA/libero/configs/train_skillVLA/FT/eval/both3_task01_cond_xyz_diagnostic.yaml")
     config = yaml.safe_load(path.read_text())
     assert config["task_ids"] == [0, 1]
     assert config["eval_num_gpus"] == 2 and config["eval_max_workers_per_gpu"] == 1

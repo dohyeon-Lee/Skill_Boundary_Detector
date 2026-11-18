@@ -8,7 +8,7 @@ import subprocess
 
 HELPER = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skills/FSQ/src/fsq_node_local_venv.sh"
+    / "skillVLA/libero/configs/train_skills/FSQ/src/fsq_node_local_venv.sh"
 )
 
 

@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 
-_LIBERO = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+_LIBERO = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 _EVAL_DIR = _LIBERO / "train_skillVLA/FT/eval"
 sys.path.insert(0, str(_LIBERO / "train_skillVLA/PT/eval/src"))
 from stage1_eval_config import _model_entries  # noqa: E402

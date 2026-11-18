@@ -1,5 +1,8 @@
 # Skill Boundary Detector (SkillVLA)
 
+작업 코드는 [`lerobot/skillVLA/`](lerobot/skillVLA/README.md)에 모여 있다:
+`abc/`, `libero/`, `analysis/`. 데이터셋·체크포인트·사전학습 모델의 저장 루트는 그대로 사용한다.
+
 ## 1. RunPod 계정·SSH 준비
 
 - HF **Write 토큰**과 [W&B API 키](https://wandb.ai/authorize)를 준비한다.
@@ -45,7 +48,7 @@ bash setup_env.sh --groot-only
 서버와 RunPod에서 사용할 **eval 폴더**로 이동한다. PT는 경로의 `FT`를 `PT`로 바꾼다.
 
 ```bash
-cd lerobot/examples/libero/configs/train_skillVLA/FT/eval
+cd lerobot/skillVLA/libero/configs/train_skillVLA/FT/eval
 ```
 
 | 평가 | 읽는 YAML |
@@ -71,7 +74,7 @@ bash submit_eval.sh
 스킬 경계 비교 평가도 같은 흐름으로 실행한다.
 
 ```bash
-cd lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection
+cd lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection
 bash submit.sh --prepare-runpod   # 서버: HF 입력 준비
 bash submit.sh                    # RunPod: 다운로드·검증 후 평가
 ```
@@ -99,7 +102,7 @@ RunPod 감지가 안 되면 `export SBD_SERVER=runpod`로 지정한다.
 
 ```bash
 # 예: VSA PT 학습 (프로젝트 루트에서)
-bash lerobot/examples/libero/configs/train_skillVLA/PT/VSA/submit_train.sh
+bash lerobot/skillVLA/libero/configs/train_skillVLA/PT/VSA/submit_train.sh
 ```
 
 ## 5. 작업 관리·체크포인트 보관
@@ -114,8 +117,8 @@ bash lerobot/examples/libero/configs/train_skillVLA/PT/VSA/submit_train.sh
 RunPod 작업 로그는 각 실행 폴더의 `logs/`에 남는다. 프로젝트 루트에서 조회·중단한다.
 
 ```bash
-bash lerobot/examples/libero/configs/src/submit_job.sh list
-bash lerobot/examples/libero/configs/src/submit_job.sh stop <id>
+bash lerobot/skillVLA/libero/configs/src/submit_job.sh list
+bash lerobot/skillVLA/libero/configs/src/submit_job.sh stop <id>
 ```
 
 체크포인트 자동 업로드는 tmux에서 실행한다.

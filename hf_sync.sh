@@ -12,4 +12,4 @@ if [ "${1:-}" = "--web" ]; then
     shift
     exec bash "${SCRIPT_DIR}/sync_server_ui.sh" "$@"
 fi
-exec "${SCRIPT_DIR}/.venv/bin/python" "${SCRIPT_DIR}/lerobot/examples/libero/configs/src/hf_sync.py" "$@"
+exec "${SCRIPT_DIR}/.venv/bin/python" "${SCRIPT_DIR}/lerobot/skillVLA/libero/configs/src/hf_sync.py" "$@"

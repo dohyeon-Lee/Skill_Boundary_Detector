@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 
-SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/build_data/eval/src/visualize_skills.py"
+SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/build_data/eval/src/visualize_skills.py"
 spec = importlib.util.spec_from_file_location("boundary_visualization", SRC)
 viewer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(viewer)

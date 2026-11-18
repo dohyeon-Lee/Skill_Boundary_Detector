@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-_SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/PT/eval/src"
+_SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/PT/eval/src"
 sys.path.insert(0, str(_SRC))
 from backfill_skill_html_outcomes import annotate_html, backfill  # noqa: E402
 

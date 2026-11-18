@@ -39,6 +39,16 @@ def test_public_upload_preserves_exact_result_path(result):
     assert calls[0]["allow_patterns"] == [ARCHIVE, MANIFEST]
 
 
+def test_historical_hf_result_path_restores_under_skillvla(result):
+    project, relative = result
+    historical = relative.replace("lerobot/skillVLA/", "lerobot/examples/", 1)
+    assert result_relative(historical) == historical
+    assert result_relative("lerobot/examples", parents=True) == "lerobot/examples"
+    assert result_path(project, historical) == project / relative
+    assert result_path(project, historical).is_dir()
+    assert select_results(project, [historical])[0]["path"] == relative
+
+
 def test_private_destination_and_symlinks_rejected(result):
     project, relative = result
     hub = SimpleNamespace(repo_info=lambda *a, **k: SimpleNamespace(private=True),

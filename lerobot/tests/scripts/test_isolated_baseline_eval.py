@@ -8,7 +8,7 @@ import sys
 import numpy as np
 import pytest
 
-SHARED = Path(__file__).resolve().parents[2] / "examples/libero/configs/src/baseline_eval"
+SHARED = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/src/baseline_eval"
 
 
 def load(name, filename):
@@ -333,7 +333,7 @@ def test_slurm_copied_batch_uses_project_sources_and_preserves_failure(tmp_path,
     import subprocess
 
     project = tmp_path / "project with spaces"
-    configs = project / "lerobot/examples/libero/configs"
+    configs = project / "lerobot/skillVLA/libero/configs"
     shared = configs / "src/baseline_eval"
     shared.mkdir(parents=True)
     (configs / "src/runtime_env.sh").write_text(":\n")

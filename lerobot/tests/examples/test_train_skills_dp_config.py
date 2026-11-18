@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 
-CONFIG_SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skills/src"
+CONFIG_SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/src"
 sys.path.insert(0, str(CONFIG_SRC))
 
 from train_skills_config import (  # noqa: E402
@@ -16,19 +16,19 @@ from train_skills_config import (  # noqa: E402
 
 BUILD_DATA_CONFIG = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skills/build_data/build_data_config.yaml"
+    / "skillVLA/libero/configs/train_skills/build_data/build_data_config.yaml"
 )
 DP_CONFIG = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skills/DP/dp_config.yaml"
+    / "skillVLA/libero/configs/train_skills/DP/dp_config.yaml"
 )
 DP_TRAIN_SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skills/DP/src/train_dp.sbatch"
+    / "skillVLA/libero/configs/train_skills/DP/src/train_dp.sbatch"
 )
 BUILD_DATA_SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skills/build_data/src/build_skillset.sbatch"
+    / "skillVLA/libero/configs/train_skills/build_data/src/build_skillset.sbatch"
 )
 
 

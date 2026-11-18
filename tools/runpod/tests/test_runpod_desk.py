@@ -25,7 +25,7 @@ class ProbeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
-        self.out = self.root / "lerobot/examples/libero/configs/train_skillVLA/FT/eval/outputs/run"
+        self.out = self.root / "lerobot/skillVLA/libero/configs/train_skillVLA/FT/eval/outputs/run"
         (self.out / "metrics").mkdir(parents=True)
         self.metrics = {"model": {"overall": {"pc_success": 50}, "per_task": [
             {"task_group": "libero_10", "task_id": 0, "metrics": {"pc_success": 100}},
@@ -88,7 +88,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(warm["jobs"][0]["result_id"], result["id"])
 
     def test_boundary_result_keeps_thresholds_under_its_job(self):
-        self.out = self.root / "lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs/comparison"
+        self.out = self.root / "lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs/comparison"
         self.out.mkdir(parents=True)
         thresholds = {"without_gripper": {"groups": {"dataset": {"threshold": 0.2, "episodes": 3921, "points": 77782}},
                         "calibration": {"episodes": 3921, "evaluation_episodes": 200}}}

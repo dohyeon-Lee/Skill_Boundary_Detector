@@ -2,7 +2,7 @@
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/train_molmoact2/PT/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_molmoact2/PT/src"))
 from checkpoint_retention import prune_checkpoints
 from test_molmoact2_train_config import make_training_checkpoint
 

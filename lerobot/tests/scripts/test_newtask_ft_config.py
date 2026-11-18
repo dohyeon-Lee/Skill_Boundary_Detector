@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA"
 
 
 def _load(name: str, path: Path):

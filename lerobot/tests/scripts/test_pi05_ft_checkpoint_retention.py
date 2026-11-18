@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 
-SCRIPT = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_pi05/FT/src/train.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_pi05/FT/src/train.py"
 SPEC = importlib.util.spec_from_file_location("pi05_ft_retention_test", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)

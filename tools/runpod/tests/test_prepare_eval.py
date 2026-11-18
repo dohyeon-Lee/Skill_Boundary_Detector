@@ -258,6 +258,34 @@ class WorkflowTests(unittest.TestCase):
             self.consume(download_only=True)
         self.assertFalse((self.pod / "outputs_filtered").exists())
 
+    def test_legacy_hf_manifest_keeps_hashes_and_downloads_into_skillvla_layout(self):
+        self.prepare()
+        name = "dataset_filtered/eval_configs/ft.json"
+        manifest = json.loads(self.hub.files[name])
+        recipe = manifest["recipe"]
+        recipe["config"] = recipe["config"].replace("lerobot/skillVLA/", "lerobot/examples/")
+        old_asset = "lerobot/examples/libero/configs/train_skillVLA/FT/eval/initial_state_banks/example.npz"
+        payload = b"historical inline bank"
+        entry = {"path": old_asset, "size": len(payload), "sha256": workflow.digest(payload)}
+        recipe["files"].append(entry.copy())
+        recipe["settings"]["eval_init_states_path"] = old_asset
+        manifest["files"].append({**entry, "hf": {
+            "inline": workflow.base64.b64encode(payload).decode(),
+        }})
+        manifest["recipe_sha256"] = workflow.digest(workflow.encoded(recipe))
+        original = workflow.encoded(manifest)
+        self.hub.files[name] = original
+        self.hub.commit()
+
+        with patch.object(workflow.subprocess, "run") as run:
+            self.consume()
+        local_asset = workflow.relocated_path(old_asset)
+        self.assertEqual((self.pod / local_asset).read_bytes(), payload)
+        self.assertFalse((self.pod / "lerobot/examples").exists())
+        snapshot = Path(run.call_args.kwargs["env"]["STAGE1_EVAL_CONFIG"])
+        self.assertEqual(workflow.yaml.safe_load(snapshot.read_text())["eval_init_states_path"], local_asset)
+        self.assertEqual(self.hub.files[name], original)
+
     def test_dry_run_does_not_connect_desk_or_publish(self):
         with patch.object(workflow, "connect") as connect:
             self.prepare(dry_run=True)

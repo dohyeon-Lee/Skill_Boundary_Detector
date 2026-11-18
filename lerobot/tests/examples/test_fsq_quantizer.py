@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skills/FSQ/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/FSQ/src"))
 
 from FSQ import FSQ  # noqa: E402
 

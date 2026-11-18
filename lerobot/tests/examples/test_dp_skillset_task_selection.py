@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 
-EVAL_SHARED_SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skills/skill_eval/src"
+EVAL_SHARED_SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/skill_eval/src"
 sys.path.insert(0, str(EVAL_SHARED_SRC))
 
 from dp_skillset_eval import select_stage1_suite_episodes  # noqa: E402

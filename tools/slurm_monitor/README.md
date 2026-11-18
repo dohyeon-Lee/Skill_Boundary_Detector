@@ -107,7 +107,7 @@ already running Python trainers retain their original behavior and are not
 restarted or signalled by installing this code. Arbitrary external programs and
 multi-GPU/DDP/MIG launches are not covered by this trainer integration.
 
-Enable protection in `lerobot/examples/libero/configs/servers/rllab.yaml`:
+Enable protection in `lerobot/skillVLA/libero/configs/servers/rllab.yaml`:
 
 ```yaml
 srun_gpu_memory_guard: true

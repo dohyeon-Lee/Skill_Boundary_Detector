@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 SUBMIT_JOB = CONFIGS / "src/submit_job.sh"
 STAGE = CONFIGS / "src/stage_skillvla_dataset.sh"
 

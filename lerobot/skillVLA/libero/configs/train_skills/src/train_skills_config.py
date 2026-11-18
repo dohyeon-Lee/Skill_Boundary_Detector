@@ -1,0 +1,2585 @@
+#!/usr/bin/env python3
+"""Shared config helpers for train_skills scripts."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import math
+import os
+import re
+import runpy
+import shlex
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_skills_config.yaml"
+
+
+def _parse_scalar(value: str) -> Any:
+    text = value.strip()
+    if " #" in text:
+        text = text.split(" #", 1)[0].rstrip()
+    low = text.lower()
+    if low in {"true", "false"}:
+        return low == "true"
+    if low in {"null", "none"}:
+        return None
+    try:
+        return ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        return text.strip("\"'")
+
+
+def _load_flat_yaml(path: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    current_list_key: str | None = None
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("- ") and current_list_key is not None:
+            out[current_list_key].append(_parse_scalar(line[2:]))
+            continue
+        if ":" not in line:
+            current_list_key = None
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value == "":
+            out[key] = []
+            current_list_key = key
+        else:
+            out[key] = _parse_scalar(value)
+            current_list_key = None
+    return out
+
+
+GLOBAL_CONFIG_NAME = "global_config.yaml"
+
+
+def _read_yaml(config_path: Path) -> dict[str, Any]:
+    try:
+        import yaml
+
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+    except ImportError:
+        return _load_flat_yaml(config_path)
+
+
+def _find_global(start: Path) -> Path | None:
+    """Walk up from `start` to find the nearest global_config.yaml (stops at first hit)."""
+    for d in [start.resolve(), *start.resolve().parents]:
+        candidate = d / GLOBAL_CONFIG_NAME
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _load_global(path: Path) -> dict[str, Any]:
+    """global_config.yaml plus its per-server overlay (configs/src/global_config_loader.py)."""
+    loader = next(
+        directory / "src" / "global_config_loader.py"
+        for directory in Path(__file__).resolve().parents
+        if (directory / "src" / "global_config_loader.py").is_file()
+    )
+    return runpy.run_path(str(loader))["load_global_config"](path)
+
+
+def _merge_global(config_path: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    """Merge the nearest global_config.yaml as a base (module cfg keys win)."""
+    gpath = _find_global(config_path.parent)
+    if gpath is None or gpath.resolve() == config_path.resolve():
+        return cfg
+    return {**_load_global(gpath), **cfg}
+
+
+def load_config(path: Path | str | None = None) -> dict[str, Any]:
+    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config not found: {config_path}")
+    return _merge_global(config_path, _read_yaml(config_path))
+
+
+def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
+    """Load a Stage-1 component, with its snapshotted shared defaults.
+
+    Legacy configs do not opt in and retain their original behavior. The
+    submit-time snapshot places the common YAML beside the component YAML so
+    queued jobs cannot observe later edits to either file.
+    """
+    config_path = Path(path)
+    component = _read_yaml(config_path)
+    # FT components keep their historical shared-YAML name for snapshot compatibility.
+    if component.pop("newtask_ft_common", False):
+        common_name = "newtask_ft_common_config.yaml"
+        component.pop("stage1_common", None)
+    elif component.pop("stage1_common", False):
+        common_name = "stage1_common_config.yaml"
+    else:
+        return _merge_global(config_path, component)
+    common_path = config_path.parent / common_name
+    if not common_path.is_file():
+        common_path = config_path.parent.parent / common_name
+    if not common_path.is_file():
+        raise FileNotFoundError(
+            f"Stage-1 shared config not found for {config_path}: {common_path}"
+        )
+
+    def merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+        result = dict(base)
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(result.get(key), dict):
+                result[key] = merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+
+    return _merge_global(config_path, merge(_read_yaml(common_path), component))
+
+
+def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[Path, ...]:
+    """PT layout, then NewTask FT runs, then historical output layouts.
+
+    NewTask FT run names always carry their FT lineage, so they never collide with a
+    Stage-1 run; searching both lets one eval mix adapted and original components.
+    The legacy path stays last because callers report it when nothing exists.
+    """
+    if component not in {"VSA", "Predictor", "Terminator"}:
+        raise ValueError(f"Unknown Stage-1 component: {component}")
+    new = outputs_root / "skillVLA_PT" / component / run_name
+    newtask_ft = outputs_root / "skillVLA_FT" / component / run_name
+    joint = outputs_root / "skillVLA_FT" / "Joint" / run_name
+    old_group = "skillVLA_stage1" if component == "VSA" else "skillVLA_terminator"
+    # A Joint checkpoint contains the VSA, Predictor, and Terminator in the
+    # same pretrained_model directory, so it is a valid source for every
+    # Stage-1 component role (including an external Terminator overlay).
+    return (
+        new,
+        newtask_ft,
+        joint,
+        outputs_root / "skillVLA_NewTask_FT" / component / run_name,
+        outputs_root / "skillVLA_NewTask_FT" / "Joint" / run_name,
+        outputs_root / "skillVLA_stage1" / component / run_name,
+        *((outputs_root / "skillVLA_PT" / run_name,) if component == "VSA" else ()),
+        outputs_root / old_group / run_name,
+    )
+
+
+def stage1_run_dir(outputs_root: Path, run_name: str, component: str) -> Path:
+    """Resolve an existing run by name, preserving old output directories."""
+    candidates = stage1_run_dirs(outputs_root, run_name, component)
+    # Preserve the old unresolved path in diagnostics and mocks when neither
+    # run exists yet; a real new-layout run always wins once created.
+    return next((path for path in candidates if path.is_dir()), candidates[-1])
+
+
+def resolve_run_checkpoint(
+    outputs_root: Path, component: str, selector: Any, *, field: str = "checkpoint"
+) -> Path | None:
+    """Resolve ``{run: <folder name>, checkpoint: <step|last>}`` to a pretrained_model dir.
+
+    The run is searched in every known location of ``component`` (Stage-1, NewTask FT,
+    legacy), so the YAML never has to name the output group. ``last`` prefers a ``last``
+    link and otherwise takes the greatest numeric step. A blank selector returns None.
+    """
+    if selector in (None, "", {}):
+        return None
+    if not isinstance(selector, dict) or set(selector) - {"run", "checkpoint"}:
+        raise ValueError(f"{field} must be {{run: <folder name>, checkpoint: <step|last>}}, got {selector!r}.")
+    run = str(selector.get("run", "") or "").strip()
+    checkpoint = str(selector.get("checkpoint", "last") or "last").strip()
+    if not run:
+        return None
+    if "/" in run or "/" in checkpoint:
+        raise ValueError(f"{field}.run and .checkpoint are names, not paths: {selector!r}.")
+    run_dirs = stage1_run_dirs(outputs_root, run, component)
+    for run_dir in run_dirs:
+        checkpoints = run_dir / "checkpoints"
+        candidate = checkpoints / checkpoint / "pretrained_model"
+        if checkpoint.lower() == "last" and not (candidate / "config.json").is_file():
+            steps = sorted(
+                (child for child in checkpoints.glob("*") if child.name.isdigit()),
+                key=lambda child: int(child.name),
+            )
+            if steps:
+                candidate = steps[-1] / "pretrained_model"
+        if (candidate / "config.json").is_file():
+            return candidate.resolve() if checkpoint.lower() == "last" else candidate
+    searched = ", ".join(str(run_dir) for run_dir in run_dirs)
+    raise FileNotFoundError(f"{field}: run {run!r} checkpoint {checkpoint!r} not found in: {searched}")
+
+
+def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | None = None) -> Any:
+    env_key = env or key.upper()
+    if env_key in os.environ:
+        return os.environ[env_key]
+    return cfg.get(key, default)
+
+
+def relocate_skillvla_output_path(project_root: Path, path: Path) -> Path:
+    """Read saved PT/FT paths before/after output renames, including other servers.
+
+    Existing explicit paths win. Only known outputs*/SkillVLA groups
+    is aliased; run names, checkpoint steps, and saved metadata stay untouched.
+    """
+    if exists_here(path):
+        return path
+    parts = path.parts
+    for index in range(1, len(parts)):
+        if not (parts[index - 1] == "outputs" or parts[index - 1].startswith("outputs_")):
+            continue
+        group = parts[index]
+        aliases = {
+            "skillVLA_stage1": "skillVLA_PT", "skillVLA_PT": "skillVLA_stage1",
+            "skillVLA_NewTask_FT": "skillVLA_FT", "skillVLA_FT": "skillVLA_NewTask_FT",
+        }
+        if group not in aliases:
+            continue
+        alternate = aliases[group]
+        canonical = "skillVLA_FT" if group in {"skillVLA_NewTask_FT", "skillVLA_FT"} else "skillVLA_PT"
+        candidates = (
+            Path(*parts[:index], alternate, *parts[index + 1:]),
+            project_root.joinpath(parts[index - 1], canonical, *parts[index + 1:]),
+            project_root.joinpath(parts[index - 1], aliases[canonical], *parts[index + 1:]),
+        )
+        return next((candidate for candidate in candidates if exists_here(candidate)), path)
+    return path
+
+
+def relocate_pt_output_path(project_root: Path, path: Path) -> Path:
+    """Compatibility name used before the FT output rename."""
+    return relocate_skillvla_output_path(project_root, path)
+
+
+def resolve_path(project_root: "Path | str", value: Any, default: str = "") -> str:
+    """Resolve a config path against project_root for cross-server portability.
+
+    Absolute path → used as-is; relative/bare name → joined under project_root; blank → "".
+    Missing historical PT/FT output paths may resolve to the renamed output group.
+    Lets configs store e.g. ``models/pi05_base`` (relative) and work on any machine — project_root
+    comes from global_config — instead of hardcoding one server's absolute path."""
+    s = str(value if value not in (None, "", "null") else default).strip()
+    if not s:
+        return ""
+    p = Path(s).expanduser()
+    return str(relocate_skillvla_output_path(Path(project_root), p if p.is_absolute() else Path(project_root) / p))
+
+
+def resolve_skillvla_dataset_run(
+    source_dir: Path,
+    base_run_tag: str,
+    relabeled_name: Any = "",
+) -> tuple[str, bool]:
+    """Resolve an explicitly selected predictor-relabeled SkillVLA sibling.
+
+    ``dataset.run`` remains the canonical source run while ``dataset.relabeled``
+    names only the generated suffix (for example ``relabeled_85k``).  Requiring
+    the provenance file prevents a similarly named but unrelated dataset from
+    being selected accidentally.
+    """
+    if relabeled_name in (None, "", False):
+        return base_run_tag, False
+    if relabeled_name is True:
+        raise ValueError(
+            "dataset.relabeled must name the desired variant, for example "
+            "'relabeled_85k'; boolean true is ambiguous when multiple predictor "
+            "checkpoints have been relabeled."
+        )
+    name = str(relabeled_name).strip()
+    if re.fullmatch(r"relabeled_[A-Za-z0-9][A-Za-z0-9._-]*", name) is None:
+        raise ValueError(
+            "dataset.relabeled must be empty or a variant name such as "
+            f"'relabeled_85k', got {name!r}."
+        )
+    if "_relabeled_" in base_run_tag:
+        raise ValueError(
+            "dataset.run must name the original dataset when dataset.relabeled "
+            "selects a variant."
+        )
+
+    resolved_run = f"{base_run_tag}_{name}"
+    candidate = source_dir / resolved_run
+    provenance_path = candidate / "relabel_provenance.json"
+    info_path = candidate / "skillvla" / "meta" / "info.json"
+    if not provenance_path.is_file() or not info_path.is_file():
+        raise FileNotFoundError(
+            f"Selected relabeled SkillVLA dataset is incomplete: {candidate}."
+        )
+    try:
+        provenance = json.loads(provenance_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"Invalid relabel provenance: {provenance_path}: {error}"
+        ) from error
+    if provenance.get("source_run") != base_run_tag:
+        raise ValueError(
+            "Relabeled dataset provenance does not match dataset.run: "
+            f"expected={base_run_tag!r}, "
+            f"recorded={provenance.get('source_run')!r}."
+        )
+    return resolved_run, True
+
+
+def resolve_skillset_threshold_mode(cfg: dict[str, Any], project_root: Path) -> str:
+    """Resolve the boundary-threshold mode from this module's own config.
+
+    Every config (build_data, FSQ, eval) is self-contained and must carry the
+    key itself when it deviates from its mode preset. There is no cross-config
+    inheritance, so editing one module's yaml never changes another's resolution.
+    """
+    mode = str(get_value(cfg, "skillset_mode", "") or "").strip().lower()
+    default = "global_mean" if mode == "gaussian_x0hat" else "episode_mean"
+    return str(
+        get_value(cfg, "skillset_boundary_threshold_mode", default)
+    ).strip().lower()
+
+
+def resolve_skillset_threshold_scale(cfg: dict[str, Any]) -> float:
+    scale = float(get_value(cfg, "skillset_boundary_threshold_scale", 1.0))
+    if scale <= 0.0:
+        raise ValueError(
+            f"skillset_boundary_threshold_scale must be positive, got {scale}."
+        )
+    return scale
+
+
+def _scale_percent_tag(scale: float) -> str:
+    return f"{scale * 100:g}".replace(".", "p") + "p"
+
+
+def _compact_decimal_tag(value: float) -> str:
+    """Filesystem-safe compact decimal tag (0.1 -> 01, 0.25 -> 025)."""
+    text = f"{value:.12g}"
+    if "e" in text.lower():
+        text = f"{value:.12f}".rstrip("0").rstrip(".")
+    return text.replace(".", "")
+
+
+def resolve_skillset_global_threshold_source(cfg: dict[str, Any], project_root: Path) -> str:
+    """Resolve an optional fixed global-threshold JSON from this module's config.
+
+    A source is intentionally separate from ``global_mean``: the latter normally
+    recomputes a mean for the dataset being built, while a non-empty source
+    freezes a previously established cross-task threshold.
+    """
+    return resolve_path(project_root, get_value(cfg, "skillset_global_threshold_source", ""))
+
+
+def resolve_skillset_output_suffix(cfg: dict[str, Any], project_root: Path) -> str:
+    """Resolve an optional, manually chosen experiment suffix for a skillset."""
+    raw = str(get_value(cfg, "skillset_output_suffix", "") or "").strip()
+    if not raw:
+        return ""
+    tag = raw[1:] if raw.startswith("_") else raw
+    if not tag or not all(char.isalnum() or char in "._-" for char in tag):
+        raise ValueError(
+            "skillset_output_suffix may contain only letters, digits, '.', '_' and '-', "
+            f"got {raw!r}."
+        )
+    return f"_{tag}"
+
+
+def resolve_skillset_min_skills(cfg: dict[str, Any], project_root: Path) -> int:
+    """Read the minimum segment count from this module's own config (default 1)."""
+    min_skills = int(get_value(cfg, "skillset_min_skills", 1))
+    if min_skills < 1:
+        raise ValueError(f"skillset_min_skills must be >= 1, got {min_skills}.")
+    return min_skills
+
+
+def resolve_skillset_min_skill_len(cfg: dict[str, Any]) -> int:
+    """Minimum frames per final segment after boundary post-processing."""
+    min_skill_len = int(get_value(cfg, "skillset_min_skill_len", 10))
+    if min_skill_len < 1:
+        raise ValueError(
+            f"skillset_min_skill_len must be >= 1, got {min_skill_len}."
+        )
+    return min_skill_len
+
+
+def exists_here(path: Path, check: str = "any") -> bool:
+    """Whether ``path`` is present on THIS machine, where "cannot even look" counts as absent.
+
+    Checkpoints and dataset metadata record absolute paths from wherever they were written; a
+    RunPod run writes ``/root/workspace/...``, which another account may not even stat. Python
+    re-raises that as PermissionError instead of answering False, which would abort the very
+    re-anchoring that exists to handle such paths. ``check`` is "any", "dir" or "file".
+    """
+    probe = {"any": Path.exists, "dir": Path.is_dir, "file": Path.is_file}[check]
+    try:
+        return bool(probe(path))
+    except OSError:
+        return False
+
+
+def as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+_TRANSITION_JITTER_DIRECTIONS = (
+    "early_start",
+    "late_start",
+    "early_end",
+    "late_end",
+)
+
+
+def resolve_transition_randomization(
+    config: dict[str, Any], dataset_contract: dict[str, Any]
+) -> dict[str, Any]:
+    """Resolve a training-time jitter window within the prebuilt dataset contract.
+
+    The dataset stores the largest ISS window that can be sampled.  Training
+    configs may choose any smaller directional window and either supported
+    distribution without rebuilding the dataset.
+    """
+    raw = config.get("transition_randomization", {})
+    if isinstance(raw, bool):
+        raw = {"enabled": raw}
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("transition_randomization must be a mapping or boolean.")
+    allowed = {
+        "enabled",
+        "pmax",
+        "pmax_step",
+        "percent",
+        "pmax_percent",
+        "preserve_gripper",
+        "distribution",
+        *(f"{name}_pmax" for name in _TRANSITION_JITTER_DIRECTIONS),
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(f"Unknown transition_randomization fields: {unknown}.")
+
+    enabled = as_bool(raw.get("enabled", True))
+    contract_directional = {
+        name: int(dataset_contract[f"jitter_{name}_pmax"])
+        for name in _TRANSITION_JITTER_DIRECTIONS
+    }
+    contract_distribution = (
+        str(dataset_contract.get("jitter_distribution", "half_normal"))
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    if contract_distribution not in {"half_normal", "uniform"}:
+        raise ValueError(
+            f"Unsupported dataset jitter distribution: {contract_distribution!r}."
+        )
+
+    requested_step = raw.get("pmax_step", raw.get("pmax"))
+    requested_percent = raw.get("pmax_percent", raw.get("percent", 0.0))
+    percent = float(requested_percent or 0.0)
+    if not math.isfinite(percent) or not 0.0 <= percent <= 100.0:
+        raise ValueError("transition_randomization.percent must be finite and in [0, 100].")
+    if requested_step is not None and int(requested_step) > 0 and percent > 0.0:
+        raise ValueError(
+            "transition_randomization pmax_step and percent are mutually exclusive."
+        )
+    contract_max_percent = float(dataset_contract.get("jitter_max_percent", 0.0))
+    preserve_gripper = as_bool(raw.get("preserve_gripper", False))
+    if enabled and preserve_gripper and not as_bool(
+        dataset_contract.get("jitter_gripper_validity", False)
+    ):
+        raise ValueError(
+            "preserve_gripper=true requires a dataset rebuilt with "
+            "transition_jitter_precompute_gripper_validity=true."
+        )
+
+    if not enabled:
+        directional = {name: 0 for name in _TRANSITION_JITTER_DIRECTIONS}
+        percent = 0.0
+        preserve_gripper = False
+        distribution = "half_normal"
+    elif percent > 0.0:
+        if contract_max_percent <= 0.0:
+            raise ValueError(
+                "Percentage transition randomization requires a dataset rebuilt "
+                "with transition_jitter_max_percent."
+            )
+        if percent > contract_max_percent:
+            raise ValueError(
+                f"transition_randomization.percent={percent:g} exceeds the built "
+                f"maximum {contract_max_percent:g}."
+            )
+        directional = {name: 0 for name in _TRANSITION_JITTER_DIRECTIONS}
+        distribution = (
+            str(raw.get("distribution", contract_distribution))
+            .strip().lower().replace("-", "_")
+        )
+    else:
+        common = requested_step
+        directional = {}
+        for name in _TRANSITION_JITTER_DIRECTIONS:
+            fallback = contract_directional[name] if common is None else int(common)
+            value = int(raw.get(f"{name}_pmax", fallback))
+            if value < 0 or value > contract_directional[name]:
+                raise ValueError(
+                    f"transition_randomization.{name}_pmax={value} must be within "
+                    f"the dataset contract [0, {contract_directional[name]}]."
+                )
+            directional[name] = value
+        distribution = (
+            str(raw.get("distribution", contract_distribution))
+            .strip()
+            .lower()
+            .replace("-", "_")
+        )
+        if distribution not in {"half_normal", "uniform"}:
+            raise ValueError(
+                "transition_randomization.distribution must be half_normal or uniform."
+            )
+
+    if distribution not in {"half_normal", "uniform"}:
+        raise ValueError(
+            "transition_randomization.distribution must be half_normal or uniform."
+        )
+    return {
+        "enabled": enabled,
+        "jitter_pmax": max(directional.values()),
+        "jitter_pmax_percent": percent,
+        "jitter_preserve_gripper": preserve_gripper,
+        **{f"jitter_{name}_pmax": value for name, value in directional.items()},
+        "jitter_distribution": distribution,
+    }
+
+
+def as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    s = str(value).strip()
+    if "," in s:
+        return [v.strip() for v in s.split(",") if v.strip()]
+    return [v.strip() for v in s.split() if v.strip()]
+
+
+def as_levels(value: Any) -> tuple[int, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(int(v) for v in value)
+    cleaned = str(value).replace("[", " ").replace("]", " ").replace(",", " ")
+    return tuple(int(v) for v in cleaned.split())
+
+
+SKILLSET_MODES = (
+    "spherical",
+    "full",
+    "without_gripper",
+    "std",
+    "gaussian_x0hat",
+)
+
+
+def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Resolve one user-facing SBD mode into the internal action-manifold arguments."""
+    mode_value = get_value(cfg, "skillset_mode", None)
+    if mode_value in (None, ""):
+        # FSQ/eval configs do not need to duplicate the build choice. Inherit the
+        # canonical mode when this resolver is called from another train_skills module.
+        project_root = get_value(cfg, "project_root", None)
+        if project_root:
+            build_cfg = (
+                Path(str(project_root)).expanduser()
+                / "lerobot/skillVLA/libero/configs/train_skills/build_data/build_data_config.yaml"
+            )
+            if build_cfg.is_file():
+                mode_value = get_value(load_config(build_cfg), "skillset_mode", None)
+    if mode_value in (None, ""):
+        # Backward compatibility for detailed pre-mode configs and snapshots.
+        old_type = str(get_value(cfg, "skillset_probe_type", "spherical_xyz"))
+        old_scale = str(get_value(cfg, "skillset_pca_scale_mode", "none")).lower()
+        old_exclude = ",".join(
+            as_list(get_value(cfg, "skillset_probe_exclude_indices", []))
+        )
+        if old_type == "spherical_xyz":
+            mode_value = "spherical"
+        elif old_type == "pca_action" and old_scale == "std":
+            mode_value = "std"
+        elif old_type == "pca_action" and old_exclude:
+            mode_value = "without_gripper"
+        else:
+            mode_value = "full"
+    mode = str(mode_value).strip().lower()
+    if mode not in SKILLSET_MODES:
+        raise ValueError(f"skillset_mode must be one of {SKILLSET_MODES}, got {mode}")
+
+    final_gaussian = mode == "gaussian_x0hat"
+    probe_count = int(
+        get_value(cfg, "skillset_probe_count", 96 if final_gaussian else 24)
+    )
+    probe_alpha = float(get_value(cfg, "skillset_probe_alpha", 0.1))
+    pca_variance = float(get_value(cfg, "skillset_pca_variance", 0.95))
+    pca_stride = int(get_value(cfg, "skillset_pca_stride", 3))
+    action_mode = str(get_value(cfg, "skillset_action_mode", "dataset"))
+    gripper_mode = str(get_value(cfg, "skillset_gripper_mode", "continuous"))
+    relative_exclude = ",".join(
+        as_list(get_value(cfg, "skillset_relative_exclude_joints", ["gripper"]))
+    )
+    gripper_indices = ",".join(
+        as_list(get_value(cfg, "skillset_gripper_indices", [-1]))
+    )
+    gripper_values = ",".join(
+        as_list(get_value(cfg, "skillset_gripper_values", [-1.0, 1.0]))
+    )
+    gripper_threshold = float(get_value(cfg, "skillset_gripper_threshold", 0.0))
+
+    if mode == "spherical":
+        probe_type, pca_scale_mode, probe_exclude_indices = "spherical_xyz", "none", ""
+    elif mode == "full":
+        probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "none", ""
+    elif mode == "without_gripper":
+        probe_type, pca_scale_mode = "pca_action", "none"
+        probe_exclude_indices = gripper_indices
+    else:
+        probe_type, pca_scale_mode, probe_exclude_indices = "pca_action", "std", ""
+
+    probe_generation = str(
+        get_value(
+            cfg,
+            "skillset_probe_generation",
+            "scheduler_gaussian" if final_gaussian else "pca_offset",
+        )
+    )
+    denoise_output = str(
+        get_value(
+            cfg,
+            "skillset_denoise_output",
+            "pred_original_sample" if final_gaussian else "prev_sample",
+        )
+    )
+    score_metric = str(
+        get_value(
+            cfg,
+            "skillset_score_metric",
+            "covariance_gated_cosine" if final_gaussian else "legacy_cosine",
+        )
+    )
+
+    return {
+        "skillset_mode": mode,
+        "skillset_probe_type": probe_type,
+        "skillset_probe_count": probe_count,
+        "skillset_probe_alpha": probe_alpha,
+        "skillset_pca_variance": pca_variance,
+        "skillset_pca_stride": pca_stride,
+        "skillset_pca_scale_mode": pca_scale_mode,
+        "skillset_probe_exclude_indices": probe_exclude_indices,
+        "skillset_action_mode": action_mode,
+        "skillset_relative_exclude_joints": relative_exclude,
+        "skillset_gripper_mode": gripper_mode,
+        "skillset_gripper_indices": gripper_indices,
+        "skillset_gripper_values": gripper_values,
+        "skillset_gripper_threshold": gripper_threshold,
+        "skillset_probe_generation": probe_generation,
+        "skillset_gaussian_sampling": str(
+            get_value(cfg, "skillset_gaussian_sampling", "iid")
+        ),
+        "skillset_gaussian_include_mean": as_bool(
+            get_value(cfg, "skillset_gaussian_include_mean", not final_gaussian)
+        ),
+        "skillset_gaussian_seed": int(
+            get_value(cfg, "skillset_gaussian_seed", 42)
+        ),
+        "skillset_denoise_steps": int(
+            get_value(cfg, "skillset_denoise_steps", 1)
+        ),
+        "skillset_denoise_output": denoise_output,
+        "skillset_score_metric": score_metric,
+        "skillset_gmm_covariance": str(
+            get_value(cfg, "skillset_gmm_covariance", "diag" if final_gaussian else "full")
+        ),
+        "skillset_gmm_n_init": int(get_value(cfg, "skillset_gmm_n_init", 10)),
+        "skillset_gmm_max_iter": int(get_value(cfg, "skillset_gmm_max_iter", 300)),
+        "skillset_min_effective_samples": float(
+            get_value(cfg, "skillset_min_effective_samples", 0.0)
+        ),
+        "skillset_gmm_weighted": as_bool(
+            get_value(cfg, "skillset_gmm_weighted", True)
+        ),
+        "skillset_score_power": float(
+            get_value(cfg, "skillset_score_power", 2.0 if final_gaussian else 1.0)
+        ),
+        "skillset_terminal_mask_frames": int(
+            get_value(cfg, "skillset_terminal_mask_frames", 24 if final_gaussian else 0)
+        ),
+        "skillset_probe_suffix": f"_{mode}",
+    }
+
+
+DINO_IMAGE_MODEL_DIR = "dinov3-vits16"
+
+
+def _selected_skillset(
+    cfg: dict[str, Any],
+    *,
+    dataset_root: Path,
+    target_dataset: str,
+) -> dict[str, Any] | None:
+    """Resolve an existing skillset selected by folder components.
+
+    Build configs still derive ``seg_*`` from DP/detector knobs. FSQ training can
+    instead name an immutable artifact directly and take all of its provenance
+    from ``skillset_manifest.json``.
+    """
+    seg_name = str(get_value(cfg, "skillset_seg_name", "") or "").strip()
+    if not seg_name:
+        return None
+
+    components = {
+        "fsq_dataset_root": str(
+            get_value(
+                cfg,
+                "fsq_dataset_root",
+                "FSQ_dataset",
+                env="FSQ_DATASET_ROOT_NAME",
+            )
+        ).strip(),
+        "target_dataset": str(target_dataset).strip(),
+        "fsq_inputs_name": str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs")).strip(),
+        "skillset_seg_name": seg_name,
+        "skillset_name": str(get_value(cfg, "skillset_name", "skillset")).strip(),
+    }
+    missing = [key for key, value in components.items() if not value]
+    if missing:
+        raise ValueError(f"Selected skillset path is missing folder components: {missing}")
+    invalid = [
+        key
+        for key, value in components.items()
+        if Path(value).name != value or value in {".", ".."}
+    ]
+    if invalid:
+        raise ValueError(
+            "Selected skillset components must be folder names, not paths: "
+            f"{invalid}"
+        )
+
+    skillset_dir = (
+        dataset_root
+        / components["fsq_dataset_root"]
+        / components["target_dataset"]
+        / components["fsq_inputs_name"]
+        / components["skillset_seg_name"]
+        / components["skillset_name"]
+    )
+    manifest_path = skillset_dir / "skillset_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"Selected FSQ skillset manifest not found: {manifest_path}"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Invalid skillset manifest: {manifest_path}: {error}") from error
+
+    manifest_dataset = str(manifest.get("dataset_name", "")).strip()
+    if manifest_dataset != target_dataset:
+        raise ValueError(
+            "Selected skillset dataset mismatch: "
+            f"folder/config={target_dataset!r}, manifest={manifest_dataset!r} "
+            f"({manifest_path})"
+        )
+    policy_raw = str(manifest.get("policy_path", "")).strip()
+    policy_path = Path(policy_raw)
+    if not policy_raw or len(policy_path.parents) < 3:
+        raise ValueError(f"Invalid policy_path in skillset manifest: {manifest_path}")
+    dp_policy = policy_path.parents[2].name
+    dp_checkpoint = policy_path.parent.name
+    if dp_checkpoint.isdigit():
+        dp_checkpoint = dp_checkpoint.zfill(6)
+    seg_prefix = f"seg_{dp_policy}_ck{dp_checkpoint}"
+    if not seg_name.startswith(seg_prefix):
+        raise ValueError(
+            "Selected seg folder disagrees with its manifest policy/checkpoint: "
+            f"expected prefix {seg_prefix!r}, got {seg_name!r}"
+        )
+
+    detector = manifest.get("detector") or {}
+    mode = str(manifest.get("mode", "")).strip().lower()
+    if mode not in SKILLSET_MODES:
+        raise ValueError(
+            f"Invalid mode in selected skillset manifest: {mode!r} ({manifest_path})"
+        )
+    threshold_mode = str(
+        detector.get("boundary_threshold_mode", "episode_mean")
+    ).strip().lower()
+    if threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "Invalid detector.boundary_threshold_mode in selected skillset manifest: "
+            f"{threshold_mode!r} ({manifest_path})"
+        )
+    threshold_scale = float(detector.get("boundary_threshold_scale", 1.0))
+    if threshold_scale <= 0.0:
+        raise ValueError(
+            "Invalid detector.boundary_threshold_scale in selected skillset manifest: "
+            f"{threshold_scale} ({manifest_path})"
+        )
+
+    return {
+        **components,
+        "skillset_dir": skillset_dir,
+        "seg_dir": skillset_dir.parent,
+        "manifest_path": manifest_path,
+        "manifest": manifest,
+        "dp_policy": dp_policy,
+        "dp_checkpoint": dp_checkpoint,
+        "mode": mode,
+        "threshold_mode": threshold_mode,
+        "threshold_scale": threshold_scale,
+        "min_skills": int(detector.get("min_skills", 1)),
+        "min_skill_len": int(detector.get("min_skill_len", 10)),
+        # The exact suffix (including globalref/manual tags) is immutable in the
+        # selected folder name and is therefore safer than reconstructing it.
+        "seg_suffix": seg_name[len(seg_prefix) :],
+    }
+
+
+def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    """Resolve only settings used by DP submission/training.
+
+    DP is the first pipeline stage and must not depend on downstream skillset,
+    FSQ, or BSQ configuration.  Keep this resolver deliberately stage-local so
+    stricter validation added to later stages cannot break DP submission.
+    """
+    target_dataset = dataset or str(
+        get_value(cfg, "target_dataset", "libero_90", env="TARGET_DATASET")
+    )
+    root = Path(str(get_value(cfg, "project_root"))).expanduser()
+    dataset_root_name = str(
+        get_value(cfg, "dataset_root", "libero_dataset", env="DATASET_ROOT_NAME")
+    )
+    dataset_root = root / dataset_root_name
+    outputs_root = root / str(get_value(cfg, "outputs_root", "outputs"))
+    dp_outputs_root = outputs_root / "DP"
+    raw_dataset_dir = dataset_root / target_dataset
+
+    dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
+    # External meaning: the number of current/future actions requested by the
+    # experiment. history_reconstruction derives the longer model trajectory
+    # (past reconstruction + future prediction) below.
+    dp_future_action_horizon = int(get_value(cfg, "dp_future_action_horizon", 16))
+    if dp_n_obs_steps < 1:
+        raise ValueError(f"dp_n_obs_steps must be positive, got {dp_n_obs_steps}.")
+    if dp_future_action_horizon < 1:
+        raise ValueError(
+            "dp_future_action_horizon must be positive, "
+            f"got {dp_future_action_horizon}."
+        )
+    dp_relative = as_bool(get_value(cfg, "dp_relative", False))
+    dp_unet_size = str(get_value(cfg, "dp_unet_size", "base")).strip().lower()
+    dp_unet_dims_by_size = {
+        "base": (512, 1024, 2048),
+        "small": (128, 256, 512),
+    }
+    if dp_unet_size not in dp_unet_dims_by_size:
+        raise ValueError(
+            f"dp_unet_size must be one of {sorted(dp_unet_dims_by_size)}, "
+            f"got {dp_unet_size!r}."
+        )
+    dp_down_dims = dp_unet_dims_by_size[dp_unet_size]
+    dp_down_dims_arg = "[" + ",".join(str(dim) for dim in dp_down_dims) + "]"
+    dp_unet_suffix = "_small" if dp_unet_size == "small" else ""
+    dp_amp = as_bool(get_value(cfg, "dp_amp", False))
+    dp_lr_scheduler = str(
+        get_value(cfg, "dp_lr_scheduler", "cosine")
+    ).strip().lower()
+    supported_dp_lr_schedulers = {"cosine", "constant"}
+    if dp_lr_scheduler not in supported_dp_lr_schedulers:
+        raise ValueError(
+            "dp_lr_scheduler must be one of "
+            f"{sorted(supported_dp_lr_schedulers)}, got {dp_lr_scheduler!r}."
+        )
+    dp_lr_scheduler_suffix = "_constLR" if dp_lr_scheduler == "constant" else ""
+    dp_history_encoder = str(
+        get_value(cfg, "dp_history_encoder", "flat")
+    ).strip().lower()
+    supported_history_encoders = {
+        "flat",
+        "gru",
+        "transformer",
+        "transformer_cls",
+    }
+    if dp_history_encoder not in supported_history_encoders:
+        raise ValueError(
+            "dp_history_encoder must be one of "
+            f"{sorted(supported_history_encoders)}, got {dp_history_encoder!r}."
+        )
+    dp_history_encoder_dim = int(get_value(cfg, "dp_history_encoder_dim", 128))
+    if dp_history_encoder_dim < 1:
+        raise ValueError(
+            "dp_history_encoder_dim must be positive, "
+            f"got {dp_history_encoder_dim}."
+        )
+    # The compact temporal encoders use fixed, checkpointed internal defaults:
+    # GRU=1 layer; Transformer=2 layers/4 heads. Keep the external experiment
+    # surface to the encoder choice and shared feature width.
+    if (
+        dp_history_encoder in {"transformer", "transformer_cls"}
+        and dp_history_encoder_dim % 4 != 0
+    ):
+        raise ValueError(
+            "dp_history_encoder_dim must be divisible by 4 for the Transformer, "
+            f"got {dp_history_encoder_dim}."
+        )
+    dp_history_encoder_suffix = (
+        "" if dp_history_encoder == "flat" else f"_{dp_history_encoder}"
+    )
+    dp_action_sequence_mode = str(
+        get_value(cfg, "dp_action_sequence_mode", "future_only")
+    ).strip().lower()
+    supported_action_sequence_modes = {
+        "future_only",
+        "history_reconstruction",
+    }
+    if dp_action_sequence_mode not in supported_action_sequence_modes:
+        raise ValueError(
+            "dp_action_sequence_mode must be one of "
+            f"{sorted(supported_action_sequence_modes)}, "
+            f"got {dp_action_sequence_mode!r}."
+        )
+    if dp_action_sequence_mode == "history_reconstruction":
+        dp_trajectory_horizon = dp_n_obs_steps - 1 + dp_future_action_horizon
+        max_n_action_steps = dp_future_action_horizon
+    else:
+        dp_trajectory_horizon = dp_future_action_horizon
+        max_n_action_steps = dp_future_action_horizon
+    default_n_action_steps = max_n_action_steps
+    dp_n_action_steps = int(
+        get_value(
+            cfg,
+            "dp_n_action_steps",
+            default_n_action_steps,
+        )
+    )
+    if not 1 <= dp_n_action_steps <= max_n_action_steps:
+        raise ValueError(
+            f"dp_n_action_steps must be in [1, {max_n_action_steps}] for "
+            f"dp_action_sequence_mode={dp_action_sequence_mode!r}, got {dp_n_action_steps}."
+        )
+    # SBD inspects the complete requested future, so only train on anchors for
+    # which all future targets exist.
+    default_drop_n_last_frames = dp_future_action_horizon - 1
+    dp_drop_n_last_frames = int(
+        get_value(cfg, "dp_drop_n_last_frames", default_drop_n_last_frames)
+    )
+    if dp_drop_n_last_frames < 0:
+        raise ValueError(
+            f"dp_drop_n_last_frames must be non-negative, got {dp_drop_n_last_frames}."
+        )
+    train_dp = as_bool(
+        get_value(
+            cfg,
+            "train_DP",
+            get_value(cfg, "train_dp", True),
+            env="TRAIN_DP",
+        )
+    )
+    dp_vision = str(get_value(cfg, "dp_vision", "state")).strip().lower()
+    if dp_vision not in {"state", "action", "resnet", "dino"}:
+        raise ValueError(
+            f"dp_vision must be state|action|resnet|dino, got {dp_vision!r}."
+        )
+    dp_proprio_grounding = str(
+        get_value(cfg, "dp_proprio_grounding", "none") or "none"
+    ).strip().lower().replace("-", "_")
+    dp_proprio_grounding = {
+        "off": "none",
+        "false": "none",
+    }.get(dp_proprio_grounding, dp_proprio_grounding)
+    if dp_proprio_grounding not in {"none", "episode_start_xyz"}:
+        raise ValueError(
+            "dp_proprio_grounding must be none|episode_start_xyz, "
+            f"got {dp_proprio_grounding!r}."
+        )
+    if dp_vision == "action":
+        # Action-history conditioning does not consume observation.state.
+        dp_proprio_grounding = "none"
+        if dp_relative:
+            raise ValueError(
+                "dp_vision=action does not currently support dp_relative=true."
+            )
+    if dp_proprio_grounding != "none" and dp_relative:
+        raise ValueError(
+            "dp_proprio_grounding=episode_start_xyz cannot be combined with dp_relative=true."
+        )
+    dp_proprio_grounding_suffix = (
+        "_grounded" if dp_proprio_grounding == "episode_start_xyz" else ""
+    )
+    dp_policy_template = str(
+        get_value(
+            cfg,
+            "dp_policy_name",
+            "dp_{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}"
+            "_{dp_action_sequence_mode}"
+            "_obs{dp_n_obs_steps}_future{dp_future_action_horizon}"
+            "{dp_history_encoder_suffix}{dp_lr_scheduler_suffix}{dp_unet_suffix}",
+        )
+    )
+    dp_policy = dp_policy_template.format(
+        target_dataset=target_dataset,
+        dp_vision=dp_vision,
+        dp_vision_tag=dp_vision,
+        dp_vision_suffix="" if dp_vision == "state" else f"_{dp_vision}",
+        dp_proprio_grounding=dp_proprio_grounding,
+        dp_proprio_grounding_suffix=dp_proprio_grounding_suffix,
+        dp_unet_size=dp_unet_size,
+        dp_unet_suffix=dp_unet_suffix,
+        dp_history_encoder=dp_history_encoder,
+        dp_history_encoder_suffix=dp_history_encoder_suffix,
+        dp_history_encoder_dim=dp_history_encoder_dim,
+        dp_lr_scheduler=dp_lr_scheduler,
+        dp_lr_scheduler_suffix=dp_lr_scheduler_suffix,
+        dp_action_sequence_mode=dp_action_sequence_mode,
+        dp_n_obs_steps=dp_n_obs_steps,
+        dp_future_action_horizon=dp_future_action_horizon,
+    )
+
+    dp_run_name = str(get_value(cfg, "dp_run_name", "")).strip()
+    if dp_run_name:
+        dp_policy = dp_run_name
+        if "_action" in dp_run_name:
+            dp_vision = "action"
+            dp_proprio_grounding = "none"
+            dp_proprio_grounding_suffix = ""
+        elif "_state" in dp_run_name:
+            dp_vision = "state"
+        elif "_resnet" in dp_run_name:
+            dp_vision = "resnet"
+        elif "_dino" in dp_run_name:
+            dp_vision = "dino"
+    if dp_vision not in {"state", "action", "resnet", "dino"}:
+        raise ValueError(
+            f"dp_vision must be state|action|resnet|dino, got {dp_vision!r}."
+        )
+
+    dp_checkpoint = str(get_value(cfg, "dp_checkpoint", "100000"))
+    if dp_checkpoint.isdigit():
+        dp_checkpoint = dp_checkpoint.zfill(6)
+
+    slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
+    slurm_partition = ",".join(slurm_partitions) or "debug"
+    dp_base_config = str(
+        get_value(
+            cfg,
+            "dp_base_config",
+            "skillVLA/libero/configs/train_skills/DP/src/train_dp_base.yaml",
+        )
+    )
+    return {
+        "project_root": root,
+        "lerobot_root": root / "lerobot",
+        "dataset_root": dataset_root,
+        "dataset_root_name": dataset_root_name,
+        "outputs_root": outputs_root,
+        "dp_outputs_root": dp_outputs_root,
+        "target_dataset": target_dataset,
+        "raw_dataset_dir": raw_dataset_dir,
+        "dp_base_config": root / "lerobot" / dp_base_config,
+        "dp_policy": dp_policy,
+        "dp_output_dir": dp_outputs_root / dp_policy,
+        "dp_policy_path": (
+            dp_outputs_root
+            / dp_policy
+            / "checkpoints"
+            / dp_checkpoint
+            / "pretrained_model"
+        ),
+        "dp_checkpoint": dp_checkpoint,
+        "dp_vision": dp_vision,
+        "dp_proprio_grounding": dp_proprio_grounding,
+        "dp_proprio_grounding_suffix": dp_proprio_grounding_suffix,
+        "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
+        "dp_unet_size": dp_unet_size,
+        "dp_down_dims": list(dp_down_dims),
+        "dp_down_dims_arg": dp_down_dims_arg,
+        "dp_amp": dp_amp,
+        "dp_lr_scheduler": dp_lr_scheduler,
+        "dp_lr_scheduler_suffix": dp_lr_scheduler_suffix,
+        "dp_history_encoder": dp_history_encoder,
+        "dp_history_encoder_dim": dp_history_encoder_dim,
+        "dp_history_encoder_suffix": dp_history_encoder_suffix,
+        "train_DP": train_dp,
+        "dp_n_obs_steps": dp_n_obs_steps,
+        "dp_n_action_steps": dp_n_action_steps,
+        "dp_trajectory_horizon": dp_trajectory_horizon,
+        "dp_future_action_horizon": dp_future_action_horizon,
+        "dp_action_sequence_mode": dp_action_sequence_mode,
+        "dp_drop_n_last_frames": dp_drop_n_last_frames,
+        "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
+        "dp_relative": dp_relative,
+        "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
+        "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
+        "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
+        "dp_log_freq": int(get_value(cfg, "dp_log_freq", 200)),
+        "dp_eval_freq": int(get_value(cfg, "dp_eval_freq", 0)),
+        "dp_seed": int(get_value(cfg, "dp_seed", 42)),
+        "dp_wandb_project": str(get_value(cfg, "dp_wandb_project", "DP_train")),
+        "dp_wandb_enable": as_bool(get_value(cfg, "dp_wandb_enable", True)),
+        "dp_overwrite_output": as_bool(get_value(cfg, "dp_overwrite_output", True)),
+        "dp_partition": slurm_partition,
+        "dp_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "dp_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "dp_qos": str(get_value(cfg, "train_qos", "base_qos")),
+        "dp_gres": str(get_value(cfg, "dp_gres", "gpu:1")),
+        "dp_cpus_per_task": int(get_value(cfg, "dp_cpus_per_task", 8)),
+        "dp_mem": str(get_value(cfg, "dp_mem", "64G")),
+        "dp_time": str(get_value(cfg, "dp_time", "48:00:00")),
+    }
+
+
+def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    """Resolve only settings used to build the DP-segmented skill dataset.
+
+    This stage produces the input artifact consumed later by FSQ or BSQ.  Its
+    paths depend on the trained DP and boundary-detector settings, but never on
+    the downstream quantizer, autoencoder, decoder, or FSQ optimization config.
+    """
+    dp_settings = dp_train_settings(cfg, dataset)
+    target_dataset = dp_settings["target_dataset"]
+    root = dp_settings["project_root"]
+    dataset_root = dp_settings["dataset_root"]
+    dp_policy = dp_settings["dp_policy"]
+    dp_checkpoint = dp_settings["dp_checkpoint"]
+    fsq_dataset_root_name = str(
+        get_value(
+            cfg,
+            "fsq_dataset_root",
+            "FSQ_dataset",
+            env="FSQ_DATASET_ROOT_NAME",
+        )
+    )
+    fsq_dataset_root = dataset_root / fsq_dataset_root_name
+    fsq_inputs_name = str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs"))
+    fsq_inputs_dir = fsq_dataset_root / target_dataset / fsq_inputs_name
+
+    probe_settings = skillset_probe_settings(cfg)
+    skillset_min_skills = resolve_skillset_min_skills(cfg, root)
+    skillset_min_skill_len = resolve_skillset_min_skill_len(cfg)
+    skillset_boundary_threshold_mode = resolve_skillset_threshold_mode(cfg, root)
+    if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "skillset_boundary_threshold_mode must be 'episode_mean' or 'global_mean', "
+            f"got {skillset_boundary_threshold_mode!r}."
+        )
+    skillset_boundary_threshold_scale = resolve_skillset_threshold_scale(cfg)
+    skillset_global_threshold_source = resolve_skillset_global_threshold_source(cfg, root)
+    if skillset_global_threshold_source and skillset_boundary_threshold_mode != "global_mean":
+        raise ValueError(
+            "skillset_global_threshold_source requires skillset_boundary_threshold_mode=global_mean."
+        )
+
+    if skillset_boundary_threshold_mode == "global_mean":
+        threshold_scope_tag = (
+            "globalref" if skillset_global_threshold_source else "globalmean"
+        )
+    else:
+        threshold_scope_tag = "episodemean"
+    threshold_percent_tag = _scale_percent_tag(skillset_boundary_threshold_scale)
+    skillset_threshold_name = f"{threshold_scope_tag}_{threshold_percent_tag}"
+    skillset_threshold_suffix = f"_{skillset_threshold_name}"
+    skillset_min_skills_suffix = (
+        "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
+    )
+    skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
+    skillset_suffix = (
+        probe_settings["skillset_probe_suffix"]
+        + skillset_threshold_suffix
+        + skillset_min_skills_suffix
+        + skillset_output_suffix
+    )
+    fsq_seg_dir = fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
+    skillset_name = str(get_value(cfg, "skillset_name", "skillset"))
+    skillset_dir = fsq_seg_dir / skillset_name
+
+    slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
+    slurm_partition = ",".join(slurm_partitions) or "debug"
+    return {
+        "project_root": root,
+        "lerobot_root": dp_settings["lerobot_root"],
+        "dataset_root": dataset_root,
+        "dataset_root_name": dp_settings["dataset_root_name"],
+        "outputs_root": dp_settings["outputs_root"],
+        "dp_outputs_root": dp_settings["dp_outputs_root"],
+        "target_dataset": target_dataset,
+        "raw_dataset_dir": dp_settings["raw_dataset_dir"],
+        "dp_policy": dp_policy,
+        "dp_policy_path": dp_settings["dp_policy_path"],
+        "dp_checkpoint": dp_checkpoint,
+        "dp_vision": dp_settings["dp_vision"],
+        "fsq_dataset_root": fsq_dataset_root,
+        "fsq_dataset_root_name": fsq_dataset_root_name,
+        "fsq_inputs_name": fsq_inputs_name,
+        "fsq_inputs_dir": fsq_inputs_dir,
+        "fsq_seg_dir": fsq_seg_dir,
+        "skillset_name": skillset_name,
+        "skillset_dir": skillset_dir,
+        "skillset_done_path": skillset_dir / ".complete",
+        "skillset_seg_name": fsq_seg_dir.name,
+        "skillset_manifest_path": skillset_dir / "skillset_manifest.json",
+        "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
+        "skillset_wandb_project": str(
+            get_value(cfg, "skillset_wandb_project", "Skill_dataset")
+        ),
+        "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
+        "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
+        "skillset_smooth_window": int(get_value(cfg, "skillset_smooth_window", 7)),
+        "skillset_savgol_polyorder": int(
+            get_value(cfg, "skillset_savgol_polyorder", 4)
+        ),
+        "skillset_replan_interval": int(
+            get_value(
+                cfg,
+                "skillset_replan_interval",
+                5 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 3,
+            )
+        ),
+        "skillset_nms_dist": int(
+            get_value(
+                cfg,
+                "skillset_nms_dist",
+                15 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 25,
+            )
+        ),
+        "skillset_min_skills": skillset_min_skills,
+        "skillset_min_skills_suffix": skillset_min_skills_suffix,
+        "skillset_min_skill_len": skillset_min_skill_len,
+        **probe_settings,
+        "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
+        "skillset_boundary_threshold_scale": skillset_boundary_threshold_scale,
+        "skillset_boundary_threshold_scale_tag": threshold_percent_tag,
+        "skillset_boundary_threshold_name": skillset_threshold_name,
+        "skillset_boundary_threshold_suffix": skillset_threshold_suffix,
+        "skillset_global_threshold_source": skillset_global_threshold_source,
+        "skillset_output_suffix": skillset_output_suffix,
+        "skillset_global_threshold_path": skillset_dir / "global_boundary_threshold.json",
+        "skillset_dino_feature_dir": resolve_path(
+            root, get_value(cfg, "skillset_dino_feature_dir", "")
+        ),
+        "skillset_cpus_per_task": int(
+            get_value(cfg, "skillset_cpus_per_task", 4)
+        ),
+        "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),
+        "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),
+        # Cached-curve segmentation and bookkeeping are CPU-only.  Keep the
+        # partition default out of the user-facing build yaml; the QoS still
+        # follows the server-wide train_qos setting.
+        "skillset_cpu_partition": str(
+            get_value(cfg, "skillset_cpu_partition", "dell_cpu")
+        ),
+        "skillset_cpu_qos": str(
+            get_value(cfg, "skillset_cpu_qos", "cpu_qos")
+        ),
+        "slurm_partitions": slurm_partitions,
+        "slurm_partition": slurm_partition,
+        "slurm_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "slurm_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "slurm_qos": str(get_value(cfg, "train_qos", "base_qos")),
+        "slurm_gres": str(get_value(cfg, "slurm_gres", "gpu:1")),
+    }
+
+
+def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    dp_settings = dp_train_settings(cfg, dataset)
+    target_dataset = dp_settings["target_dataset"]
+    root = dp_settings["project_root"]
+    dataset_root_name = dp_settings["dataset_root_name"]
+    dataset_root = dp_settings["dataset_root"]
+    outputs_root = dp_settings["outputs_root"]
+    # Fixed per-stage subdirs under the single outputs root (not configurable in yaml).
+    dp_outputs_root = dp_settings["dp_outputs_root"]
+    fsq_outputs_root = outputs_root / "FSQ"
+    fsq_dataset_root_name = str(
+        get_value(
+            cfg,
+            "fsq_dataset_root",
+            "FSQ_dataset",
+            env="FSQ_DATASET_ROOT_NAME",
+        )
+    )
+    fsq_dataset_root = dataset_root / fsq_dataset_root_name
+    fsq_inputs_name = str(get_value(cfg, "fsq_inputs_name", "FSQ_inputs"))
+    fsq_inputs_dir = fsq_dataset_root / target_dataset / fsq_inputs_name
+    selected_skillset = _selected_skillset(
+        cfg,
+        dataset_root=dataset_root,
+        target_dataset=target_dataset,
+    )
+
+    raw_dataset_dir = dp_settings["raw_dataset_dir"]
+    fsq_frame_cache_enabled = as_bool(
+        get_value(cfg, "fsq_frame_cache_enabled", True)
+    )
+    fsq_frame_cache_stage_local = as_bool(
+        get_value(cfg, "fsq_frame_cache_stage_local", True)
+    )
+    fsq_frame_cache_local_root = str(
+        get_value(cfg, "fsq_frame_cache_local_root", "") or ""
+    ).strip()
+    if fsq_frame_cache_local_root and not Path(
+        fsq_frame_cache_local_root
+    ).is_absolute():
+        raise ValueError(
+            "fsq_frame_cache_local_root must be empty or an absolute node-local path."
+        )
+    fsq_frame_cache_local_reserve_gb = int(
+        get_value(cfg, "fsq_frame_cache_local_reserve_gb", 16)
+    )
+    if fsq_frame_cache_local_reserve_gb < 0:
+        raise ValueError("fsq_frame_cache_local_reserve_gb must be >= 0.")
+    default_frame_cache_root = (
+        root
+        / ".cache"
+        / "fsq_frame_cache"
+        / dataset_root_name
+        / target_dataset
+        / "rgb_zstd_v2"
+    )
+    configured_frame_cache_root = str(
+        get_value(cfg, "fsq_frame_cache_root", "") or ""
+    ).strip()
+    fsq_frame_cache_root = (
+        resolve_path(root, configured_frame_cache_root)
+        if configured_frame_cache_root
+        else str(default_frame_cache_root)
+    )
+    # The submit script supplies the fingerprinted, completed directory through
+    # FSQ_FRAME_CACHE_DIR. It stays blank during the initial config resolution.
+    fsq_frame_cache_dir = resolve_path(
+        root,
+        get_value(cfg, "fsq_frame_cache_dir", ""),
+    )
+    # Follow the global training placement. submit_train_fsq.sh also reserves
+    # the global training GRES because some GPU QoS definitions enforce a
+    # minimum GPU count even though RGB-cache computation itself is CPU-only.
+    default_frame_cache_partition = ",".join(
+        as_list(get_value(cfg, "train_partition", ["debug"]))
+    ) or "debug"
+    default_frame_cache_qos = str(
+        get_value(cfg, "train_qos", "base_qos") or "base_qos"
+    ).strip()
+    fsq_frame_cache_partition = str(
+        get_value(
+            cfg,
+            "fsq_frame_cache_partition",
+            default_frame_cache_partition,
+        )
+    ).strip()
+    fsq_frame_cache_qos = str(
+        get_value(cfg, "fsq_frame_cache_qos", default_frame_cache_qos)
+    ).strip()
+    fsq_frame_cache_cpus_per_task = int(
+        get_value(cfg, "fsq_frame_cache_cpus_per_task", 16)
+    )
+    fsq_frame_cache_workers = int(
+        get_value(cfg, "fsq_frame_cache_workers", 16)
+    )
+    fsq_frame_cache_decoder_threads = int(
+        get_value(cfg, "fsq_frame_cache_decoder_threads", 1)
+    )
+    if not fsq_frame_cache_partition or not fsq_frame_cache_qos:
+        raise ValueError("FSQ frame-cache partition and qos must be non-empty.")
+    if min(
+        fsq_frame_cache_cpus_per_task,
+        fsq_frame_cache_workers,
+        fsq_frame_cache_decoder_threads,
+    ) < 1:
+        raise ValueError(
+            "FSQ frame-cache cpus_per_task, workers, and decoder_threads must all be >= 1."
+        )
+
+    dino_features = cfg.get("fsq_dino_features", {}) or {}
+    if not isinstance(dino_features, dict):
+        raise ValueError("fsq_dino_features must be an inline mapping.")
+    unknown = sorted(set(dino_features).difference({"enabled", "batch_size"}))
+    if unknown:
+        raise ValueError(
+            "fsq_dino_features supports enabled|batch_size, got: "
+            + ", ".join(unknown)
+        )
+    fsq_dino_features_enabled = as_bool(dino_features.get("enabled", False))
+    fsq_dino_feature_batch_size = int(dino_features.get("batch_size", 256))
+    if fsq_dino_feature_batch_size < 1:
+        raise ValueError("fsq_dino_features.batch_size must be >= 1.")
+    default_dino_feature_cache_root = (
+        root
+        / ".cache"
+        / "fsq_dino_feature_cache"
+        / dataset_root_name
+        / target_dataset
+        / "dinov3_vits16_top_bf16_v1"
+    )
+    configured_dino_feature_cache_root = str(
+        get_value(cfg, "fsq_dino_feature_cache_root", "") or ""
+    ).strip()
+    fsq_dino_feature_cache_root = (
+        resolve_path(root, configured_dino_feature_cache_root)
+        if configured_dino_feature_cache_root
+        else str(default_dino_feature_cache_root)
+    )
+    fsq_dino_feature_cache_dir = resolve_path(
+        root, get_value(cfg, "fsq_dino_feature_cache_dir", "")
+    )
+
+    route_batching = cfg.get("fsq_route_batching", {}) or {}
+    if not isinstance(route_batching, dict):
+        raise ValueError("fsq_route_batching must be an inline mapping.")
+    unknown = sorted(set(route_batching).difference({"enabled", "chunk_size"}))
+    if unknown:
+        raise ValueError(
+            "fsq_route_batching supports enabled|chunk_size, got: "
+            + ", ".join(unknown)
+        )
+    fsq_route_batching_enabled = as_bool(route_batching.get("enabled", False))
+    requested_route_chunk_size = int(route_batching.get("chunk_size", 4))
+    if requested_route_chunk_size < 1:
+        raise ValueError("fsq_route_batching.chunk_size must be >= 1.")
+    fsq_route_code_chunk_size = (
+        requested_route_chunk_size if fsq_route_batching_enabled else 0
+    )
+
+    dp_n_obs_steps = dp_settings["dp_n_obs_steps"]
+    dp_trajectory_horizon = dp_settings["dp_trajectory_horizon"]
+    dp_future_action_horizon = dp_settings["dp_future_action_horizon"]
+    dp_unet_size = dp_settings["dp_unet_size"]
+    dp_down_dims = dp_settings["dp_down_dims"]
+    dp_down_dims_arg = dp_settings["dp_down_dims_arg"]
+    dp_amp = dp_settings["dp_amp"]
+    dp_lr_scheduler = dp_settings["dp_lr_scheduler"]
+    dp_relative = dp_settings["dp_relative"]
+    dp_proprio_grounding = dp_settings["dp_proprio_grounding"]
+    dp_n_action_steps = dp_settings["dp_n_action_steps"]
+    dp_action_sequence_mode = dp_settings["dp_action_sequence_mode"]
+    dp_drop_n_last_frames = dp_settings["dp_drop_n_last_frames"]
+    train_dp = dp_settings["train_DP"]
+    dp_vision = dp_settings["dp_vision"]
+    dp_policy = dp_settings["dp_policy"]
+    dp_checkpoint = dp_settings["dp_checkpoint"]
+    skillset_cfg = cfg
+    if selected_skillset is not None:
+        dp_policy = selected_skillset["dp_policy"]
+        dp_checkpoint = selected_skillset["dp_checkpoint"]
+        if "_action" in dp_policy:
+            dp_vision = "action"
+            dp_proprio_grounding = "none"
+        elif "_state" in dp_policy:
+            dp_vision = "state"
+        elif "_resnet" in dp_policy:
+            dp_vision = "resnet"
+        elif "_dino" in dp_policy:
+            dp_vision = "dino"
+        manifest_action = selected_skillset["manifest"].get("action") or {}
+        manifest_probe = selected_skillset["manifest"].get("probe") or {}
+        skillset_cfg = {
+            **cfg,
+            "skillset_mode": selected_skillset["mode"],
+            "skillset_probe_count": manifest_probe.get("count", 24),
+            "skillset_probe_alpha": manifest_probe.get("alpha", 0.1),
+            "skillset_pca_variance": manifest_probe.get("pca_variance", 0.95),
+            "skillset_pca_stride": manifest_probe.get("pca_stride", 3),
+            "skillset_action_mode": manifest_action.get("mode", "dataset"),
+            "skillset_relative_exclude_joints": manifest_action.get(
+                "relative_exclude_joints", ["gripper"]
+            ),
+            "skillset_gripper_mode": manifest_action.get("gripper_mode", "continuous"),
+            "skillset_gripper_indices": manifest_action.get("gripper_indices", [-1]),
+            "skillset_gripper_values": manifest_action.get("gripper_values", [-1.0, 1.0]),
+            "skillset_gripper_threshold": manifest_action.get("gripper_threshold", 0.0),
+        }
+    probe_settings = skillset_probe_settings(skillset_cfg)
+    skillset_min_skills = (
+        selected_skillset["min_skills"]
+        if selected_skillset is not None
+        else resolve_skillset_min_skills(cfg, root)
+    )
+    skillset_min_skill_len = (
+        selected_skillset["min_skill_len"]
+        if selected_skillset is not None
+        else resolve_skillset_min_skill_len(cfg)
+    )
+    if skillset_min_skills < 1:
+        raise ValueError(f"skillset manifest min_skills must be >= 1, got {skillset_min_skills}.")
+    if skillset_min_skill_len < 1:
+        raise ValueError(
+            f"skillset manifest min_skill_len must be >= 1, got {skillset_min_skill_len}."
+        )
+    # Boundaries are DP/checkpoint-dependent, so different runs never reuse or clobber a skillset.
+    skillset_boundary_threshold_mode = (
+        selected_skillset["threshold_mode"]
+        if selected_skillset is not None
+        else resolve_skillset_threshold_mode(cfg, root)
+    )
+    if skillset_boundary_threshold_mode not in {"episode_mean", "global_mean"}:
+        raise ValueError(
+            "skillset_boundary_threshold_mode must be 'episode_mean' or 'global_mean', "
+            f"got {skillset_boundary_threshold_mode!r}."
+        )
+    skillset_boundary_threshold_scale = (
+        selected_skillset["threshold_scale"]
+        if selected_skillset is not None
+        else resolve_skillset_threshold_scale(cfg)
+    )
+    selected_is_globalref = (
+        selected_skillset is not None
+        and "_globalref_" in selected_skillset["seg_suffix"]
+    )
+    skillset_global_threshold_source = (
+        str(
+            (selected_skillset["manifest"].get("detector") or {}).get(
+                "global_threshold_path", ""
+            )
+        )
+        if selected_is_globalref
+        else (
+            ""
+            if selected_skillset is not None
+            else resolve_skillset_global_threshold_source(cfg, root)
+        )
+    )
+    if skillset_global_threshold_source and skillset_boundary_threshold_mode != "global_mean":
+        raise ValueError(
+            "skillset_global_threshold_source requires skillset_boundary_threshold_mode=global_mean."
+        )
+    # Both the threshold scope and scale are always tagged so distinct
+    # segmentations cannot share a directory (for example episodemean_80p).
+    if selected_is_globalref:
+        threshold_scope_tag = "globalref"
+    elif skillset_boundary_threshold_mode == "global_mean":
+        threshold_scope_tag = (
+            "globalref" if skillset_global_threshold_source else "globalmean"
+        )
+    else:
+        threshold_scope_tag = "episodemean"
+    threshold_percent_tag = _scale_percent_tag(skillset_boundary_threshold_scale)
+    skillset_threshold_name = f"{threshold_scope_tag}_{threshold_percent_tag}"
+    skillset_threshold_suffix = f"_{skillset_threshold_name}"
+    # min_skills=1 is the normal setting and is omitted. Non-default values
+    # remain explicit so experiments with different episode filtering cannot mix.
+    skillset_min_skills_suffix = (
+        "" if skillset_min_skills == 1 else f"_ms{skillset_min_skills}"
+    )
+    if selected_skillset is not None:
+        canonical_suffix = (
+            probe_settings["skillset_probe_suffix"]
+            + skillset_threshold_suffix
+            + skillset_min_skills_suffix
+        )
+        if not selected_skillset["seg_suffix"].startswith(canonical_suffix):
+            raise ValueError(
+                "Selected seg folder identity disagrees with its manifest: "
+                f"expected suffix prefix {canonical_suffix!r}, "
+                f"got {selected_skillset['seg_suffix']!r}"
+            )
+        skillset_output_suffix = selected_skillset["seg_suffix"][len(canonical_suffix) :]
+    else:
+        skillset_output_suffix = resolve_skillset_output_suffix(cfg, root)
+    skillset_suffix = (
+        probe_settings["skillset_probe_suffix"]
+        + skillset_threshold_suffix
+        + skillset_min_skills_suffix
+        + skillset_output_suffix
+    )
+    fsq_seg_dir = (
+        selected_skillset["seg_dir"]
+        if selected_skillset is not None
+        else fsq_inputs_dir / f"seg_{dp_policy}_ck{dp_checkpoint}{skillset_suffix}"
+    )
+
+    raw_quantizer = cfg.get("fsq_quantizer")
+    if not isinstance(raw_quantizer, dict):
+        raise ValueError(
+            "fsq_quantizer must be an inline mapping: "
+            "{type: fsq, levels: [...]} or {type: bsq, code_dim: N}."
+        )
+    fsq_quantizer = str(raw_quantizer.get("type", "")).strip().lower()
+    if fsq_quantizer not in {"fsq", "bsq"}:
+        raise ValueError(
+            f"fsq_quantizer.type must be fsq|bsq, got {fsq_quantizer!r}."
+        )
+    allowed_quantizer_keys = (
+        {"type", "levels"} if fsq_quantizer == "fsq" else {"type", "code_dim"}
+    )
+    unknown_quantizer_keys = sorted(set(raw_quantizer) - allowed_quantizer_keys)
+    if unknown_quantizer_keys:
+        raise ValueError(
+            f"fsq_quantizer.type={fsq_quantizer} does not support: "
+            + ", ".join(unknown_quantizer_keys)
+        )
+    if fsq_quantizer == "fsq":
+        if "levels" not in raw_quantizer:
+            raise ValueError("fsq_quantizer.type=fsq requires levels.")
+        fsq_levels = as_levels(raw_quantizer["levels"])
+        bsq_code_dim = len(fsq_levels)
+        quantizer_run_name = "FSQ" + "".join(str(level) for level in fsq_levels)
+    else:
+        if "code_dim" not in raw_quantizer:
+            raise ValueError("fsq_quantizer.type=bsq requires code_dim.")
+        bsq_code_dim = int(raw_quantizer["code_dim"])
+        if bsq_code_dim < 2:
+            raise ValueError(
+                f"fsq_quantizer.code_dim must be >= 2, got {bsq_code_dim}."
+            )
+        fsq_levels = [2] * bsq_code_dim
+        quantizer_run_name = "BSQ" + ("2" * bsq_code_dim)
+    fsq_tag = (
+        f"bsq{bsq_code_dim}"
+        if fsq_quantizer == "bsq"
+        else "fsq" + "".join(str(v) for v in fsq_levels)
+    )
+    fsq_exp = str(get_value(cfg, "fsq_exp", "")).strip()
+    if fsq_exp and (
+        fsq_exp in {".", ".."}
+        or Path(fsq_exp).name != fsq_exp
+        or any(not (char.isalnum() or char in "._-") for char in fsq_exp)
+    ):
+        raise ValueError(
+            "fsq_exp must be empty or one safe suffix using letters, numbers, "
+            "'.', '_', or '-', "
+            f"got {fsq_exp!r}."
+        )
+
+    # Compact mappings are source configuration, while the similarly named
+    # FSQ_* environment variables are flattened outputs from a previous
+    # resolution. Slurm inherits those outputs and resolves the snapshot a
+    # second time, so allowing env precedence here would replace a mapping with
+    # a scalar (for example {enabled: ...} -> "true").
+    raw_calibration = cfg.get("fsq_init_calibration", {})
+    exposed = sorted(
+        {"fsq_init_calibration_gain", "fsq_init_calibration_samples"}.intersection(
+            cfg
+        )
+    )
+    if exposed or not isinstance(raw_calibration, dict):
+        details = exposed or ["fsq_init_calibration"]
+        raise ValueError(
+            "Main FSQ calibration uses one fsq_init_calibration mapping; "
+            "remove split/scalar keys: " + ", ".join(details)
+        )
+    unknown = sorted(
+        set(raw_calibration).difference({"enabled", "gain", "samples"})
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_init_calibration supports enabled|gain|samples, got: "
+            + ", ".join(unknown)
+        )
+    fsq_init_calibration = as_bool(raw_calibration.get("enabled", False))
+    fsq_init_calibration_gain = float(raw_calibration.get("gain", 1.0))
+    fsq_init_calibration_samples = int(raw_calibration.get("samples", 0))
+    if fsq_init_calibration_gain <= 0:
+        raise ValueError(
+            "fsq_init_calibration_gain must be positive, "
+            f"got {fsq_init_calibration_gain}."
+        )
+    if fsq_init_calibration_samples < 0:
+        raise ValueError(
+            "fsq_init_calibration_samples must be non-negative, "
+            f"got {fsq_init_calibration_samples}."
+        )
+    fsq_samples_per_skill = int(get_value(cfg, "fsq_samples_per_skill", 2))
+    fsq_termination_stratified_sampling = as_bool(
+        get_value(cfg, "fsq_termination_stratified_sampling", False)
+    )
+    fsq_lr_schedule = str(get_value(cfg, "fsq_lr_schedule", "cosine")).strip().lower()
+    if fsq_lr_schedule not in {"cosine", "constant"}:
+        raise ValueError(f"fsq_lr_schedule must be cosine|constant, got {fsq_lr_schedule!r}.")
+    split_lr_keys = {
+        "fsq_encoder_lr",
+        "fsq_reconstructor_lr",
+        "fsq_terminator_lr",
+    }
+    exposed = sorted(split_lr_keys.intersection(cfg))
+    if exposed:
+        raise ValueError(
+            "Main FSQ uses one fsq_lr for encoder, reconstructor, and "
+            "terminator; remove split LR keys: " + ", ".join(exposed)
+        )
+    fsq_lr = str(get_value(cfg, "fsq_lr", "3e-4"))
+    fsq_encoder_lr = fsq_lr
+    fsq_reconstructor_lr = fsq_lr
+    fsq_terminator_lr = fsq_lr
+    try:
+        parsed_fsq_lr = float(fsq_lr)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"fsq_lr must be numeric, got {fsq_lr!r}.") from exc
+    if parsed_fsq_lr <= 0:
+        raise ValueError(f"fsq_lr must be positive, got {fsq_lr!r}.")
+    hidden_terminator_keys = {
+        "fsq_decoder_terminator_progress",
+        "fsq_decoder_terminator_termination",
+        "fsq_terminator_arch",
+        "fsq_terminator_input_space",
+        "fsq_state_rnn_terminator",
+        "fsq_terminator_default_arch",
+        "fsq_terminator_layers",
+        "fsq_terminator_heads",
+        "fsq_vision_backbone",
+        "fsq_freeze_vision_encoder",
+        "fsq_dino_model_path",
+    }
+    exposed = sorted(hidden_terminator_keys.intersection(cfg))
+    if exposed:
+        raise ValueError(
+            "Main FSQ terminator is configured only with the compact "
+            "fsq_terminator mapping; remove hidden keys: "
+            + ", ".join(exposed)
+        )
+    terminator = cfg.get("fsq_terminator", {})
+    if terminator is None:
+        terminator = {}
+    if not isinstance(terminator, dict):
+        raise ValueError("fsq_terminator must be an inline mapping.")
+    unknown = sorted(
+        set(terminator).difference(
+            {
+                "architecture",
+                "termination",
+                "context",
+                "cameras",
+                "default_arch",
+                "vision_backbone",
+                "freeze_vision_encoder",
+            }
+        )
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_terminator supports architecture|termination|context|cameras|"
+            "default_arch|vision_backbone|freeze_vision_encoder, got: "
+            + ", ".join(unknown)
+        )
+    fsq_terminator_architecture = str(
+        terminator.get("architecture", "default")
+    ).strip().lower()
+    if fsq_terminator_architecture not in {"default", "term22"}:
+        raise ValueError(
+            "fsq_terminator.architecture must be default|term22, got "
+            f"{fsq_terminator_architecture!r}."
+        )
+    if fsq_terminator_architecture == "term22":
+        conflicting = sorted(
+            set(terminator).intersection(
+                {
+                    "context",
+                    "cameras",
+                    "default_arch",
+                    "vision_backbone",
+                    "freeze_vision_encoder",
+                }
+            )
+        )
+        if conflicting:
+            raise ValueError(
+                "fsq_terminator architecture=term22 fixes its model contract; "
+                "remove overrides: " + ", ".join(conflicting)
+            )
+        if not as_bool(terminator.get("termination", True)):
+            raise ValueError(
+                "fsq_terminator architecture=term22 requires termination=true."
+            )
+    fsq_terminator_model = "default"
+    fsq_terminator_default_arch = str(
+        "fusion"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("default_arch", "small")
+    ).strip().lower()
+    fsq_vision_backbone = str(
+        "dino"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("vision_backbone", "dino")
+    ).strip().lower()
+    fsq_freeze_vision_encoder = (
+        True
+        if fsq_terminator_architecture == "term22"
+        else as_bool(terminator.get("freeze_vision_encoder", True))
+    )
+    fsq_terminator_context = str(
+        "proprio"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("context", "proprio")
+    ).strip().lower()
+    if fsq_terminator_context not in {"prev_action", "proprio", "none"}:
+        raise ValueError(
+            "fsq_terminator context must be prev_action|proprio|none, "
+            f"got {fsq_terminator_context!r}."
+        )
+    fsq_terminator_cameras = str(
+        "top"
+        if fsq_terminator_architecture == "term22"
+        else terminator.get("cameras", "both")
+    ).strip().lower()
+    if fsq_terminator_cameras not in {"both", "top", "wrist"}:
+        raise ValueError(
+            "fsq_terminator cameras must be both|top|wrist, "
+            f"got {fsq_terminator_cameras!r}."
+        )
+    if fsq_terminator_default_arch not in {"small", "fusion"}:
+        raise ValueError(
+            "fsq_terminator_default_arch must be small|fusion, "
+            f"got {fsq_terminator_default_arch!r}."
+        )
+    fsq_terminator_layers = 3
+    fsq_terminator_heads = 4
+    fsq_decoder_reconstructor = as_bool(
+        get_value(cfg, "fsq_decoder_reconstructor", True)
+    )
+    fsq_decoder_terminator_progress = False
+    fsq_decoder_terminator_termination = as_bool(
+        terminator.get("termination", True)
+    )
+    terminator_enabled = (
+        fsq_decoder_terminator_progress or fsq_decoder_terminator_termination
+    )
+    if not fsq_decoder_reconstructor and not terminator_enabled:
+        raise ValueError("At least one FSQ decoder output must be enabled.")
+    fsq_reconstructor_only = fsq_decoder_reconstructor and not terminator_enabled
+    fsq_terminator_only = not fsq_decoder_reconstructor and terminator_enabled
+    fsq_terminator_termination_only = (
+        fsq_decoder_terminator_termination and not fsq_decoder_terminator_progress
+    )
+    fsq_terminator_input_space = "both"
+    fsq_state_rnn_terminator = False
+    # term22 uses the skill token in fusion attention and also retains the
+    # direct FSQ-code skip into its prediction heads.
+    fsq_terminator_skill_skip = True
+    fsq_terminator_start_proprio = fsq_terminator_architecture == "term22"
+    fsq_terminator_proprio_conditioning = "tokens"
+    fsq_terminator_start_randomization = fsq_terminator_architecture == "term22"
+    fsq_terminator_start_randomization_early_frames = (
+        5 if fsq_terminator_architecture == "term22" else 0
+    )
+    fsq_terminator_start_randomization_late_frames = (
+        5 if fsq_terminator_architecture == "term22" else 0
+    )
+    fsq_terminator_start_randomization_distribution = "half_normal"
+    fsq_terminator_start_randomization_probability = (
+        0.5 if fsq_terminator_architecture == "term22" else 0.0
+    )
+    if fsq_vision_backbone not in {"dino", "siglip", "resnet"}:
+        raise ValueError(
+            "fsq_vision_backbone must be dino|siglip|resnet, "
+            f"got {fsq_vision_backbone!r}."
+        )
+    if fsq_dino_features_enabled:
+        if not terminator_enabled:
+            raise ValueError("fsq_dino_features requires an enabled terminator.")
+        if (
+            fsq_vision_backbone != "dino"
+            or not fsq_freeze_vision_encoder
+            or fsq_terminator_cameras != "top"
+        ):
+            raise ValueError(
+                "fsq_dino_features requires frozen DINO with cameras=top "
+                "(the term22 contract)."
+            )
+        if not fsq_frame_cache_enabled:
+            raise ValueError(
+                "fsq_dino_features requires fsq_frame_cache_enabled=true for "
+                "the one-time producer job."
+            )
+    hidden_architecture_keys = {
+        "fsq_encoder_arch",
+        "fsq_encoder_input_mode",
+        "fsq_encoder_length_token",
+        "fsq_reconstructor_arch",
+        "fsq_reconstructor_output_mode",
+        "fsq_reconstructor_start_state",
+    }
+    exposed = sorted(hidden_architecture_keys.intersection(cfg))
+    if exposed:
+        raise ValueError(
+            "Main FSQ architecture is selected only with "
+            "fsq_autoencoder={mode: raw|zero|action|norm_action, ...}; "
+            "remove hidden keys: " + ", ".join(exposed)
+        )
+    raw_autoencoder = cfg.get("fsq_autoencoder")
+    if raw_autoencoder is None:
+        # Read-only compatibility for immutable pre-migration snapshots.
+        fsq_autoencoder_mode = str(
+            get_value(cfg, "fsq_autoencoder_mode", "")
+        ).strip().lower()
+        fsq_action_gripper_weight = 1.0
+    else:
+        if "fsq_autoencoder_mode" in cfg:
+            raise ValueError(
+                "Use fsq_autoencoder only; remove legacy fsq_autoencoder_mode."
+            )
+        if not isinstance(raw_autoencoder, dict):
+            raise ValueError("fsq_autoencoder must be an inline mapping.")
+        unknown = sorted(
+            set(raw_autoencoder).difference({"mode", "gripper_weight"})
+        )
+        if unknown:
+            raise ValueError(
+                "fsq_autoencoder supports mode|gripper_weight, got: "
+                + ", ".join(unknown)
+            )
+        fsq_autoencoder_mode = str(
+            raw_autoencoder.get("mode", "")
+        ).strip().lower()
+        fsq_action_gripper_weight = float(
+            raw_autoencoder.get("gripper_weight", 1.0)
+        )
+    if (
+        not math.isfinite(fsq_action_gripper_weight)
+        or not 0.0 < fsq_action_gripper_weight <= 1.0
+    ):
+        raise ValueError(
+            "fsq_autoencoder.gripper_weight must be in (0, 1], got "
+            f"{fsq_action_gripper_weight}."
+        )
+    presets = {
+        "raw": {
+            "encoder_input_mode": "raw_state",
+            "encoder_arch": "spline",
+            "reconstructor_arch": "oneshot",
+            "reconstructor_output_mode": "raw_state",
+        },
+        "zero": {
+            "encoder_input_mode": "zero_grounded",
+            "encoder_arch": "spline",
+            "reconstructor_arch": "oneshot",
+            "reconstructor_output_mode": "zero_grounded",
+        },
+        "action": {
+            "encoder_input_mode": "zero_grounded",
+            "encoder_arch": "action_seq",
+            "reconstructor_arch": "action_seq_transformer",
+            "reconstructor_output_mode": "zero_grounded",
+        },
+        "norm_action": {
+            "encoder_input_mode": "zero_grounded",
+            "encoder_arch": "action_seq",
+            "reconstructor_arch": "action_seq_transformer",
+            "reconstructor_output_mode": "zero_grounded",
+        },
+    }
+    if fsq_autoencoder_mode not in presets:
+        raise ValueError(
+            "fsq_autoencoder.mode must be raw|zero|action|norm_action, "
+            f"got {fsq_autoencoder_mode!r}."
+        )
+    preset = presets[fsq_autoencoder_mode]
+    fsq_encoder_input_mode = preset["encoder_input_mode"]
+    fsq_encoder_arch = preset["encoder_arch"]
+    fsq_reconstructor_arch = preset["reconstructor_arch"]
+    fsq_reconstructor_output_mode = preset["reconstructor_output_mode"]
+    fsq_start_state_conditioning = str(
+        get_value(cfg, "fsq_start_state_conditioning", "none")
+    ).strip().lower()
+    if fsq_start_state_conditioning not in {"none", "adaln"}:
+        raise ValueError(
+            "fsq_start_state_conditioning must be none|adaln, "
+            f"got {fsq_start_state_conditioning!r}."
+        )
+    fsq_reconstructor_start_state = fsq_start_state_conditioning == "adaln"
+
+    if fsq_encoder_input_mode not in {
+        "zero_grounded", "start_grounded", "raw_state", "optimal"
+    }:
+        raise ValueError(
+            "fsq_encoder_input_mode must be raw|zero_grounded|start_grounded|optimal, "
+            f"got {fsq_encoder_input_mode!r}."
+        )
+    fsq_encoder_grounding_convention = (
+        "trajectory_start_se3_v1"
+        if fsq_encoder_input_mode == "start_grounded"
+        else "trajectory_mean_xyz_v1"
+    )
+    fsq_encoder_length_token = False
+    exposed = sorted(
+        {
+            "fsq_pair_weight",
+            "fsq_pair_inv_temperature",
+            "fsq_action_loss_weight",
+            "fsq_delta_loss_weight",
+            "fsq_end_loss_weight",
+            "fsq_end_target_sigma",
+        }.intersection(cfg)
+    )
+    if exposed:
+        raise ValueError(
+            "Main FSQ losses use the compact per-loss mappings; remove "
+            "split keys: " + ", ".join(exposed)
+        )
+    raw_pair_loss = cfg.get("fsq_pair_loss", {})
+    if not isinstance(raw_pair_loss, dict):
+        raise ValueError("Main FSQ fsq_pair_loss must be an inline mapping.")
+    unknown = sorted(
+        set(raw_pair_loss).difference({"type", "weight", "inv_temperature"})
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_pair_loss supports type|weight|inv_temperature, got: "
+            + ", ".join(unknown)
+        )
+    fsq_pair_loss = str(raw_pair_loss.get("type", "none")).strip().lower()
+    fsq_pair_weight = float(raw_pair_loss.get("weight", 0.1))
+    fsq_pair_inv_temperature = float(raw_pair_loss.get("inv_temperature", 5.0))
+    if fsq_pair_loss not in {"none", "overlap", "js", "contrastive"}:
+        raise ValueError(
+            "fsq_pair_loss must be none|overlap|js|contrastive, "
+            f"got {fsq_pair_loss!r}."
+        )
+    if fsq_pair_weight < 0:
+        raise ValueError(
+            f"fsq_pair_weight must be non-negative, got {fsq_pair_weight}."
+        )
+    if fsq_pair_inv_temperature <= 0:
+        raise ValueError(
+            "fsq_pair_inv_temperature must be positive, "
+            f"got {fsq_pair_inv_temperature}."
+        )
+    if "fsq_route_loss" in cfg and "fsq_reconstruction_route_loss" in cfg:
+        raise ValueError(
+            "Use only fsq_route_loss; remove the legacy "
+            "fsq_reconstruction_route_loss key."
+        )
+    # Keep immutable pre-rename YAML snapshots runnable on requeue.
+    raw_route_loss = cfg.get(
+        "fsq_route_loss", cfg.get("fsq_reconstruction_route_loss", False)
+    )
+    if isinstance(raw_route_loss, dict):
+        unknown = sorted(set(raw_route_loss).difference({"enabled"}))
+        if unknown:
+            raise ValueError(
+                "fsq_route_loss supports enabled, got: "
+                + ", ".join(unknown)
+            )
+        fsq_route_loss = as_bool(
+            raw_route_loss.get("enabled", False)
+        )
+    else:
+        fsq_route_loss = as_bool(raw_route_loss)
+    if fsq_route_loss and not fsq_decoder_reconstructor:
+        raise ValueError(
+            "fsq_route_loss requires "
+            "fsq_decoder_reconstructor=true."
+        )
+
+    raw_action_loss = cfg.get("fsq_action_loss", {})
+    if isinstance(raw_action_loss, dict):
+        unknown = sorted(set(raw_action_loss).difference({"weight"}))
+        if unknown:
+            raise ValueError(
+                "fsq_action_loss supports weight, got: " + ", ".join(unknown)
+            )
+        fsq_action_loss_weight = float(raw_action_loss.get("weight", 1.0))
+    else:
+        raise ValueError("fsq_action_loss must be an inline mapping.")
+    raw_end_loss = cfg.get("fsq_end_loss", {})
+    if isinstance(raw_end_loss, dict):
+        unknown = sorted(
+            set(raw_end_loss).difference(
+                {"weight", "target_sigma", "positive_weight"}
+            )
+        )
+        if unknown:
+            raise ValueError(
+                "fsq_end_loss supports weight|target_sigma|positive_weight, got: "
+                + ", ".join(unknown)
+            )
+        fsq_end_loss_weight = float(raw_end_loss.get("weight", 1.0))
+        fsq_end_target_sigma = float(raw_end_loss.get("target_sigma", 0.0))
+        fsq_end_pos_weight = float(raw_end_loss.get("positive_weight", 1.0))
+    else:
+        raise ValueError("fsq_end_loss must be an inline mapping.")
+    if fsq_action_loss_weight < 0 or fsq_end_loss_weight < 0:
+        raise ValueError("FSQ action/end loss weights must be non-negative.")
+    if fsq_end_target_sigma < 0:
+        raise ValueError("fsq_end_loss.target_sigma must be non-negative.")
+    if not math.isfinite(fsq_end_pos_weight) or fsq_end_pos_weight <= 0:
+        raise ValueError("fsq_end_loss.positive_weight must be positive.")
+    raw_pair_warmup = cfg.get("fsq_pair_warmup", {})
+    exposed = sorted(
+        {"fsq_pair_warmup_epochs", "fsq_pair_ramp_epochs"}.intersection(cfg)
+    )
+    if exposed or not isinstance(raw_pair_warmup, dict):
+        details = exposed or ["fsq_pair_warmup"]
+        raise ValueError(
+            "Main FSQ pair warm-up uses one fsq_pair_warmup mapping; "
+            "remove split/scalar keys: " + ", ".join(details)
+        )
+    unknown = sorted(
+        set(raw_pair_warmup).difference({"enabled", "epochs", "ramp_epochs"})
+    )
+    if unknown:
+        raise ValueError(
+            "fsq_pair_warmup supports enabled|epochs|ramp_epochs, got: "
+            + ", ".join(unknown)
+        )
+    fsq_pair_warmup = as_bool(raw_pair_warmup.get("enabled", False))
+    fsq_pair_warmup_epochs = int(raw_pair_warmup.get("epochs", 0))
+    fsq_pair_ramp_epochs = int(raw_pair_warmup.get("ramp_epochs", 0))
+    if fsq_pair_warmup_epochs < 0 or fsq_pair_ramp_epochs < 0:
+        raise ValueError(
+            "fsq_pair_warmup_epochs and fsq_pair_ramp_epochs must be non-negative, "
+            f"got {fsq_pair_warmup_epochs} and {fsq_pair_ramp_epochs}."
+        )
+    compact_boundary_keys = {
+        "fsq_boundary_aug_pmax_step",
+        "fsq_boundary_aug_pmax_percent",
+    }
+    legacy_boundary_keys = {
+        "fsq_boundary_aug_pmax",
+        "fsq_boundary_aug_early_start_pmax",
+        "fsq_boundary_aug_late_start_pmax",
+        "fsq_boundary_aug_early_end_pmax",
+        "fsq_boundary_aug_late_end_pmax",
+    }
+    compact_boundary_config = bool(compact_boundary_keys.intersection(cfg))
+    if compact_boundary_config and legacy_boundary_keys.intersection(cfg):
+        raise ValueError(
+            "Use fsq_boundary_aug_pmax_step/percent or the legacy directional "
+            "boundary keys, not both."
+        )
+    fsq_boundary_aug_pmax_percent = 0.0
+    fsq_boundary_aug_preserve_gripper = compact_boundary_config
+    directional_boundary_aug_pmaxes: dict[str, int] = {}
+    if compact_boundary_config:
+        fsq_boundary_aug_pmax_step = int(
+            get_value(cfg, "fsq_boundary_aug_pmax_step", 0)
+        )
+        fsq_boundary_aug_pmax_percent = float(
+            get_value(cfg, "fsq_boundary_aug_pmax_percent", 0.0)
+        )
+        if fsq_boundary_aug_pmax_step < 0:
+            raise ValueError("fsq_boundary_aug_pmax_step must be non-negative.")
+        if (
+            not math.isfinite(fsq_boundary_aug_pmax_percent)
+            or not 0.0 <= fsq_boundary_aug_pmax_percent <= 100.0
+        ):
+            raise ValueError(
+                "fsq_boundary_aug_pmax_percent must be finite and in [0, 100]."
+            )
+        if fsq_boundary_aug_pmax_step > 0 and fsq_boundary_aug_pmax_percent > 0.0:
+            raise ValueError(
+                "fsq_boundary_aug_pmax_step and fsq_boundary_aug_pmax_percent "
+                "are mutually exclusive."
+            )
+        directional_boundary_aug_pmaxes = {
+            direction: fsq_boundary_aug_pmax_step
+            for direction in ("early_start", "late_start", "early_end", "late_end")
+        }
+    else:
+        legacy_boundary_aug_pmax = int(get_value(cfg, "fsq_boundary_aug_pmax", 0))
+        if legacy_boundary_aug_pmax < 0:
+            raise ValueError(
+                "fsq_boundary_aug_pmax must be non-negative, "
+                f"got {legacy_boundary_aug_pmax}."
+            )
+        for direction in ("early_start", "late_start", "early_end", "late_end"):
+            key = f"fsq_boundary_aug_{direction}_pmax"
+            raw_value = get_value(cfg, key, None)
+            value = legacy_boundary_aug_pmax if raw_value is None else int(raw_value)
+            if value < 0:
+                raise ValueError(f"{key} must be non-negative, got {value}.")
+            directional_boundary_aug_pmaxes[direction] = value
+    fsq_boundary_aug_pmax = max(directional_boundary_aug_pmaxes.values())
+    if "fsq_boundary_aug_distribution" in cfg:
+        raise ValueError(
+            "Main FSQ boundary augmentation distribution is fixed to "
+            "half_normal; remove fsq_boundary_aug_distribution."
+        )
+    fsq_boundary_aug_distribution = "half_normal"
+    if fsq_pair_loss != "none":
+        if (
+            not any(directional_boundary_aug_pmaxes.values())
+            and fsq_boundary_aug_pmax_percent <= 0.0
+            ):
+                raise ValueError(
+                    "fsq_pair_loss requires at least one positive directional "
+                    "step or percent boundary augmentation pmax."
+                )
+    fsq_skill_cond_mode = str(get_value(cfg, "fsq_skill_cond_mode", "token")).strip().lower()
+    if fsq_skill_cond_mode not in {"token", "broadcast"}:
+        raise ValueError(
+            "fsq_skill_cond_mode must be token|broadcast, "
+            f"got {fsq_skill_cond_mode!r}."
+        )
+    vision_name = {
+        "dino": "DINO",
+        "resnet": "RES",
+        "siglip": "SIGLIP",
+    }[fsq_vision_backbone]
+    if fsq_decoder_reconstructor and not terminator_enabled:
+        fsq_decoder_name = "recon_only"
+    elif not fsq_decoder_reconstructor and terminator_enabled:
+        fsq_decoder_name = (
+            "term22_only"
+            if fsq_terminator_architecture == "term22"
+            else f"term{vision_name}_only"
+        )
+    else:
+        fsq_decoder_name = (
+            "recon_term22"
+            if fsq_terminator_architecture == "term22"
+            else f"recon_term{vision_name}"
+        )
+
+    pair_name = "pairOFF" if fsq_pair_loss == "none" else f"{fsq_pair_loss}ON"
+    route_name = "routeON" if fsq_route_loss else "routeOFF"
+    fsq_loss_name = f"{pair_name}_{route_name}_loss"
+    fsq_autoencoder_name = (
+        fsq_autoencoder_mode
+        + _compact_decimal_tag(fsq_action_gripper_weight)
+    )
+    # norm_action(gripper_weight=0.1) is the canonical autoencoder setup, so
+    # omit that redundant tag regardless of which decoder heads are enabled.
+    # Non-default autoencoder modes remain explicit in the run name.
+    if fsq_autoencoder_name == "norm_action01":
+        decoder_tag = "" if fsq_decoder_name == "recon_only" else f"{fsq_decoder_name}__"
+        fsq_run_name = f"{quantizer_run_name}_{decoder_tag}{fsq_loss_name}"
+    else:
+        fsq_run_name = (
+            f"{quantizer_run_name}_{fsq_autoencoder_name}_"
+            f"{fsq_decoder_name}__{fsq_loss_name}"
+        )
+    if fsq_start_state_conditioning == "adaln":
+        fsq_run_name += "__inital_proprio_conditioned"
+    if fsq_exp:
+        fsq_run_name += f"_{fsq_exp}"
+    # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
+    # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
+    slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
+    # Pass the FULL partition list (comma-joined), like fsq_train_partition — so Slurm can place the
+    # job on a partition where the chosen qos is valid. Pinning to just the first partition (e.g. an
+    # a6000) while train_qos=pro6000_qos triggers "Invalid qos specification".
+    slurm_partition = ",".join(slurm_partitions) or "debug"
+
+    return {
+        "project_root": root,
+        "lerobot_root": root / "lerobot",
+        "dataset_root": dataset_root,
+        "dataset_root_name": dataset_root_name,
+        "fsq_dataset_root": fsq_dataset_root,
+        "fsq_dataset_root_name": fsq_dataset_root_name,
+        "target_dataset": target_dataset,
+        "raw_dataset_dir": raw_dataset_dir,
+        "fsq_frame_cache_enabled": fsq_frame_cache_enabled,
+        "fsq_frame_cache_stage_local": fsq_frame_cache_stage_local,
+        "fsq_frame_cache_local_root": fsq_frame_cache_local_root,
+        "fsq_frame_cache_local_reserve_gb": fsq_frame_cache_local_reserve_gb,
+        "fsq_frame_cache_root": fsq_frame_cache_root,
+        "fsq_frame_cache_dir": fsq_frame_cache_dir,
+        "fsq_frame_cache_partition": fsq_frame_cache_partition,
+        "fsq_frame_cache_qos": fsq_frame_cache_qos,
+        "fsq_frame_cache_cpus_per_task": fsq_frame_cache_cpus_per_task,
+        "fsq_frame_cache_workers": fsq_frame_cache_workers,
+        "fsq_frame_cache_decoder_threads": fsq_frame_cache_decoder_threads,
+        "fsq_frame_cache_mem": str(
+            get_value(cfg, "fsq_frame_cache_mem", "32G")
+        ),
+        "fsq_frame_cache_time": str(
+            get_value(cfg, "fsq_frame_cache_time", "12:00:00")
+        ),
+        "fsq_dino_features_enabled": fsq_dino_features_enabled,
+        "fsq_dino_feature_batch_size": fsq_dino_feature_batch_size,
+        "fsq_dino_feature_cache_root": fsq_dino_feature_cache_root,
+        "fsq_dino_feature_cache_dir": fsq_dino_feature_cache_dir,
+        "fsq_route_batching_enabled": fsq_route_batching_enabled,
+        "fsq_route_code_chunk_size": fsq_route_code_chunk_size,
+        "data_dir": dataset_root / f"{target_dataset}_data",
+        "outputs_root": outputs_root,
+        "dp_outputs_root": dp_outputs_root,
+        "fsq_outputs_root": fsq_outputs_root,
+        "pi_base_model_path": root / "models" / "pi05_base",
+        "dp_base_config": root / "lerobot" / str(get_value(cfg, "dp_base_config")),
+        "dp_policy": dp_policy,
+        "dp_output_dir": dp_outputs_root / dp_policy,
+        "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
+        "dp_checkpoint": dp_checkpoint,
+        "dp_vision": dp_vision,
+        "dp_proprio_grounding": dp_proprio_grounding,
+        "dp_vision_backbone": str(get_value(cfg, "dp_vision_backbone", "resnet18")),
+        "dp_unet_size": dp_unet_size,
+        "dp_down_dims": dp_down_dims,
+        "dp_down_dims_arg": dp_down_dims_arg,
+        "dp_amp": dp_amp,
+        "dp_lr_scheduler": dp_lr_scheduler,
+        "train_DP": train_dp,
+        "dp_n_obs_steps": dp_n_obs_steps,
+        # Derived from the requested current/future horizon unless explicitly overridden.
+        "dp_n_action_steps": dp_n_action_steps,
+        "dp_trajectory_horizon": dp_trajectory_horizon,
+        "dp_future_action_horizon": dp_future_action_horizon,
+        "dp_action_sequence_mode": dp_action_sequence_mode,
+        "dp_drop_n_last_frames": dp_drop_n_last_frames,
+        "dp_batch_size": int(get_value(cfg, "dp_batch_size", 64)),
+        "dp_relative": dp_relative,
+        "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
+        "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
+        "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
+        "dp_log_freq": int(get_value(cfg, "dp_log_freq", 200)),
+        "dp_eval_freq": int(get_value(cfg, "dp_eval_freq", 0)),
+        "dp_seed": int(get_value(cfg, "dp_seed", 42)),
+        "dp_wandb_project": str(get_value(cfg, "dp_wandb_project", "DP_train")),
+        "dp_wandb_enable": as_bool(get_value(cfg, "dp_wandb_enable", True)),
+        "dp_overwrite_output": as_bool(get_value(cfg, "dp_overwrite_output", True)),
+        "fsq_levels_str": " ".join(str(v) for v in fsq_levels),
+        "fsq_levels_arg": "[" + ",".join(str(v) for v in fsq_levels) + "]",
+        "fsq_quantizer": fsq_quantizer,
+        "bsq_code_dim": bsq_code_dim,
+        "fsq_tag": fsq_tag,
+        "fsq_exp": fsq_exp,
+        "fsq_skill_cond_mode": fsq_skill_cond_mode,
+        "fsq_run_name": fsq_run_name,
+        "fsq_decoder_name": fsq_decoder_name,
+        "fsq_loss_name": fsq_loss_name,
+        "fsq_output_dir": fsq_outputs_root / fsq_run_name,
+        "fsq_dim": len(fsq_levels),
+        "fsq_num_embeddings": math.prod(fsq_levels),
+        "fsq_epoch": str(get_value(cfg, "fsq_epoch", "1000")),
+        "fsq_patch_grid": int(get_value(cfg, "fsq_patch_grid", 8)),
+        "fsq_batch_size": int(get_value(cfg, "fsq_batch_size", 256)),
+        "fsq_num_workers": int(get_value(cfg, "fsq_num_workers", 8)),
+        "fsq_val_num_workers": int(get_value(cfg, "fsq_val_num_workers", 0)),
+        "fsq_val_every": int(get_value(cfg, "fsq_val_every", 1)),
+        "fsq_save_best_model": as_bool(get_value(cfg, "fsq_save_best_model", True)),
+        "fsq_gradient_checkpointing": as_bool(get_value(cfg, "fsq_gradient_checkpointing", False)),
+        "fsq_num_epochs": int(get_value(cfg, "fsq_num_epochs", 1000)),
+        "fsq_checkpoint_every": int(get_value(cfg, "fsq_checkpoint_every", 500)),
+        "fsq_encoder_lr": fsq_encoder_lr,
+        "fsq_terminator_lr": fsq_terminator_lr,
+        "fsq_reconstructor_lr": fsq_reconstructor_lr,
+        "fsq_lr": fsq_lr,
+        "fsq_lr_schedule": fsq_lr_schedule,
+        "fsq_samples_per_skill": fsq_samples_per_skill,
+        "fsq_termination_stratified_sampling": fsq_termination_stratified_sampling,
+        "fsq_autoencoder_mode": fsq_autoencoder_mode,
+        "fsq_action_gripper_weight": str(fsq_action_gripper_weight),
+        "fsq_start_state_conditioning": fsq_start_state_conditioning,
+        "fsq_encoder_input_mode": fsq_encoder_input_mode,
+        "fsq_encoder_grounding_convention": fsq_encoder_grounding_convention,
+        "fsq_encoder_length_token": fsq_encoder_length_token,
+        "fsq_encoder_arch": fsq_encoder_arch,
+        "fsq_init_calibration": fsq_init_calibration,
+        "fsq_init_calibration_gain": str(fsq_init_calibration_gain),
+        "fsq_init_calibration_samples": fsq_init_calibration_samples,
+        "fsq_pair_loss": fsq_pair_loss,
+        "fsq_pair_weight": str(fsq_pair_weight),
+        "fsq_pair_inv_temperature": str(fsq_pair_inv_temperature),
+        "fsq_route_loss": fsq_route_loss,
+        "fsq_pair_warmup": fsq_pair_warmup,
+        "fsq_pair_warmup_epochs": fsq_pair_warmup_epochs,
+        "fsq_pair_ramp_epochs": fsq_pair_ramp_epochs,
+        "fsq_boundary_aug_pmax": fsq_boundary_aug_pmax,
+        "fsq_boundary_aug_pmax_percent": str(fsq_boundary_aug_pmax_percent),
+        "fsq_boundary_aug_preserve_gripper": fsq_boundary_aug_preserve_gripper,
+        "fsq_boundary_aug_early_start_pmax": directional_boundary_aug_pmaxes["early_start"],
+        "fsq_boundary_aug_late_start_pmax": directional_boundary_aug_pmaxes["late_start"],
+        "fsq_boundary_aug_early_end_pmax": directional_boundary_aug_pmaxes["early_end"],
+        "fsq_boundary_aug_late_end_pmax": directional_boundary_aug_pmaxes["late_end"],
+        "fsq_boundary_aug_distribution": fsq_boundary_aug_distribution,
+        "fsq_reconstructor_start_state": fsq_reconstructor_start_state,
+        "fsq_reconstructor_arch": fsq_reconstructor_arch,
+        "fsq_reconstructor_output_mode": fsq_reconstructor_output_mode,
+        "fsq_decoder_reconstructor": fsq_decoder_reconstructor,
+        "fsq_decoder_terminator_progress": fsq_decoder_terminator_progress,
+        "fsq_decoder_terminator_termination": fsq_decoder_terminator_termination,
+        "fsq_terminator_input_space": fsq_terminator_input_space,
+        "fsq_terminator_context": fsq_terminator_context,
+        "fsq_terminator_cameras": fsq_terminator_cameras,
+        "fsq_terminator_model": fsq_terminator_model,
+        "fsq_terminator_arch": fsq_terminator_model,
+        "fsq_terminator_architecture": fsq_terminator_architecture,
+        "fsq_terminator_default_arch": fsq_terminator_default_arch,
+        "fsq_terminator_layers": fsq_terminator_layers,
+        "fsq_terminator_heads": fsq_terminator_heads,
+        "fsq_terminator_skill_skip": fsq_terminator_skill_skip,
+        "fsq_terminator_start_proprio": fsq_terminator_start_proprio,
+        "fsq_terminator_proprio_conditioning": (
+            fsq_terminator_proprio_conditioning
+        ),
+        "fsq_terminator_start_randomization": (
+            fsq_terminator_start_randomization
+        ),
+        "fsq_terminator_start_randomization_early_frames": (
+            fsq_terminator_start_randomization_early_frames
+        ),
+        "fsq_terminator_start_randomization_late_frames": (
+            fsq_terminator_start_randomization_late_frames
+        ),
+        "fsq_terminator_start_randomization_distribution": (
+            fsq_terminator_start_randomization_distribution
+        ),
+        "fsq_terminator_start_randomization_probability": str(
+            fsq_terminator_start_randomization_probability
+        ),
+        "fsq_terminator_termination_only": fsq_terminator_termination_only,
+        "fsq_reconstructor_only": fsq_reconstructor_only,
+        "fsq_terminator_only": fsq_terminator_only,
+        "fsq_state_rnn_terminator": fsq_state_rnn_terminator,
+        "fsq_vision_backbone": fsq_vision_backbone,
+        "fsq_freeze_vision_encoder": fsq_freeze_vision_encoder,
+        "fsq_hidden_dim": int(get_value(cfg, "fsq_hidden_dim", 256)),
+        "fsq_num_layers": int(get_value(cfg, "fsq_num_layers", 2)),
+        "fsq_n_control": int(get_value(cfg, "fsq_n_control", 30)),
+        "fsq_image_token_dim": int(get_value(cfg, "fsq_image_token_dim", 128)),
+        "fsq_terminator_use_third": as_bool(get_value(cfg, "fsq_terminator_use_third", True)),
+        "fsq_terminator_use_wrist": as_bool(get_value(cfg, "fsq_terminator_use_wrist", False)),
+        # Main FSQ fixes DINO to the project-local v3-S/16 model.
+        "fsq_dino_model_path": resolve_path(
+            root,
+            f"models/{DINO_IMAGE_MODEL_DIR}",
+        ),
+        "dino_image_model_path": resolve_path(
+            root,
+            f"models/{DINO_IMAGE_MODEL_DIR}",
+        ),
+        "dino_feature_dim": int(get_value(cfg, "dino_feature_dim", get_value(cfg, "fsq_dino_feature_dim", 384))),
+        "dino_image_size": int(get_value(cfg, "dino_image_size", get_value(cfg, "fsq_dino_image_size", 224))),
+        "fsq_dino_image_size": int(get_value(cfg, "fsq_dino_image_size", 224)),
+        "fsq_siglip_image_size": int(get_value(cfg, "fsq_siglip_image_size", 224)),
+        "fsq_resnet_image_size": int(get_value(cfg, "fsq_resnet_image_size", 224)),
+        "fsq_chunk_size": int(get_value(cfg, "fsq_chunk_size", 10)),
+        "fsq_action_loss_weight": str(fsq_action_loss_weight),
+        "fsq_delta_loss_weight": str(fsq_action_loss_weight),
+        "fsq_progress_loss_weight": str(get_value(cfg, "fsq_progress_loss_weight", 1.0)),
+        "fsq_end_loss_weight": str(fsq_end_loss_weight),
+        "fsq_end_pos_weight": str(fsq_end_pos_weight),
+        # best-val SELECTION metric weights — empty → "" (sbatch omits the flag → selection follows loss)
+        "fsq_val_select_action_weight": str(get_value(cfg, "fsq_val_select_action_weight", "") or ""),
+        "fsq_val_select_delta_weight": str(
+            get_value(cfg, "fsq_val_select_delta_weight", get_value(cfg, "fsq_val_select_action_weight", "")) or ""
+        ),
+        "fsq_val_select_progress_weight": str(get_value(cfg, "fsq_val_select_progress_weight", "") or ""),
+        "fsq_val_select_end_weight": str(get_value(cfg, "fsq_val_select_end_weight", "") or ""),
+        "fsq_end_target_sigma": str(fsq_end_target_sigma),
+        "fsq_wandb_project": str(get_value(cfg, "fsq_wandb_project", "VAE_train")),
+        "dp_partition": slurm_partition,
+        "dp_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "dp_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "dp_qos": str(get_value(cfg, "train_qos", "base_qos")),
+        "dp_gres": str(get_value(cfg, "dp_gres", "gpu:1")),
+        "dp_cpus_per_task": int(get_value(cfg, "dp_cpus_per_task", 8)),
+        "dp_mem": str(get_value(cfg, "dp_mem", "64G")),
+        "dp_time": str(get_value(cfg, "dp_time", "48:00:00")),
+        "skillset_name": str(get_value(cfg, "skillset_name", "skillset")),
+        "skillset_dir": fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset")),
+        "skillset_done_path": fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset")) / ".complete",
+        "skillset_seg_name": fsq_seg_dir.name,
+        "skillset_manifest_path": (
+            selected_skillset["manifest_path"]
+            if selected_skillset is not None
+            else fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset"))
+            / "skillset_manifest.json"
+        ),
+        "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
+        "skillset_wandb_project": str(get_value(cfg, "skillset_wandb_project", "Skill_dataset")),
+        "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
+        "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
+        "skillset_smooth_window": int(get_value(cfg, "skillset_smooth_window", 7)),
+        "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
+        "skillset_replan_interval": int(
+            get_value(
+                cfg,
+                "skillset_replan_interval",
+                5 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 3,
+            )
+        ),
+        "skillset_nms_dist": int(
+            get_value(
+                cfg,
+                "skillset_nms_dist",
+                15 if probe_settings["skillset_mode"] == "gaussian_x0hat" else 25,
+            )
+        ),
+        "skillset_min_skills": skillset_min_skills,
+        "skillset_min_skills_suffix": skillset_min_skills_suffix,
+        "skillset_min_skill_len": skillset_min_skill_len,
+        **probe_settings,
+        "skillset_boundary_threshold_mode": skillset_boundary_threshold_mode,
+        "skillset_boundary_threshold_scale": skillset_boundary_threshold_scale,
+        "skillset_boundary_threshold_scale_tag": _scale_percent_tag(
+            skillset_boundary_threshold_scale
+        ),
+        "skillset_boundary_threshold_name": skillset_threshold_name,
+        "skillset_boundary_threshold_suffix": skillset_threshold_suffix,
+        "skillset_global_threshold_source": skillset_global_threshold_source,
+        "skillset_output_suffix": skillset_output_suffix,
+        "skillset_global_threshold_path": (
+            fsq_seg_dir / str(get_value(cfg, "skillset_name", "skillset"))
+            / "global_boundary_threshold.json"
+        ),
+        "skillset_dino_feature_dir": resolve_path(
+            root, get_value(cfg, "skillset_dino_feature_dir", "")
+        ),
+        "skillset_cpus_per_task": int(get_value(cfg, "skillset_cpus_per_task", 4)),
+        "skillset_mem": str(get_value(cfg, "skillset_mem", "32G")),
+        "skillset_time": str(get_value(cfg, "skillset_time", "4:00:00")),
+        "skillset_cpu_partition": str(
+            get_value(cfg, "skillset_cpu_partition", "dell_cpu")
+        ),
+        "skillset_cpu_qos": str(
+            get_value(cfg, "skillset_cpu_qos", "cpu_qos")
+        ),
+        "fsq_inputs_name": fsq_inputs_name,
+        "fsq_inputs_dir": fsq_inputs_dir,
+        "fsq_seg_dir": fsq_seg_dir,
+        "slurm_partitions": slurm_partitions,
+        "slurm_partition": slurm_partition,
+        "slurm_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "slurm_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "slurm_qos": str(get_value(cfg, "train_qos", "base_qos")),
+        "slurm_gres": str(get_value(cfg, "slurm_gres", "gpu:1")),
+        "fsq_train_partition": ",".join(slurm_partitions) or "debug",
+        "fsq_train_nodelist": str(get_value(cfg, "train_nodelist", "")),
+        "fsq_train_exclude_nodes": as_list(get_value(cfg, "train_exclude_nodes", [])),
+        "fsq_train_qos": str(get_value(cfg, "train_qos", "base_qos")),
+        "fsq_train_gres": str(get_value(cfg, "fsq_train_gres", "gpu:1")),
+        "fsq_train_cpus_per_task": int(get_value(cfg, "fsq_train_cpus_per_task", 12)),
+        "fsq_train_mem": str(get_value(cfg, "fsq_train_mem", "64G")),
+        "fsq_train_time": str(get_value(cfg, "fsq_train_time", "48:00:00")),
+    }
+
+
+def print_shell(settings: dict[str, Any]) -> None:
+    for key, value in settings.items():
+        if isinstance(value, Path):
+            value = str(value)
+        elif isinstance(value, bool):
+            value = "true" if value else "false"
+        elif isinstance(value, list):
+            value = ",".join(str(v) for v in value)
+        print(f"export {key.upper()}={shlex.quote(str(value))}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--dataset", default=None)
+    parser.add_argument(
+        "--stage",
+        choices=("all", "dp", "build_data"),
+        default="all",
+        help="Resolve the full pipeline or one stage-local settings subset.",
+    )
+    parser.add_argument("--shell", action="store_true")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    if args.stage == "dp":
+        settings = dp_train_settings(cfg, dataset=args.dataset)
+    elif args.stage == "build_data":
+        settings = build_data_settings(cfg, dataset=args.dataset)
+    else:
+        settings = train_settings(cfg, dataset=args.dataset)
+    if args.shell:
+        print_shell(settings)
+        return
+    for key, value in settings.items():
+        print(f"{key}: {value}")
+
+
+if __name__ == "__main__":
+    main()

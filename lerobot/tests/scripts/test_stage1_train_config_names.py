@@ -8,7 +8,7 @@ import pytest
 
 _SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/PT/src"
+    / "skillVLA/libero/configs/train_skillVLA/PT/src"
 )
 sys.path.insert(0, str(_SRC))
 from stage1_train_config import build_settings, FULLSKILL_VIS_REVISIONS, FULLSKILL_VIS_LEGACY_REVISIONS, FULLSKILL_VIS_SPLIT_REVISIONS, BSPLINE_REVISIONS, BSPLINE_LEGACY_REVISIONS  # noqa: E402

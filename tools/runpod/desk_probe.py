@@ -299,7 +299,7 @@ def training_progress(root, job, budget):
 
 def snapshot(root, known=None):
     root = Path(root).expanduser().resolve()
-    if not (root / "lerobot/examples/libero/configs").is_dir():
+    if not (root / "lerobot/skillVLA/libero/configs").is_dir():
         raise ValueError("프로젝트 폴더가 없습니다. RunPod Desk의 Pod 프로젝트 경로를 확인하세요.")
     known = known or {}
     jobs, outputs, warnings = [], {}, []
@@ -361,7 +361,7 @@ def snapshot(root, known=None):
         except (OSError, ValueError):
             warnings.append(f"잡 기록 읽기 실패: {record.name}")
     # Discover already completed runs even if the monitor first connected late.
-    configs = root / "lerobot/examples/libero/configs"
+    configs = root / "lerobot/skillVLA/libero/configs"
     for work in configs.glob("train_*/**/eval"):
         for name in ("outputs", "attention_outputs"):
             base = work / name

@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def settings(path):
-    sys.path.insert(0, str(ROOT / 'lerobot/examples/libero/configs/train_skillVLA/PT/Terminator/src'))
+    sys.path.insert(0, str(ROOT / 'lerobot/skillVLA/libero/configs/train_skillVLA/PT/Terminator/src'))
     from terminator_train_config import load_stage1_component_config, build_launch_settings
     config = load_stage1_component_config(path)
     return config, build_launch_settings(config)
@@ -119,7 +119,7 @@ def run(folder):
     plan = json.loads((folder / 'plan.json').read_text())
     if plan['pod_id'] != os.environ.get('RUNPOD_POD_ID'):
         raise ValueError('Watchdog belongs to a different Pod.')
-    sys.path.insert(0, str(ROOT / 'lerobot/examples/libero/configs/src'))
+    sys.path.insert(0, str(ROOT / 'lerobot/skillVLA/libero/configs/src'))
     from hf_checkpoints import watch
     with (folder / 'watch.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

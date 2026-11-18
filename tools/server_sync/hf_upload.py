@@ -22,7 +22,7 @@ from huggingface_hub.utils import validate_repo_id
 from fs_helper import relative_path
 
 REPO = Path(__file__).resolve().parents[2]
-CHECKPOINTS = runpy.run_path(str(REPO / 'lerobot/examples/libero/configs/src/hf_checkpoints.py'))
+CHECKPOINTS = runpy.run_path(str(REPO / 'lerobot/skillVLA/libero/configs/src/hf_checkpoints.py'))
 
 
 def configure_http_upload():

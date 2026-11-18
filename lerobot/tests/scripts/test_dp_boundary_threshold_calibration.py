@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skills/skill_eval/skill_boundary_detection/src/evaluate.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/src/evaluate.py"
 SPEC = importlib.util.spec_from_file_location("boundary_calibration", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)

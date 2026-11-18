@@ -5,13 +5,13 @@ import sys
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/train_groot/PT/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_groot/PT/src"))
 try:
     from lerobot.configs.accelerator import GradientAccumulationConfig
 except ImportError:
     pytest.skip("Requires isolated HF LeRobot Groot environment", allow_module_level=True)
 import importlib.util
-_spec = importlib.util.spec_from_file_location("sbd_groot_training_test", Path(__file__).resolve().parents[2] / "examples/libero/configs/train_groot/PT/src/training_adapter.py")
+_spec = importlib.util.spec_from_file_location("sbd_groot_training_test", Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_groot/PT/src/training_adapter.py")
 _hooks = importlib.util.module_from_spec(_spec)
 sys.modules[_spec.name] = _hooks
 _spec.loader.exec_module(_hooks)
@@ -168,7 +168,7 @@ def test_native_processor_statistics_masks_and_save_reload(tmp_path, monkeypatch
 
     # Existing checkpoints saved the wrong transform. Repair config in memory
     # from saved statistics, exactly as the isolated evaluation worker does.
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/src/baseline_eval"))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/src/baseline_eval"))
     from groot_action_contract import groot_action_decode_transform
     post.steps[0].action_decode_transform = "libero"
     post.save_pretrained(tmp_path)

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 EVAL = CONFIGS / "train_skillVLA/PT/eval"
 spec = importlib.util.spec_from_file_location("stage1_fanout_packing", CONFIGS / "src/eval_gpu_packing.py")
 packing = importlib.util.module_from_spec(spec)
@@ -30,7 +30,7 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
         if key.startswith(("SLURM_", "STAGE1_EVAL_", "EVAL_")) or key in ("POLICY_PATH", "PANEL_INDICES"):
             monkeypatch.delenv(key, raising=False)
     repo = tmp_path / "repo"
-    configs = repo / "lerobot/examples/libero/configs"
+    configs = repo / "lerobot/skillVLA/libero/configs"
     work = configs / "train_skillVLA/PT/eval"
     (work / "src").mkdir(parents=True)
     shared = configs / "src"

@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch import nn
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/PT/eval/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/PT/eval/src"))
 from cond_goal_ablation import cond_goal_settings, install_cond_goal_ablation
 
 

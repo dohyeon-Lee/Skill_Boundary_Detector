@@ -16,7 +16,7 @@ from lerobot.processor.yam_kinematics import to_yam_delta_pose_actions_numpy
 from lerobot.scripts.lerobot_train import _make_policy_tail_sampler
 
 ROOT = Path(__file__).resolve().parents[3]
-ABC_DP_DIR = ROOT / "lerobot/examples/abc/configs/train_skills/DP"
+ABC_DP_DIR = ROOT / "lerobot/skillVLA/abc/configs/train_skills/DP"
 
 
 def _load_resolver():

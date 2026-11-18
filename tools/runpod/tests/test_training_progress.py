@@ -14,7 +14,7 @@ class TrainingProgressTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        (self.root / "lerobot/examples/libero/configs").mkdir(parents=True)
+        (self.root / "lerobot/skillVLA/libero/configs").mkdir(parents=True)
         self.logs = self.root / "logs"
         self.logs.mkdir()
         self.job = {"name": "skill_aux", "output": str(self.logs / "train.out"),

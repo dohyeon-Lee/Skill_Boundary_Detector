@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("olmo", reason="Requires the separate MolmoAct2 environment")
 PROJECT = Path(__file__).resolve().parents[3]
-SRC = PROJECT / "lerobot/examples/libero/configs/train_molmoact2/PT/src"
+SRC = PROJECT / "lerobot/skillVLA/libero/configs/train_molmoact2/PT/src"
 sys.path.insert(0, str(SRC))
 from molmoact2_config import build_settings, checkpoint_grounding, load_config
 from train import prepare_environment, register_mixture

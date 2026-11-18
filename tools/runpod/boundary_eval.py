@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 
-RELATIVE = Path("lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection")
+RELATIVE = Path("lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection")
 
 
 def load(name, path):

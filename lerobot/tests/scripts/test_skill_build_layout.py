@@ -7,7 +7,7 @@ import pytest
 
 
 LEROBOT_ROOT = Path(__file__).resolve().parents[2]
-LIBERO = LEROBOT_ROOT / "examples/libero"
+LIBERO = LEROBOT_ROOT / "skillVLA/libero"
 CONFIGS = LIBERO / "configs"
 SBD_SRC = CONFIGS / "train_skills/build_data/src"
 SKILLVLA_SRC = CONFIGS / "train_skillVLA/build_data/src"
@@ -51,5 +51,5 @@ def test_submission_scripts_use_canonical_builders(launcher: Path, target: Path)
     source = launcher.read_text()
     assert target.is_file()
     assert str(target.relative_to(LEROBOT_ROOT)) in source
-    assert f"examples/libero/{target.name}" not in source
+    assert f"skillVLA/libero/{target.name}" not in source
     subprocess.run(["bash", "-n", str(launcher)], check=True, capture_output=True)

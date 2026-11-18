@@ -5,7 +5,7 @@ import sys
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/train_molmoact2/PT/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_molmoact2/PT/src"))
 try:
     from lerobot.configs.accelerator import GradientAccumulationConfig
 except ImportError:

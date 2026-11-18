@@ -6,7 +6,7 @@ import numpy as np
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skills/skill_eval/skill_boundary_detection/src/evaluate.py"
+    / "skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/src/evaluate.py"
 )
 SPEC = importlib.util.spec_from_file_location("dp_boundary_ablation_eval", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)

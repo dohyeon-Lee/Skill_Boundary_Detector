@@ -13,7 +13,7 @@ import threading
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-SRC = ROOT / 'lerobot/examples/libero/configs/src'
+SRC = ROOT / 'lerobot/skillVLA/libero/configs/src'
 spec = importlib.util.spec_from_file_location('wandb_ssh_proxy', SRC / 'wandb_ssh_proxy.py')
 proxy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(proxy)

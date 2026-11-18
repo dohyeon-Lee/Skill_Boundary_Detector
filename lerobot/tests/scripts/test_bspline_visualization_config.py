@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/PT/eval/src"
+SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/PT/eval/src"
 sys.path.insert(0, str(SRC))
 import bspline_visualization_config as diagnostic
 

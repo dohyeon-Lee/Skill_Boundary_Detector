@@ -8,7 +8,7 @@ from pathlib import Path
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_pi05/PT/src/train_pi05_config.py"
+    / "skillVLA/libero/configs/train_pi05/PT/src/train_pi05_config.py"
 )
 SPEC = importlib.util.spec_from_file_location("train_pi05_config", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)

@@ -9,7 +9,7 @@ import pytest
 
 
 HELPER = (Path(__file__).resolve().parents[2]
-          / "examples/libero/configs/src/stage1_runtime.sh")
+          / "skillVLA/libero/configs/src/stage1_runtime.sh")
 
 
 @pytest.mark.parametrize("gpus", [1, 2])

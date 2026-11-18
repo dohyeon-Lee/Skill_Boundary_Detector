@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-CONFIG_DIR = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_groot"
+CONFIG_DIR = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_groot"
 sys.path.insert(0, str(CONFIG_DIR / "PT/src"))
 import groot_config as MODULE
 

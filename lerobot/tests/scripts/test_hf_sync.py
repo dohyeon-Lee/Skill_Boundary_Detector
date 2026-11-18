@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-SYNC = runpy.run_path(str(Path(__file__).resolve().parents[2] / "examples/libero/configs/src/hf_sync.py"))
+SYNC = runpy.run_path(str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/src/hf_sync.py"))
 
 
 def test_staged_checkpoint_publication_preserves_existing_and_incomplete_files(tmp_path):

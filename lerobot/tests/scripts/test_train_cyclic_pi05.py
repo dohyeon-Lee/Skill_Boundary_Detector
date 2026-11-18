@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import yaml
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 ROOT = CONFIGS / "train_cyclic/pi05"
 
 
@@ -28,7 +28,7 @@ CONFIG, SAMPLING = module("config"), module("sampling")
 @pytest.fixture
 def files(tmp_path, monkeypatch):
     monkeypatch.delenv("SBD_SERVER", raising=False)
-    (tmp_path / "lerobot/examples/libero/configs").mkdir(parents=True)
+    (tmp_path / "lerobot/skillVLA/libero/configs").mkdir(parents=True)
     tokenizer = tmp_path / "models/tokenizer"
     tokenizer.mkdir(parents=True)
     for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):

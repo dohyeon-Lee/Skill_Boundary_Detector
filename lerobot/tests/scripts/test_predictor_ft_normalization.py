@@ -184,6 +184,6 @@ def test_current_ft_yaml_uses_fresh_suffix_to_avoid_auto_resuming_old_stats():
 
     path = (
         Path(__file__).resolve().parents[2]
-        / "examples/libero/configs/train_skillVLA/FT/Predictor/predictor_ft_config.yaml"
+        / "skillVLA/libero/configs/train_skillVLA/FT/Predictor/predictor_ft_config.yaml"
     )
     assert yaml.safe_load(path.read_text())["run"]["suffix"] == "base_ptstats"

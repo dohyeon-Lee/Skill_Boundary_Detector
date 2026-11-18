@@ -8,8 +8,10 @@ try:
 except ImportError:
     from eval_archive import ARCHIVE, MANIFEST, pack
 
-BOUNDARY_BASE = "lerobot/examples/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs"
-BASES = tuple(f"lerobot/examples/libero/configs/train_skillVLA/{stage}/eval/outputs" for stage in ("PT", "FT")) + (BOUNDARY_BASE,)
+BOUNDARY_BASE = "lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs"
+BASES = tuple(f"lerobot/skillVLA/libero/configs/train_skillVLA/{stage}/eval/outputs" for stage in ("PT", "FT")) + (BOUNDARY_BASE,)
+LEGACY_BASES = tuple(base.replace("lerobot/skillVLA/", "lerobot/examples/", 1) for base in BASES)
+SUPPORTED_BASES = BASES + LEGACY_BASES
 
 
 def result_relative(path, *, parents=False):
@@ -19,15 +21,17 @@ def result_relative(path, *, parents=False):
         return ""
     if any(part in ("", ".", "..") for part in path.split("/")):
         raise ValueError("Invalid eval result path")
-    if parents and (not path or any(base == path or base.startswith(path + "/") for base in BASES)):
+    if parents and (not path or any(base == path or base.startswith(path + "/") for base in SUPPORTED_BASES)):
         return path
-    if not any(path.startswith(base + "/") for base in BASES):
+    if not any(path.startswith(base + "/") for base in SUPPORTED_BASES):
         raise ValueError("PT·FT·skill_boundary_detection outputs 안의 평가 결과를 선택하세요.")
     return path
 
 
 def result_path(project, path, *, parents=False):
     path = result_relative(path, parents=parents)
+    if path.startswith("lerobot/examples/"):
+        path = path.replace("lerobot/examples/", "lerobot/skillVLA/", 1)
     root = Path(project).resolve()
     target = root
     for part in Path(path).parts:
@@ -43,6 +47,7 @@ def select_results(project, paths):
     selected = []
     for path in sorted(set(paths)):
         folder = result_path(project, path)
+        path = folder.relative_to(Path(project).resolve()).as_posix()
         if path.startswith(BOUNDARY_BASE + "/"):
             marker = folder / "evaluation_complete.json"
             complete = marker.is_file() and json.loads(marker.read_text()).get("kind") == "skill_boundary_detection"

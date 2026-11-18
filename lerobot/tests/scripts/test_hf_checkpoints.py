@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-CK = runpy.run_path(str(Path(__file__).resolve().parents[2] / "examples/libero/configs/src/hf_checkpoints.py"))
+CK = runpy.run_path(str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/src/hf_checkpoints.py"))
 
 
 def _run(root: Path, rel: str, steps: list[str], last: str | None) -> Path:

@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from lerobot.optim.schedulers import LRSchedulerConfig
 
 # Escape hatch for deliberately running an accelerator-configured job on CPU.
-# examples/libero/configs/src/gpu_guard.sh honours the same variable.
+# skillVLA/libero/configs/src/gpu_guard.sh honours the same variable.
 _CPU_FALLBACK_ENV = "LEROBOT_ALLOW_CPU_FALLBACK"
 
 

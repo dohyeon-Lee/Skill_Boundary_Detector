@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-_SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/build_data/src"
+_SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/build_data/src"
 sys.path.insert(0, str(_SRC))
 import predictor_eval_utils as eval_utils
 

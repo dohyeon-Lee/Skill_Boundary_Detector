@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# Inputs:
+#   dataset name : TRAIN_DATA or target_dataset in train_skills_config.yaml
+#   dataset path : {project_root}/{dataset_root}/{target_dataset}
+# Reference models:
+#   DP policy    : {project_root}/outputs/DP/{dp_policy_name}/checkpoints/{dp_checkpoint}/pretrained_model
+# Outputs:
+#   skillset     : {project_root}/{dataset_root}/FSQ_dataset/{target_dataset}/FSQ_inputs/seg_{dp}_ck{ckpt}/skillset
+#
+# Build skillset data by segmenting demonstrations with a trained DP.
+#SBATCH --job-name=DP_skill
+#SBATCH --requeue
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
+#SBATCH --time=4:00:00
+#SBATCH --output=logs/%x_%A_%a.out
+#SBATCH --error=logs/%x_%A_%a.err
+set -euo pipefail
+
+# Slurm executes a spool copy of this file, so BASH_SOURCE no longer points into
+# the repository. submit_build_data.sh submits from the build_data directory;
+# use that stable cwd and retain a direct-execution fallback for local debugging.
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SCRIPT_DIR="${SUBMIT_DIR}/src"
+COMMON_SRC_DIR="${SCRIPT_DIR}/../../src"
+CONFIG_PATH="${TRAIN_SKILLS_CONFIG:-${SUBMIT_DIR}/build_data_config.yaml}"
+
+if [ ! -f "${SCRIPT_DIR}/build_skillset.sbatch" ]; then
+  echo "Cannot resolve build_data/src from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
+  exit 1
+fi
+
+cd "${SUBMIT_DIR}"
+mkdir -p logs
+
+BOOTSTRAP_PYTHON="${SCRIPT_DIR}/../../../../../../../.venv/bin/python"
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+  BOOTSTRAP_PYTHON=python3
+fi
+
+if [ -n "${TRAIN_DATA:-}" ]; then
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" \
+    --config "${CONFIG_PATH}" --dataset "${TRAIN_DATA}" --stage build_data --shell)"
+else
+  RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" \
+    --config "${CONFIG_PATH}" --stage build_data --shell)"
+fi
+eval "${RESOLVED_SETTINGS}"
+
+cd "${LEROBOT_ROOT}"
+source "${PROJECT_ROOT}/.venv/bin/activate"
+source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/runtime_env.sh"
+
+
+echo "START SKILLSET JOB"
+echo "Node          : ${SLURMD_NODENAME:-local}"
+echo "Array Task ID : ${SLURM_ARRAY_TASK_ID:-0}"
+if [ "${USE_CACHED_CURVES:-false}" = "true" ]; then
+  echo "Resource      : CPU (cached curves; no policy load/inference)"
+else
+  nvidia-smi
+  # Fail over to another GPU instead of silently running on CPU.
+  source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/gpu_guard.sh"
+  require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+fi
+
+if [ ! -d "${RAW_DATASET_DIR}" ]; then
+  echo "Dataset not found: ${RAW_DATASET_DIR}" >&2
+  exit 1
+fi
+if [ ! -d "${DP_POLICY_PATH}" ]; then
+  echo "DP policy checkpoint not found: ${DP_POLICY_PATH}" >&2
+  exit 1
+fi
+
+TASKS_PER_JOB=${SKILLSET_TASKS_PER_JOB}
+TOTAL_TASKS=${TOTAL_TASKS:-}
+if [ -z "${TOTAL_TASKS}" ]; then
+  TOTAL_TASKS=$("${BOOTSTRAP_PYTHON}" - <<PY
+from pathlib import Path
+import pandas as pd
+tasks = pd.read_parquet(Path("${RAW_DATASET_DIR}") / "meta" / "tasks.parquet")
+print(int(tasks["task_index"].nunique()))
+PY
+)
+fi
+
+MAX_TASK_ID=$(( TOTAL_TASKS - 1 ))
+START_TASK=$(( ${SLURM_ARRAY_TASK_ID:-0} * TASKS_PER_JOB ))
+END_TASK=$(( START_TASK + TASKS_PER_JOB - 1 ))
+
+TASK_IDS=""
+for TASK_ID in $(seq "${START_TASK}" "${END_TASK}"); do
+  if [ "${TASK_ID}" -gt "${MAX_TASK_ID}" ]; then
+    break
+  fi
+  TASK_IDS="${TASK_IDS} ${TASK_ID}"
+done
+
+if [ -z "${TASK_IDS// }" ]; then
+  echo "No tasks assigned to this array index; exiting."
+  exit 0
+fi
+
+mkdir -p "${SKILLSET_DIR}"
+export WANDB_MODE=${WANDB_MODE:-online}
+export WANDB_DIR=${WANDB_DIR:-${SKILLSET_DIR}}
+
+WANDB_RUN_NAME=${TARGET_DATASET}_skillset_array${SLURM_ARRAY_TASK_ID:-0}_tasks${START_TASK}-${END_TASK}
+
+echo "Build skillset"
+echo "  dataset    : ${TARGET_DATASET}"
+echo "  raw data   : ${RAW_DATASET_DIR}"
+echo "  policy     : ${DP_POLICY_PATH}"
+echo "  proprio    : inherited automatically from the DP checkpoint"
+echo "  output     : ${SKILLSET_DIR}"
+echo "  probe mode : ${SKILLSET_MODE} (n=${SKILLSET_PROBE_COUNT}, alpha=${SKILLSET_PROBE_ALPHA})"
+echo "  task ids   :${TASK_IDS}"
+echo "  threshold  : ${SKILLSET_BOUNDARY_THRESHOLD_MODE}"
+if [ -n "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" ]; then
+  echo "  threshold source: ${SKILLSET_GLOBAL_THRESHOLD_SOURCE}"
+fi
+
+# Curves-only backfill (CURVES_ONLY=true from submit_build_data.sh): regenerate per-episode
+# multimodality curves for an EXISTING skillset; build_skill_dataset leaves skills untouched and only
+# dumps curves/ep*.npz (resume keyed on the curve file).
+CURVES_ARG=()
+if [ "${CURVES_ONLY:-false}" = "true" ]; then
+  CURVES_ARG=(--curves_only)
+  echo "  mode       : CURVES_ONLY (skills unchanged, dumping curves only)"
+fi
+
+CACHED_CURVES_ARG=()
+if [ "${USE_CACHED_CURVES:-false}" = "true" ]; then
+  CACHED_CURVES_ARG=(--use_cached_curves)
+  echo "  source     : cached curves (no DP/VF inference)"
+fi
+
+# For a fixed cross-task reference, segmentation reads the source JSON directly.
+# Otherwise the global reducer created this skillset's own threshold JSON.
+EFFECTIVE_GLOBAL_THRESHOLD_PATH="${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-${SKILLSET_GLOBAL_THRESHOLD_PATH}}"
+
+DINO_FEATURE_ARGS=()
+if [ -n "${SKILLSET_DINO_FEATURE_DIR:-}" ]; then
+  DINO_FEATURE_ARGS=(--dino_feature_dir "${SKILLSET_DINO_FEATURE_DIR}")
+  echo "  DINO features: ${SKILLSET_DINO_FEATURE_DIR}"
+fi
+
+if [ "${SKILLSET_GAUSSIAN_INCLUDE_MEAN}" = "true" ]; then
+  GAUSSIAN_MEAN_ARG=(--gaussian-include-mean)
+else
+  GAUSSIAN_MEAN_ARG=(--no-gaussian-include-mean)
+fi
+if [ "${SKILLSET_GMM_WEIGHTED}" = "true" ]; then
+  GMM_WEIGHTED_ARG=(--gmm-weighted)
+else
+  GMM_WEIGHTED_ARG=(--no-gmm-weighted)
+fi
+
+PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
+  python skillVLA/libero/configs/train_skills/build_data/src/build_skill_dataset.py \
+    --dataset_dir "${RAW_DATASET_DIR}" \
+    --policy_path "${DP_POLICY_PATH}" \
+    --output_dir "${SKILLSET_DIR}" \
+    --task_ids ${TASK_IDS} \
+    ${CURVES_ARG[@]+"${CURVES_ARG[@]}"} \
+    --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
+    --nms_dist "${SKILLSET_NMS_DIST}" \
+    --min_skill_len "${SKILLSET_MIN_SKILL_LEN}" \
+    --min_skills "${SKILLSET_MIN_SKILLS}" \
+    --noise_scheduler_type DDIM \
+    --num_inference_steps 10 \
+    --eval_at_step "${SKILLSET_DN_STEP}" \
+    --n_gmm_components "${SKILLSET_N_GMM}" \
+    --probe_mode "${SKILLSET_MODE}" \
+    --probe_type "${SKILLSET_PROBE_TYPE}" \
+    --probe_count "${SKILLSET_PROBE_COUNT}" \
+    --probe_alpha "${SKILLSET_PROBE_ALPHA}" \
+    --probe_generation "${SKILLSET_PROBE_GENERATION}" \
+    --gaussian_sampling "${SKILLSET_GAUSSIAN_SAMPLING}" \
+    "${GAUSSIAN_MEAN_ARG[@]}" \
+    --gaussian_seed "${SKILLSET_GAUSSIAN_SEED}" \
+    --denoise_steps "${SKILLSET_DENOISE_STEPS}" \
+    --denoise_output "${SKILLSET_DENOISE_OUTPUT}" \
+    --pca_variance "${SKILLSET_PCA_VARIANCE}" \
+    --pca_stride "${SKILLSET_PCA_STRIDE}" \
+    --pca_scale_mode "${SKILLSET_PCA_SCALE_MODE}" \
+    --probe_exclude_indices "${SKILLSET_PROBE_EXCLUDE_INDICES}" \
+    --action_mode "${SKILLSET_ACTION_MODE}" \
+    --relative_exclude_joints "${SKILLSET_RELATIVE_EXCLUDE_JOINTS}" \
+    --gripper_mode "${SKILLSET_GRIPPER_MODE}" \
+    --gripper_indices "${SKILLSET_GRIPPER_INDICES}" \
+    --gripper_values "${SKILLSET_GRIPPER_VALUES}" \
+    --gripper_threshold "${SKILLSET_GRIPPER_THRESHOLD}" \
+    --score_metric "${SKILLSET_SCORE_METRIC}" \
+    --gmm_covariance "${SKILLSET_GMM_COVARIANCE}" \
+    --gmm_n_init "${SKILLSET_GMM_N_INIT}" \
+    --gmm_max_iter "${SKILLSET_GMM_MAX_ITER}" \
+    --min_effective_samples "${SKILLSET_MIN_EFFECTIVE_SAMPLES}" \
+    "${GMM_WEIGHTED_ARG[@]}" \
+    --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
+    --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
+    --score_power "${SKILLSET_SCORE_POWER}" \
+    --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
+    --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
+    --boundary_threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}" \
+    --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" \
+    ${DINO_FEATURE_ARGS[@]+"${DINO_FEATURE_ARGS[@]}"} \
+    --resume \
+    ${CACHED_CURVES_ARG[@]+"${CACHED_CURVES_ARG[@]}"} \
+    --wandb_project "${SKILLSET_WANDB_PROJECT}" \
+    --wandb_run_name "${WANDB_RUN_NAME}"
+
+echo "DONE array ${SLURM_ARRAY_TASK_ID:-0}"

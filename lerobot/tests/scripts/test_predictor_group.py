@@ -14,7 +14,7 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/PT/Terminator/src/run_predictor_group.py"
+    / "skillVLA/libero/configs/train_skillVLA/PT/Terminator/src/run_predictor_group.py"
 )
 SPEC = importlib.util.spec_from_file_location("predictor_group", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)

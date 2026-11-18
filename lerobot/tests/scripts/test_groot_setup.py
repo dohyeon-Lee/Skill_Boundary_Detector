@@ -14,7 +14,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-MODULE = Path("lerobot/examples/libero/configs/train_groot")
+MODULE = Path("lerobot/skillVLA/libero/configs/train_groot")
 SETUP = ROOT / MODULE / "setup_env.sh"
 SPEC = importlib.util.spec_from_file_location("groot_setup_check", ROOT / MODULE / "PT/src/check_environment.py")
 CHECK = importlib.util.module_from_spec(SPEC)

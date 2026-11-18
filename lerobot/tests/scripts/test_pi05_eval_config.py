@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-EVAL_DIR = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_pi05/PT/eval"
+EVAL_DIR = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_pi05/PT/eval"
 SPEC = importlib.util.spec_from_file_location("pi05_eval_config", EVAL_DIR / "src/pi05_eval_config.py")
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

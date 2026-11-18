@@ -13,7 +13,7 @@ import pytest
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/PT/Terminator/src/terminator_train_config.py"
+    / "skillVLA/libero/configs/train_skillVLA/PT/Terminator/src/terminator_train_config.py"
 )
 SPEC = importlib.util.spec_from_file_location("terminator_train_config", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -1750,7 +1750,7 @@ def test_batch_script_routes_modes_and_resumes_each_model_with_one_staging_pass(
     smi = venv_bin / "nvidia-smi"
     smi.write_text("#!/usr/bin/env bash\nexit 0\n")
     smi.chmod(0o755)
-    shared = tmp_path / "lerobot/examples/libero/configs/src"
+    shared = tmp_path / "lerobot/skillVLA/libero/configs/src"
     shared.mkdir(parents=True)
     (shared / "gpu_guard.sh").write_text(
         'require_cuda_or_requeue() { echo preflight >> "$TEST_EVENTS"; }\n'

@@ -45,7 +45,7 @@ def test_existing_stricter_process_limit_is_preserved():
 
 
 def test_eval_limit_applied_before_ready_and_model_loading():
-    script = SCRIPT.parents[3] / "examples/libero/configs/train_skillVLA/PT/eval/src/run_eval.py"
+    script = SCRIPT.parents[3] / "skillVLA/libero/configs/train_skillVLA/PT/eval/src/run_eval.py"
     tree = ast.parse(script.read_text())
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "eval_main")
     names = [node.value.func.id for node in function.body if isinstance(node, ast.Expr)

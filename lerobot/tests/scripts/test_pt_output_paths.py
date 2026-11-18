@@ -7,7 +7,7 @@ import sys
 import pytest
 
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 sys.path.insert(0, str(CONFIGS / "train_skills/src"))
 from train_skills_config import resolve_path, resolve_run_checkpoint, stage1_run_dir  # noqa: E402
 

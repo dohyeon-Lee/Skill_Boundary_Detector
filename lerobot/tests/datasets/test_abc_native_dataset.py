@@ -26,7 +26,7 @@ from lerobot.policies.pi05.configuration_pi05 import PI05Config
 def _load_relative_stats_module():
     path = (
         Path(__file__).resolve().parents[2]
-        / "examples/abc/configs/train_skills/DP/src/prepare_native_action_stats.py"
+        / "skillVLA/abc/configs/train_skills/DP/src/prepare_native_action_stats.py"
     )
     spec = importlib.util.spec_from_file_location("abc_native_relative_stats", path)
     module = importlib.util.module_from_spec(spec)

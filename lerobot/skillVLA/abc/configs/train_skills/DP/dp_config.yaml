@@ -1,0 +1,57 @@
+# ABC Diffusion Policy training.
+# Run from this directory with: ./submit_train_dp.sh
+
+train_DP: true
+
+# The shared native dataset is filtered at read time; no per-task copy is made.
+dp_dataset_root: dataset_ABC
+dp_dataset: abc_sim_all
+# all | one official task ID | a YAML list | a task group | a reproducible
+# training set from abc_sim_training_sets in global_config.yaml.
+dp_tasks: group_singletask_1k_eps
+
+# ABC/YAM coordinate contract:
+#   - observation.state remains the canonical 14D absolute joint position
+#   - dataset: train on the original 14D absolute joint targets
+#   - anchor_relative: subtract the current proprio from every future arm-joint
+#     target in the chunk
+#   - delta_joint: first target − current proprio, then consecutive target
+#     differences (the joint-space analogue of LIBERO's stored delta command)
+#   - delta_pose: official YAM FK converts each arm to grasp-site pose, then
+#     predicts consecutive base-frame delta XYZ + SO(3) rotation vector
+# In every transformed mode, the two grippers stay absolute. delta_pose is a
+# DP/SBD-only coordinate contract and intentionally has no IK postprocessor.
+# The raw dataset is never rewritten.
+dp_action_mode: delta_pose  # dataset | anchor_relative | delta_joint | delta_pose
+dp_relative_exclude_joints: [gripper]
+
+# Fixed DP settings:
+#   - state-only conditioning (no camera encoder)
+#   - 1.0 s observation history and 1.2 s action prediction at 30 Hz
+dp_n_obs_steps: 30
+dp_future_action_horizon: 36
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_unet_size: small
+dp_lr_scheduler: constant
+dp_lr: 0.0001
+dp_amp: false
+
+dp_steps: 100000
+dp_batch_size: 64
+dp_num_workers: 8
+dp_seed: 42
+dp_log_freq: 200
+dp_save_freq: 10000
+dp_wandb_enable: true
+dp_wandb_project: DP_ABC
+
+# Architecture fallback loaded by lerobot-train; runtime values above override it.
+dp_base_config: lerobot/skillVLA/abc/configs/train_skills/DP/src/train_dp_base.yaml
+
+# Per-job resource requests. Scheduler placement still comes from ABC
+# global_config.yaml + servers/<server>.yaml (train_partition/qos/nodes).
+dp_gres: gpu:1
+dp_cpus_per_task: 8
+dp_mem: 64G
+dp_time: "48:00:00"

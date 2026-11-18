@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 
-_BUILD_SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/build_data/src"
+_BUILD_SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/build_data/src"
 
 def _load(name, path):
     spec = importlib.util.spec_from_file_location(name, path)

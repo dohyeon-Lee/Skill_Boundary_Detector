@@ -29,7 +29,7 @@ from hf_upload import CHECKPOINTS, local_output_path, select_checkpoints
 from hf_eval_results import result_relative, result_path, select_results
 from server import HERE, REPO, Handler, Transfers
 
-SCRIPT = REPO / "lerobot/examples/libero/configs/src/hf_sync.py"
+SCRIPT = REPO / "lerobot/skillVLA/libero/configs/src/hf_sync.py"
 SYNC = runpy.run_path(str(SCRIPT))
 ROUTES = {
     "dataset-pull": ("hub-datasets", "local-datasets", "데이터셋 다운로드"),

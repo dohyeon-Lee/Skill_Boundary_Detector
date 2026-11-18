@@ -2,7 +2,7 @@ import json
 import sys
 from pathlib import Path
 
-EVAL = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/FT/eval"
+EVAL = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/FT/eval"
 sys.path.insert(0, str(EVAL / "src"))
 from build_checkpoint_analysis import build_analysis, collect, protocol_signature
 

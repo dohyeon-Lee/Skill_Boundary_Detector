@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-EVAL = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/FT/eval"
+EVAL = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/FT/eval"
 sys.path.insert(0, str(EVAL / "src"))
 from split_model_outputs import model_destination, split_outputs
 

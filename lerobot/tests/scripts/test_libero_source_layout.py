@@ -13,7 +13,7 @@ import pytest
 
 
 LEROBOT = Path(__file__).resolve().parents[2]
-LIBERO = LEROBOT / "examples/libero"
+LIBERO = LEROBOT / "skillVLA/libero"
 CONFIGS = LIBERO / "configs"
 FSQ_SRC = CONFIGS / "train_skills/FSQ/src"
 EVAL_SRC = CONFIGS / "train_skills/skill_eval/src"
@@ -113,7 +113,7 @@ def test_encoding_and_runtime_terminator_consumers_select_the_canonical_fsq():
     encoder = (CONFIGS / "train_skillVLA/build_data/src/encode_FSQ_skills.py").read_text()
     runtime = (LEROBOT / "src/lerobot/policies/skill_expert/modeling_utils.py").read_text()
     assert '/ "train_skills" / "FSQ" / "src"' in encoder
-    assert "examples/libero/configs/train_skills/FSQ/src" in runtime
+    assert "skillVLA/libero/configs/train_skills/FSQ/src" in runtime
     assert 'from FSQ import load_fsq_terminator' in runtime
     eval_batch = (CONFIGS / "train_skillVLA/PT/eval/src/eval.sbatch").read_text()
-    assert "examples/libero/configs/train_skills/FSQ/src" in eval_batch
+    assert "skillVLA/libero/configs/train_skills/FSQ/src" in eval_batch

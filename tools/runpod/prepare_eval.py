@@ -43,7 +43,7 @@ import httpx
 from hf_desk_client import connect
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIGS = Path("lerobot/examples/libero/configs")
+CONFIGS = Path("lerobot/skillVLA/libero/configs")
 EVALS = {
     "ft": CONFIGS / "train_skillVLA/FT/eval/ft_eval_config.yaml",
     "pt": CONFIGS / "train_skillVLA/PT/eval/pt_eval_config.yaml",
@@ -87,8 +87,24 @@ def relative(value):
     return path
 
 
+def relocated_path(value):
+    """Map a historical code/report path without changing its HF filename."""
+    return re.sub(r"\blerobot/examples/(abc|libero|analysis)(?=/|$)", r"lerobot/skillVLA/\1", value)
+
+
+def relocated_settings(value):
+    if isinstance(value, dict):
+        return {key: relocated_settings(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [relocated_settings(item) for item in value]
+    if isinstance(value, str) and "://" not in value:
+        return relocated_path(value)
+    return value
+
+
 def asset_path(value):
-    path = relative(value)
+    relative(value)
+    path = relative(relocated_path(value))
     first = path.parts[0]
     if not (first == "models" or first in {"dataset", "outputs"}
             or first.startswith(("dataset_", "outputs_"))
@@ -420,7 +436,7 @@ def prepare(root, config, slot, *, dry_run=False, desk_url=None):
 
 def validate_manifest(manifest, config):
     recipe = manifest["recipe"]
-    if recipe.get("schema") != 2 or recipe["config"] != config:
+    if recipe.get("schema") != 2 or relocated_path(recipe["config"]) != relocated_path(config):
         raise ValueError("평가 준비 목록의 형식 또는 설정 경로가 다릅니다.")
     if digest(encoded(recipe)) != manifest.get("recipe_sha256"):
         raise ValueError("평가 준비 목록 해시가 다릅니다.")
@@ -429,15 +445,15 @@ def validate_manifest(manifest, config):
         raise ValueError("평가 준비 목록의 파일 정보가 다릅니다.")
     names = set()
     for item in files:
-        asset_path(item["path"])
-        if item["path"] in names or not isinstance(item["size"], int) or item["size"] < 0:
+        local_path = asset_path(item["path"]).as_posix()
+        if local_path in names or not isinstance(item["size"], int) or item["size"] < 0:
             raise ValueError("평가 입력 파일 목록이 올바르지 않습니다.")
-        names.add(item["path"])
+        names.add(local_path)
         if not re.fullmatch("[0-9a-f]{64}", item["sha256"]):
             raise ValueError("평가 입력 해시가 올바르지 않습니다.")
         hf = item["hf"]
         if "inline" in hf:
-            if not item["path"].startswith(CONFIGS.as_posix() + "/") or item["size"] > 1024 * 1024:
+            if not local_path.startswith(CONFIGS.as_posix() + "/") or item["size"] > 1024 * 1024:
                 raise ValueError("추가 평가 입력 경로 또는 크기가 올바르지 않습니다.")
             payload = base64.b64decode(hf["inline"], validate=True)
             if len(payload) != item["size"] or digest(payload) != item["sha256"]:
@@ -471,7 +487,7 @@ def consume(root, config, slot, *, download_only=False, dry_run=False, workers=8
     started = time.monotonic()
 
     def one(item):
-        target = root / item["path"]
+        target = root / relocated_path(item["path"])
         if target.exists():
             if target.is_file() and target.stat().st_size == item["size"] and cache.hash(target)[0] == item["sha256"]:
                 return "cached"
@@ -515,7 +531,8 @@ def consume(root, config, slot, *, download_only=False, dry_run=False, workers=8
         cache.save()
     identifier = manifest["recipe_sha256"]
     snapshot = config.parent / ".hf_configs" / identifier / config.name
-    atomic_write(snapshot, yaml.safe_dump(manifest["recipe"]["settings"], allow_unicode=True, sort_keys=False).encode())
+    settings = relocated_settings(manifest["recipe"]["settings"])
+    atomic_write(snapshot, yaml.safe_dump(settings, allow_unicode=True, sort_keys=False).encode())
     print(f"입력 준비 완료: 다운로드 {results.count('downloaded')}개, 로컬 재사용 {results.count('cached')}개 "
           f"· {time.monotonic() - started:.1f}초", flush=True)
     if download_only:
@@ -542,7 +559,7 @@ def main(argv=None):
     parser.add_argument("--desk-url", help="기존 HF Desk 주소 (기본: 자동 검색/시작)")
     parser.add_argument("--workers", type=int, default=8, choices=range(1, 33), metavar="1..32")
     args = parser.parse_args(argv)
-    config = ROOT / (args.config or EVALS["pt" if args.pt else "ft"])
+    config = ROOT / relocated_path(str(args.config or EVALS["pt" if args.pt else "ft"]))
     # Absolute paths are fine only within the same repository's two eval trees.
     logical = config.relative_to(ROOT)
     if logical.suffix not in {".yaml", ".yml"} or not any(logical.is_relative_to(p.parent) for p in EVALS.values()):

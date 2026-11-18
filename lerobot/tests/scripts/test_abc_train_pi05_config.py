@@ -10,7 +10,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[3]
-ABC_CONFIGS = ROOT / "lerobot/examples/abc/configs"
+ABC_CONFIGS = ROOT / "lerobot/skillVLA/abc/configs"
 TRAIN_MODULE = ABC_CONFIGS / "train_pi05/PT/src/train_pi05_config.py"
 LOADER_MODULE = ABC_CONFIGS / "src/global_config_loader.py"
 

@@ -7,7 +7,7 @@ import pytest
 
 _CONFIG_SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/build_data/src"
+    / "skillVLA/libero/configs/train_skillVLA/build_data/src"
 )
 sys.path.insert(0, str(_CONFIG_SRC))
 

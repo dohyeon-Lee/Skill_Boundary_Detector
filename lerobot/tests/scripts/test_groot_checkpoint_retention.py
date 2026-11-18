@@ -2,9 +2,9 @@
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples/libero/configs/train_groot/PT/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_groot/PT/src"))
 import importlib.util
-_spec = importlib.util.spec_from_file_location("groot_retention_test", Path(__file__).resolve().parents[2] / "examples/libero/configs/train_groot/PT/src/checkpoint_retention.py")
+_spec = importlib.util.spec_from_file_location("groot_retention_test", Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_groot/PT/src/checkpoint_retention.py")
 _retention = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_retention)
 prune_checkpoints = _retention.prune_checkpoints

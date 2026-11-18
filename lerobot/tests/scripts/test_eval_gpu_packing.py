@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "examples/libero/configs/src/eval_gpu_packing.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/src/eval_gpu_packing.py"
 SPEC = importlib.util.spec_from_file_location("eval_gpu_packing", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

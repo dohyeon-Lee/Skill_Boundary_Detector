@@ -10,8 +10,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-ABC_BUILD_SRC = ROOT / "lerobot/examples/abc/configs/train_skills/build_data/src"
-ABC_CONFIG_SRC = ROOT / "lerobot/examples/abc/configs/train_skills/src/train_skills_config.py"
+ABC_BUILD_SRC = ROOT / "lerobot/skillVLA/abc/configs/train_skills/build_data/src"
+ABC_CONFIG_SRC = ROOT / "lerobot/skillVLA/abc/configs/train_skills/src/train_skills_config.py"
 
 
 def _load(path: Path, name: str):

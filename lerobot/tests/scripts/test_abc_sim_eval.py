@@ -11,7 +11,7 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parents[3]
-EVAL_SRC = ROOT / "lerobot/examples/abc/configs/train_pi05/PT/eval/src"
+EVAL_SRC = ROOT / "lerobot/skillVLA/abc/configs/train_pi05/PT/eval/src"
 if str(EVAL_SRC) not in sys.path:
     sys.path.insert(0, str(EVAL_SRC))
 
@@ -20,7 +20,7 @@ from pi05_adapter import Pi05PolicyAdapter, format_pi05_prompts, quantile_transf
 from run_eval import HoldPolicy, resolve_dataset_tasks, rollout_over, video_frame  # noqa: E402
 
 
-CONFIG_PATH = ROOT / "lerobot/examples/abc/configs/train_pi05/PT/eval/abc_sim_eval_config.yaml"
+CONFIG_PATH = ROOT / "lerobot/skillVLA/abc/configs/train_pi05/PT/eval/abc_sim_eval_config.yaml"
 
 
 def test_eval_config_uses_global_slurm_and_excludes() -> None:

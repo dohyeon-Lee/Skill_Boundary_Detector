@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import Mock, MagicMock
 
 
-PATH = Path(__file__).resolve().parents[3] / "lerobot/examples/libero/configs/src/batch_proxy_env.py"
+PATH = Path(__file__).resolve().parents[3] / "lerobot/skillVLA/libero/configs/src/batch_proxy_env.py"
 SPEC = importlib.util.spec_from_file_location("batch_proxy_env_test", PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)

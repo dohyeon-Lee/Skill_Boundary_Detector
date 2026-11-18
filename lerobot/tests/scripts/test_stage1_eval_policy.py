@@ -13,7 +13,7 @@ from torch import nn
 
 _EVAL_SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/PT/eval/src"
+    / "skillVLA/libero/configs/train_skillVLA/PT/eval/src"
 )
 sys.path.insert(0, str(_EVAL_SRC))
 

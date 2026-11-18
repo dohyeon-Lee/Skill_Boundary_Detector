@@ -13,7 +13,7 @@ import time
 import pandas as pd
 import pytest
 
-SRC = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_skillVLA/build_data/src"
+SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skillVLA/build_data/src"
 sys.path.insert(0, str(SRC))
 from run_single_gpu_build import SingleGPUBuilder
 from test_train_skillvla_build_config import _config, build_settings
@@ -165,7 +165,7 @@ def test_submitter_preserves_arrays_or_uses_exactly_one_allocation(tmp_path, wor
     settings = build_settings(_config(tmp_path, "episode_mean"))
     settings["skillset_single_gpu_workers"] = workers
     settings["skillset_array_throttle"] = 1
-    src = tmp_path / "lerobot/examples/libero/configs/train_skillVLA/build_data/src"
+    src = tmp_path / "lerobot/skillVLA/libero/configs/train_skillVLA/build_data/src"
     src.mkdir(parents=True)
     root = src.parent
     shutil.copy2(SRC.parent / "submit_build_all.sh", root / "submit_build_all.sh")
@@ -186,7 +186,7 @@ def test_submitter_preserves_arrays_or_uses_exactly_one_allocation(tmp_path, wor
         "for k,v in json.load(open(os.environ['TEST_SETTINGS'])).items():\n"
         " print('export '+k.upper()+'='+shlex.quote(str(v)))\n")
     (src / "verify_skillset.py").write_text("raise SystemExit(1)\n")
-    contract = tmp_path / "lerobot/examples/libero/configs/train_skills/src/sbd_build_contract.py"
+    contract = tmp_path / "lerobot/skillVLA/libero/configs/train_skills/src/sbd_build_contract.py"
     contract.parent.mkdir(parents=True); contract.write_text("raise SystemExit(0)\n")
     capture = tmp_path / "capture.py"
     capture.write_text('''import json,os,sys

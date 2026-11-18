@@ -9,7 +9,7 @@ import pytest
 
 SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/train_skillVLA/PT/eval/src"
+    / "skillVLA/libero/configs/train_skillVLA/PT/eval/src"
 )
 sys.path.insert(0, str(SRC))
 import xyz_head_eval as offline  # noqa: E402

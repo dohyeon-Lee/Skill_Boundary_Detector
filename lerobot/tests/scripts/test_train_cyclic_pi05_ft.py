@@ -18,7 +18,7 @@ import pytest
 import torch
 import yaml
 
-ROOT = Path(__file__).resolve().parents[2] / "examples/libero/configs/train_cyclic/pi05"
+ROOT = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_cyclic/pi05"
 
 
 def module(name):
@@ -37,7 +37,7 @@ DIAG = module("ft_diagnostics")
 @pytest.fixture
 def experiment(tmp_path, monkeypatch):
     monkeypatch.delenv("SBD_SERVER", raising=False)
-    (tmp_path / "lerobot/examples/libero/configs").mkdir(parents=True)
+    (tmp_path / "lerobot/skillVLA/libero/configs").mkdir(parents=True)
     tokenizer = tmp_path / "models/tokenizer"
     tokenizer.mkdir(parents=True)
     for name in ("config.json", "tokenizer_config.json", "tokenizer.json"):

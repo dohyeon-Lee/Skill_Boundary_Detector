@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 PI05 = CONFIGS / "train_pi05"
 
 
@@ -59,7 +59,7 @@ def test_eval_bootstrap_and_shared_import_paths():
 
 def _checkout(tmp_path):
     repo = tmp_path / "repo"
-    configs = repo / "lerobot/examples/libero/configs"
+    configs = repo / "lerobot/skillVLA/libero/configs"
     root = configs / "train_pi05"
     for stage in ("PT", "FT"):
         for relative in ("submit_train.sh", "src/train.sbatch", "eval/submit_eval.sh"):

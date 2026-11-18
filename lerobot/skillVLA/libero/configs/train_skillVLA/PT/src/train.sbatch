@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# Stage 1: Arch0/Arch1/Arch2 family training with a trainable pi0.5 action expert.
+#SBATCH --job-name=stage1
+#SBATCH --gres=gpu:1
+#SBATCH --requeue
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=256G
+#SBATCH --time=48:00:00
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+set -euo pipefail
+
+# DataLoader transfers CPU tensor storages using file descriptors. Inherit the
+# node's hard limit instead of the common 1024-descriptor login-shell soft cap.
+STAGE1_OPEN_FILES_HARD_LIMIT="$(ulimit -Hn)"
+if ! ulimit -Sn "${STAGE1_OPEN_FILES_HARD_LIMIT}"; then
+  echo "WARNING: could not raise the open-files limit; current=$(ulimit -Sn), hard=${STAGE1_OPEN_FILES_HARD_LIMIT}" >&2
+fi
+echo "open files: soft=$(ulimit -Sn) hard=$(ulimit -Hn)"
+
+mkdir -p logs
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# Slurm runs a spooled copy of this script, so BASH_SOURCE is the spool dir: the submit script
+# passes the real src/ (STAGE1_SRC_DIR); a direct `bash train.sbatch` still finds itself.
+SRC_DIR="${STAGE1_SRC_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SRC_DIR}/../VSA/vsa_train_config.yaml}"
+ARCHITECTURE_OVERRIDE="${STAGE1_ARCHITECTURE_OVERRIDE:-}"
+
+source "${SRC_DIR}/../../../src/stage1_runtime.sh"
+stage1_set_cpu_threads
+trap stage1_cleanup_runtime EXIT
+
+BOOTSTRAP_PYTHON="${SRC_DIR}/../../../../../../../.venv/bin/python"
+if [ ! -x "${BOOTSTRAP_PYTHON}" ]; then
+  BOOTSTRAP_PYTHON=python3
+fi
+CONFIG_ARGS=(--config "${CONFIG_PATH}" --shell)
+if [ -n "${ARCHITECTURE_OVERRIDE}" ]; then
+  CONFIG_ARGS+=(--architecture "${ARCHITECTURE_OVERRIDE}")
+fi
+if ! STAGE1_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py" "${CONFIG_ARGS[@]}")"; then
+  echo "Stage-1 config resolution failed inside the job (${SRC_DIR}/stage1_train_config.py)." >&2
+  exit 1
+fi
+eval "${STAGE1_EXPORTS}"
+
+cd "${LEROBOT_ROOT}"
+source "${PROJECT_ROOT}/.venv/bin/activate"
+
+# Fail over to another GPU instead of silently running on CPU.
+source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/gpu_guard.sh"
+require_cuda_or_requeue "${PROJECT_ROOT}/.venv/bin/python"
+
+if [ "${STAGE1_GROUP_RUNS_JSON:-[]}" != "[]" ] && [ "${STAGE1_GROUP_WORKER:-0}" != "1" ]; then
+  # Stage once before starting independent trainers; they inherit the completed
+  # copy and keep their own outputs, resume state, W&B runs and log files.
+  source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/stage_skillvla_dataset.sh"
+  stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "VSA group dataset"
+  export SKILLVLA_GROUP_STAGE_READY=1
+  GROUP_RUNNER="${STAGE1_GROUP_RUNNER:-${SRC_DIR}/../Terminator/src/run_predictor_group.py}"
+  GROUP_WORKER="${STAGE1_GROUP_WORKER_SCRIPT:-${SRC_DIR}/train.sbatch}"
+  GROUP_LOG_DIR="${SUBMIT_DIR}/logs/vsa_group_${SLURM_JOB_ID:-$$}"
+  if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
+    GROUP_LOG_DIR="${GROUP_LOG_DIR}_step${SLURM_STEP_ID:?Missing srun step ID}"
+  fi
+  echo "VSA group: one shared GPU; batch=${BATCH_SIZE}, target=${STEPS} per model"
+  "${PROJECT_ROOT}/.venv/bin/python" "${GROUP_RUNNER}" --component vsa \
+    --runs "${STAGE1_GROUP_RUNS_JSON}" --log-dir "${GROUP_LOG_DIR}" -- bash "${GROUP_WORKER}"
+  exit 0
+fi
+
+source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/runtime_env.sh"
+export PYTHONPATH="${LEROBOT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+unset LD_LIBRARY_PATH
+
+echo "START STAGE 1"
+echo "host    : $(hostname)"
+echo "dataset : ${SKILLVLA_DATASET_DIR}"
+echo "expert  : pi0.5 base ${PI_BASE} -> full fine-tuning"
+echo "arch    : ${ARCHITECTURE_LABEL} (${ARCHITECTURE}, ${ARCHITECTURE_REVISION})"
+echo "route   : ${CONDITIONING_ROUTE}"
+echo "attention: Cond=${COND_ATTENTION_BACKEND} Expert=${EXPERT_ATTENTION_BACKEND}"
+if [ "${ARCHITECTURE}" = fixed_visual_bottleneck ]; then
+  echo "bridge  : fixed ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} DINO tokens -> final ${VISUAL_BRIDGE_LAST_N_LAYERS} expert layer(s)"
+elif [ "${ARCHITECTURE}" = layerwise_cond_bottleneck ]; then
+  echo "bridge  : recurrent ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} Cond-reader tokens -> final ${VISUAL_BRIDGE_LAST_N_LAYERS} expert layer(s)"
+fi
+echo "base loss: flow (fixed)"
+echo "loss mask: after_skill_end=${MASK_ACTIONS_AFTER_SKILL_END}"
+echo "proprio : grounding=${PROPRIO_GROUNDING}"
+echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE_XYZ_LOSS_WEIGHT}"
+echo "mode z  : enabled=${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED} N=${SKILL_FLOW_LATENT_CANDIDATES} K=${SKILL_FLOW_LATENT_TOP_K} M=${SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS} ranking=${SKILL_FLOW_LATENT_RANKING_ROUTE} fp32=${SKILL_FLOW_LATENT_FP32}"
+echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
+echo "batch   : ordinary random shuffle"
+echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
+echo "foveate : enabled=${FOVEATED_VISION_ENABLED} mode=${FOVEATION_MODE} crop=${FOVEATION_CROP_SIZE}->${FOVEATION_OUTPUT_SIZE}px inner=${FOVEATION_INNER_BOX_MODE}:${FOVEATION_INNER_BOX_SIZE}px"
+echo "           shape=${FOVEATION_SHAPE} sharp=${FOVEATION_SHARP_SIZE}px feather=${FOVEATION_FEATHER}px periphery=${FOVEATION_PERIPHERAL_MODE} peripheral_blur=${FOVEATION_PERIPHERAL_BLUR_RADIUS}"
+echo "augments: enabled=${FOVEATION_RANDOMIZATION_ENABLED} color=${FOVEATION_COLOR_ENABLED} crop(top-only)=${FOVEATION_CROP_ENABLED} outer=${FOVEATION_CROP_OFFSET_MIN_PX}:${FOVEATION_CROP_OFFSET_MAX_PX}px inner=${FOVEATION_INNER_BOX_OFFSET_MIN_PX}:${FOVEATION_INNER_BOX_OFFSET_MAX_PX}px input_blur(top+wrist)=${FOVEATION_INPUT_BLUR_ENABLED}"
+echo "predict : frozen skill source=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
+echo "train   : action model only (no predictor/terminator co-training)"
+echo "optim   : muon=${USE_MUON} base_lr=${LR}"
+echo "checkpoint: global=${GRADIENT_CHECKPOINTING} action=${ACTION_EXPERT_CHECKPOINTING:-null} planner=${SKILL_PLANNER_CHECKPOINTING:-null} vlm=${VLM_CHECKPOINTING:-null} vision=${VISION_CHECKPOINTING:-null}"
+echo "schedule: steps=${STEPS}   mode=${SCHEDULER_MODE}   warmup=${SCHEDULER_WARMUP_STEPS}"
+if [ "${SCHEDULER_MODE}" = cosine_decay ]; then
+  echo "          lr_decay_steps=${SCHEDULER_DECAY_STEPS}"
+fi
+echo "output  : ${PT_OUTPUT_DIR}"
+
+if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
+  echo "Missing Stage-1 dataset: ${SKILLVLA_DATASET_DIR}" >&2
+  exit 1
+fi
+
+source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/stage_skillvla_dataset.sh"
+if [ "${SKIP_DATASET_STAGING:-false}" = "true" ]; then
+  echo "dataset staging: skipped (native dataset references its raw source in place)"
+else
+  stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Stage-1 dataset"
+  SKILLVLA_DATASET_DIR="${STAGED_SKILLVLA_DATASET_DIR}"
+  echo "staged dataset: ${SKILLVLA_DATASET_DIR}"
+fi
+
+CONFIG_JSON="${PT_OUTPUT_DIR}/checkpoints/last/pretrained_model/train_config.json"
+RESUME_ARGS=()
+if [ -f "${CONFIG_JSON}" ]; then
+  echo "Checkpoint found; resuming from ${CONFIG_JSON}"
+  RESUME_ARGS=(--resume=true --config_path="${CONFIG_JSON}")
+elif [ -e "${PT_OUTPUT_DIR}" ]; then
+  echo "Output exists without a resumable checkpoint: ${PT_OUTPUT_DIR}" >&2
+  exit 1
+fi
+
+stage1_configure_launcher "${NUM_GPUS}" "${PROJECT_ROOT}/.venv/bin/lerobot-train"
+echo "launcher: ${TRAIN_LAUNCH[*]} (CPU threads=${OMP_NUM_THREADS})"
+PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
+    --dataset.repo_id="${REPO_ID}" \
+    --dataset.root="${SKILLVLA_DATASET_DIR}" \
+    --dataset.video_backend=pyav \
+    --policy.type=skill_expert \
+    --policy.pretrained_path="${PI_BASE}" \
+    --policy.architecture="${ARCHITECTURE}" \
+    --policy.architecture_label="${ARCHITECTURE_LABEL}" \
+    --policy.architecture_revision="${ARCHITECTURE_REVISION}" \
+    --policy.vision_conditioning_mode="${VISION_CONDITIONING_MODE}" \
+    --policy.action_expert_variant="${ACTION_EXPERT_VARIANT}" \
+    --policy.cond_encoder_variant="${COND_ENCODER_VARIANT}" \
+    --policy.cond_attention_backend="${COND_ATTENTION_BACKEND}" \
+    --policy.attention_backend="${ATTENTION_BACKEND}" \
+    --policy.conditioning_route="${CONDITIONING_ROUTE}" \
+    --policy.visual_bottleneck_tokens="${VISUAL_BOTTLENECK_TOKENS}" \
+    --policy.visual_bottleneck_width="${VISUAL_BOTTLENECK_WIDTH}" \
+    --policy.visual_bottleneck_heads="${VISUAL_BOTTLENECK_HEADS}" \
+    --policy.visual_bridge_heads="${VISUAL_BRIDGE_HEADS}" \
+    --policy.visual_bridge_gate_init="${VISUAL_BRIDGE_GATE_INIT}" \
+    --policy.visual_bridge_last_n_layers="${VISUAL_BRIDGE_LAST_N_LAYERS}" \
+    --policy.cond_focus_uv_loss_weight="${COND_FOCUS_UV_LOSS_WEIGHT}" \
+    --policy.cond_end_xyz_loss_weight="${COND_END_XYZ_LOSS_WEIGHT}" \
+    --policy.wrist_patch_align_loss_weight="${WRIST_PATCH_ALIGN_LOSS_WEIGHT}" \
+    --policy.skill_image_keys="${SKILL_IMAGE_KEYS}" \
+    --policy.skill_plan_state_dim="${SKILL_PLAN_STATE_DIM}" \
+    --policy.bimanual_spatial_auxiliary="${BIMANUAL_SPATIAL_AUXILIARY}" \
+    --policy.bimanual_goal_xyz_q01="${BIMANUAL_GOAL_XYZ_Q01}" \
+    --policy.bimanual_goal_xyz_q99="${BIMANUAL_GOAL_XYZ_Q99}" \
+    --policy.goal_xyz_q01="${GOAL_XYZ_Q01}" \
+    --policy.goal_xyz_q99="${GOAL_XYZ_Q99}" \
+    --policy.chunk_end_state_loss_weight="${CHUNK_END_STATE_LOSS_WEIGHT}" \
+    --policy.chunk_end_state_dim="${CHUNK_END_STATE_DIM}" \
+    --policy.chunk_end_state_q01="${CHUNK_END_STATE_Q01}" \
+    --policy.chunk_end_state_q99="${CHUNK_END_STATE_Q99}" \
+    --policy.bottleneck_termination_loss_weight="${BOTTLENECK_TERMINATION_LOSS_WEIGHT}" \
+    --policy.bottleneck_termination_target_sigma="${BOTTLENECK_TERMINATION_TARGET_SIGMA}" \
+    --policy.bottleneck_termination_positive_weight="${BOTTLENECK_TERMINATION_POSITIVE_WEIGHT}" \
+    --policy.skill_end_pose_mode="${SKILL_END_POSE_MODE}" \
+    --policy.vision_backbone=dino \
+    --policy.dino_model_path="${DINO_MODEL_PATH}" \
+    --policy.dino_image_size="${DINO_IMAGE_SIZE}" \
+    --policy.freeze_vision_encoder="${FREEZE_VISION_ENCODER}" \
+    --policy.dino_lr_scale="${DINO_LR_SCALE}" \
+    --policy.foveated_vision_enabled="${FOVEATED_VISION_ENABLED}" \
+    --policy.foveation_randomization_enabled="${FOVEATION_RANDOMIZATION_ENABLED}" \
+    --policy.foveation_mode="${FOVEATION_MODE}" \
+    --policy.foveation_crop_size="${FOVEATION_CROP_SIZE}" \
+    --policy.foveation_output_size="${FOVEATION_OUTPUT_SIZE}" \
+    --policy.foveation_inner_box_enabled="${FOVEATION_INNER_BOX_ENABLED}" \
+    --policy.foveation_inner_box_mode="${FOVEATION_INNER_BOX_MODE}" \
+    --policy.foveation_inner_box_size="${FOVEATION_INNER_BOX_SIZE}" \
+    --policy.foveation_inner_box_line_width="${FOVEATION_INNER_BOX_LINE_WIDTH}" \
+    --policy.foveation_shape="${FOVEATION_SHAPE}" \
+    --policy.foveation_sharp_size="${FOVEATION_SHARP_SIZE}" \
+    --policy.foveation_feather="${FOVEATION_FEATHER}" \
+    --policy.foveation_peripheral_mode="${FOVEATION_PERIPHERAL_MODE}" \
+    --policy.foveation_peripheral_blur_radius="${FOVEATION_PERIPHERAL_BLUR_RADIUS}" \
+    --policy.foveation_color_enabled="${FOVEATION_COLOR_ENABLED}" \
+    --policy.foveation_brightness_min="${FOVEATION_BRIGHTNESS_MIN}" \
+    --policy.foveation_brightness_max="${FOVEATION_BRIGHTNESS_MAX}" \
+    --policy.foveation_contrast_min="${FOVEATION_CONTRAST_MIN}" \
+    --policy.foveation_contrast_max="${FOVEATION_CONTRAST_MAX}" \
+    --policy.foveation_saturation_min="${FOVEATION_SATURATION_MIN}" \
+    --policy.foveation_saturation_max="${FOVEATION_SATURATION_MAX}" \
+    --policy.foveation_hue_min="${FOVEATION_HUE_MIN}" \
+    --policy.foveation_hue_max="${FOVEATION_HUE_MAX}" \
+    --policy.foveation_crop_enabled="${FOVEATION_CROP_ENABLED}" \
+    --policy.foveation_crop_offset_min_px="${FOVEATION_CROP_OFFSET_MIN_PX}" \
+    --policy.foveation_crop_offset_max_px="${FOVEATION_CROP_OFFSET_MAX_PX}" \
+    --policy.foveation_inner_box_offset_min_px="${FOVEATION_INNER_BOX_OFFSET_MIN_PX}" \
+    --policy.foveation_inner_box_offset_max_px="${FOVEATION_INNER_BOX_OFFSET_MAX_PX}" \
+    --policy.foveation_input_blur_enabled="${FOVEATION_INPUT_BLUR_ENABLED}" \
+    --policy.foveation_input_blur_min_radius="${FOVEATION_INPUT_BLUR_MIN_RADIUS}" \
+    --policy.foveation_input_blur_max_radius="${FOVEATION_INPUT_BLUR_MAX_RADIUS}" \
+    --policy.skill_vocab_size="${SKILL_VOCAB_SIZE}" \
+    --policy.skill_fsq_levels="${SKILL_FSQ_LEVELS}" \
+    --policy.transition_jitter_pmax="${TRANSITION_JITTER_PMAX}" \
+    --policy.transition_jitter_pmax_percent="${TRANSITION_JITTER_PMAX_PERCENT}" \
+    --policy.transition_jitter_preserve_gripper="${TRANSITION_JITTER_PRESERVE_GRIPPER}" \
+    --policy.transition_jitter_early_start_pmax="${TRANSITION_JITTER_EARLY_START_PMAX}" \
+    --policy.transition_jitter_late_start_pmax="${TRANSITION_JITTER_LATE_START_PMAX}" \
+    --policy.transition_jitter_early_end_pmax="${TRANSITION_JITTER_EARLY_END_PMAX}" \
+    --policy.transition_jitter_late_end_pmax="${TRANSITION_JITTER_LATE_END_PMAX}" \
+    --policy.transition_jitter_distribution="${TRANSITION_JITTER_DISTRIBUTION}" \
+    --policy.training_skill_source="${TRAINING_SKILL_SOURCE}" \
+    --policy.skill_predictor_checkpoint_path="${SKILL_PREDICTOR_CHECKPOINT_PATH}" \
+    --policy.skill_predictor_mode="${SKILL_PREDICTOR_MODE}" \
+    --policy.skill_predictor_freeze_vlm="${SKILL_PREDICTOR_FREEZE_VLM}" \
+    --policy.skill_predictor_focus_uv_enabled="${SKILL_PREDICTOR_FOCUS_UV_ENABLED}" \
+    --policy.skill_predictor_end_state_mode="${SKILL_PREDICTOR_END_STATE_MODE}" \
+    --policy.skill_predictor_end_state_dim="${SKILL_PREDICTOR_END_STATE_DIM}" \
+    --policy.skill_predictor_start_proprio="${SKILL_PREDICTOR_START_PROPRIO}" \
+    --policy.skill_predictor_start_proprio_dim="${SKILL_PREDICTOR_START_PROPRIO_DIM}" \
+    --policy.skill_predictor_all_layers="${SKILL_PREDICTOR_ALL_LAYERS}" \
+    --policy.skill_predictor_detach_vlm="${SKILL_PREDICTOR_DETACH_VLM}" \
+    --policy.skill_predictor_lora="${SKILL_PREDICTOR_LORA}" \
+    --policy.skill_predictor_lora_targets="${SKILL_PREDICTOR_LORA_TARGETS}" \
+    --policy.skill_predictor_lora_rank="${SKILL_PREDICTOR_LORA_RANK}" \
+    --policy.skill_predictor_lora_alpha="${SKILL_PREDICTOR_LORA_ALPHA}" \
+    --policy.skill_predictor_lora_dropout="${SKILL_PREDICTOR_LORA_DROPOUT}" \
+    --policy.skill_predictor_reader_tokens="${SKILL_PREDICTOR_READER_TOKENS}" \
+    --policy.skill_predictor_reader_depth="${SKILL_PREDICTOR_READER_DEPTH}" \
+    --policy.skill_predictor_reader_heads="${SKILL_PREDICTOR_READER_HEADS}" \
+    --policy.skill_predictor_deadzone_frac="${SKILL_PREDICTOR_DEADZONE_FRAC}" \
+    --policy.skill_predictor_attend_image="${SKILL_PREDICTOR_ATTEND_IMAGE}" \
+    --policy.skill_predictor_attend_language="${SKILL_PREDICTOR_ATTEND_LANGUAGE}" \
+    --policy.tokenizer_path="${TOKENIZER_PATH}" \
+    --policy.tokenizer_max_length="${TOKENIZER_MAX_LENGTH}" \
+    --policy.fsq_path="${FSQ_PATH}" \
+    --policy.skill_code_space_id="${SKILL_CODE_SPACE_ID}" \
+    --policy.max_state_dim="${MAX_STATE_DIM}" \
+    --policy.max_action_dim="${MAX_ACTION_DIM}" \
+    --policy.proprio_grounding="${PROPRIO_GROUNDING}" \
+    --policy.chunk_size="${CHUNK_SIZE}" \
+    --policy.mask_actions_after_skill_end="${MASK_ACTIONS_AFTER_SKILL_END}" \
+    --policy.cumulative_xyz_loss_enabled="${CUMULATIVE_XYZ_LOSS_ENABLED}" \
+    --policy.cumulative_xyz_loss_weight="${CUMULATIVE_XYZ_LOSS_WEIGHT}" \
+    --policy.skill_flow_enabled="${SKILL_FLOW_ENABLED}" \
+    --policy.skill_flow_weight="${SKILL_FLOW_WEIGHT}" \
+    --policy.bspline_tokens="${BSPLINE_TOKENS:-30}" \
+    --policy.bspline_loss_weight="${BSPLINE_LOSS_WEIGHT:-1.0}" \
+    --policy.skill_flow_max_length="${SKILL_FLOW_MAX_LENGTH}" \
+    --policy.skill_flow_target="${SKILL_FLOW_TARGET}" \
+    --policy.skill_flow_state_conditioned="${SKILL_FLOW_STATE_CONDITIONED}" \
+    --policy.skill_flow_chunk_multiplier="${SKILL_FLOW_CHUNK_MULTIPLIER}" \
+    --policy.skill_flow_checkpoint_layers="${SKILL_FLOW_CHECKPOINT_LAYERS}" \
+    --policy.skill_flow_latent_best_of_n_enabled="${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED}" \
+    --policy.skill_flow_latent_candidates="${SKILL_FLOW_LATENT_CANDIDATES}" \
+    --policy.skill_flow_latent_top_k="${SKILL_FLOW_LATENT_TOP_K}" \
+    --policy.skill_flow_latent_assignment_timesteps="${SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS}" \
+    --policy.skill_flow_latent_ranking_route="${SKILL_FLOW_LATENT_RANKING_ROUTE}" \
+    --policy.skill_flow_latent_fp32="${SKILL_FLOW_LATENT_FP32}" \
+    --policy.skill_flow_latent_dim="${SKILL_FLOW_LATENT_DIM}" \
+    --policy.skill_flow_latent_distribution="${SKILL_FLOW_LATENT_DISTRIBUTION}" \
+    --policy.skill_flow_latent_gain_init="${SKILL_FLOW_LATENT_GAIN_INIT}" \
+    --policy.n_action_steps="${N_ACTION_STEPS}" \
+    --policy.min_period="${MIN_PERIOD}" \
+    --policy.max_period="${MAX_PERIOD}" \
+    --policy.time_sampling_beta_alpha="${TIME_SAMPLING_BETA_ALPHA}" \
+    --policy.time_sampling_beta_beta="${TIME_SAMPLING_BETA_BETA}" \
+    --policy.time_sampling_scale="${TIME_SAMPLING_SCALE}" \
+    --policy.time_sampling_offset="${TIME_SAMPLING_OFFSET}" \
+    --policy.gradient_checkpointing="${GRADIENT_CHECKPOINTING}" \
+    --policy.action_expert_checkpointing="${ACTION_EXPERT_CHECKPOINTING:-null}" \
+    --policy.skill_planner_checkpointing="${SKILL_PLANNER_CHECKPOINTING:-null}" \
+    --policy.vlm_checkpointing="${VLM_CHECKPOINTING:-null}" \
+    --policy.vision_checkpointing="${VISION_CHECKPOINTING:-null}" \
+    --policy.vsa_debug_steps="${VSA_DEBUG_STEPS}" \
+    --policy.vsa_debug_schedule="${VSA_DEBUG_SCHEDULE}" \
+    --policy.dtype=bfloat16 \
+    --policy.device=cuda \
+    --policy.push_to_hub=false \
+    --policy.compile_model=false \
+    --policy.optimizer_lr="${LR}" \
+    --policy.use_muon="${USE_MUON}" \
+    --policy.scheduler_mode="${SCHEDULER_MODE}" \
+    --policy.scheduler_warmup_steps="${SCHEDULER_WARMUP_STEPS}" \
+    --policy.scheduler_decay_steps="${SCHEDULER_DECAY_STEPS}" \
+    --output_dir="${PT_OUTPUT_DIR}" \
+    --job_name="${PT_RUN_NAME}" \
+    --batch_size="${BATCH_SIZE}" \
+    --num_workers="${NUM_WORKERS}" \
+    --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR:-4}" \
+    --steps="${STEPS}" \
+    --log_freq="${LOG_FREQ}" \
+    --save_freq="${SAVE_FREQ}" \
+    --keep_checkpoints="${KEEP_CHECKPOINTS:--1}" \
+    --protect_checkpoints="${PROTECT_CHECKPOINTS:-[]}" \
+    --wandb.enable="${WANDB_ENABLE}" \
+    --wandb.project="${WANDB_PROJECT}" \
+    ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+
+echo "DONE -> ${PT_OUTPUT_DIR}"

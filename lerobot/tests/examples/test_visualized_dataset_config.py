@@ -8,7 +8,7 @@ import pytest
 
 CONFIG_SRC = (
     Path(__file__).resolve().parents[2]
-    / "examples/libero/configs/generate_training_dataset/visualized_dataset/src"
+    / "skillVLA/libero/configs/generate_training_dataset/visualized_dataset/src"
 )
 VISUALIZER_DIR = CONFIG_SRC.parent
 sys.path.insert(0, str(CONFIG_SRC))

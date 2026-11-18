@@ -14,7 +14,7 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[3]
-MODULE = Path("lerobot/examples/abc/configs/src/simulator")
+MODULE = Path("lerobot/skillVLA/abc/configs/src/simulator")
 SETUP = ROOT / MODULE / "setup_env.sh"
 SPEC = importlib.util.spec_from_file_location("abc_sim_setup_check", ROOT / MODULE / "check_environment.py")
 CHECK = importlib.util.module_from_spec(SPEC)

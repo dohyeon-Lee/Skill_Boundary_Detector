@@ -11,7 +11,7 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "examples/libero/configs/train_skills/skill_eval/fsq_codebook/src"
+SRC = ROOT / "skillVLA/libero/configs/train_skills/skill_eval/fsq_codebook/src"
 sys.path.insert(0, str(SRC))
 
 
@@ -1078,7 +1078,7 @@ def test_categorization_partition_metrics_and_neighbor_adjustment() -> None:
 
 def test_categorization_infers_global_dataset_root_and_builds_bundle(tmp_path: Path) -> None:
     repository = tmp_path / "repo"
-    config_dir = repository / "lerobot/examples/libero/configs"
+    config_dir = repository / "lerobot/skillVLA/libero/configs"
     config_dir.mkdir(parents=True)
     (config_dir / "global_config.yaml").write_text("dataset_root: dataset\n")
 

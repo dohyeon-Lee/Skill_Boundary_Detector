@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 EVAL = CONFIGS / "train_skillVLA/PT/eval"
 
 

@@ -11,14 +11,14 @@ from pathlib import Path
 
 import pytest
 
-CONFIGS = Path(__file__).resolve().parents[2] / "examples/libero/configs"
+CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 LOADER = runpy.run_path(str(CONFIGS / "src/global_config_loader.py"))
 LINKER = runpy.run_path(str(CONFIGS / "src/link_storage.py"))
 load_global_config = LOADER["load_global_config"]
 
 
 def _checkout(tmp_path: Path, servers: dict[str, str], shared: str = "server: auto\ndataset_root: dataset_filtered\n") -> Path:
-    configs = tmp_path / "repo/lerobot/examples/libero/configs"
+    configs = tmp_path / "repo/lerobot/skillVLA/libero/configs"
     (configs / "servers").mkdir(parents=True)
     (configs / "global_config.yaml").write_text(shared)
     for name, text in servers.items():

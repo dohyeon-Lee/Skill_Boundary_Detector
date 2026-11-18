@@ -150,7 +150,7 @@ def test_grounded_stats_match_the_dataset_generation_contract(tmp_path):
 
     script_dir = (
         Path(__file__).resolve().parents[2]
-        / "examples/libero/configs/generate_training_dataset/download_dataset/filtered_dataset/src"
+        / "skillVLA/libero/configs/generate_training_dataset/download_dataset/filtered_dataset/src"
     )
     sys.path.insert(0, str(script_dir))
     try:
