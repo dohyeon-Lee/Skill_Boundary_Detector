@@ -1,0 +1,165 @@
+import json
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+import pytest
+
+from tools.remote import desk, probe, yonsei
+
+
+def fixture(tmp_path):
+    root = tmp_path / 'source'
+    root.mkdir()
+    base = tmp_path / 'remote'
+    identifier = '20261122-test'
+    work = base / '.cache/yonsei_launches' / identifier
+    work.mkdir(parents=True)
+    output = 'lerobot/skillVLA/libero/configs/train_skillVLA/FT/eval/outputs/run'
+    spec = {'output': output, 'tasks': [0, 1], 'labels': ['model'], 'episodes': 2}
+    manifest = {'source': str(root), 'host': 'fake', 'project': str(work / 'project'),
+                'script': 'eval/submit_eval.sh', 'evaluation': spec, 'created_at': time.time(),
+                'args': [], 'profile': {'project': str(base)}}
+    (work / 'launch.json').write_text(json.dumps(manifest))
+    receipt = root / '.cache/yonsei_launches' / identifier
+    receipt.mkdir(parents=True)
+    (receipt / 'launch.json').write_text(json.dumps(manifest))
+    (receipt / 'remote.json').write_text('{}')
+    return root, base, work, receipt, manifest
+
+
+def test_submission_success_is_not_evaluation_completion_and_missing_accounting_waits(tmp_path, monkeypatch):
+    root, base, work, receipt, manifest = fixture(tmp_path)
+    (work / 'jobs.jsonl').write_text('{"job_id":"123"}\n')
+    (work / 'status.json').write_text('{"state":"COMPLETED","exit_code":0}')
+    monkeypatch.setattr(probe, 'scheduler', lambda _: ({}, {'123'}))
+    assert probe.snapshot(base, [receipt.name])[0]['state'] == 'RUNNING'
+    monkeypatch.setattr(probe, 'scheduler', lambda _: ({}, set()))
+    assert probe.snapshot(base, [receipt.name])[0]['state'] == 'ACCOUNTING'
+    rows = {'123': [{'id': '123', 'state': 'COMPLETED', 'exit_code': '0:0'}]}
+    monkeypatch.setattr(probe, 'scheduler', lambda _: (rows, set()))
+    assert probe.snapshot(base, [receipt.name])[0]['state'] == 'COMPLETED'
+    rows['123'].append({'id': '123_1', 'state': 'OUT_OF_MEMORY', 'exit_code': '1:0'})
+    assert probe.snapshot(base, [receipt.name])[0]['state'] == 'FAILED'
+
+
+def test_scheduler_tracks_array_master_ids_instead_of_raw_allocation_ids(monkeypatch):
+    from types import SimpleNamespace
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[0] == 'squeue':
+            return SimpleNamespace(returncode=0, stdout='123_[2-3]|PENDING\n', stderr='')
+        return SimpleNamespace(stdout='123_0|COMPLETED|0:0\n123_1|OUT_OF_MEMORY|1:0\n', returncode=0)
+    monkeypatch.setattr(probe.subprocess, 'run', run)
+    rows, active = probe.scheduler({'123'})
+    assert active == {'123'}
+    assert '--format=JobID,State,ExitCode' in commands[1]
+    assert {r['state'] for r in rows['123']} == {'COMPLETED', 'OUT_OF_MEMORY', 'PENDING'}
+
+
+def test_existing_allocation_requires_its_own_inner_worker_completion(tmp_path, monkeypatch):
+    root, base, work, receipt, manifest = fixture(tmp_path)
+    manifest['args'] = ['--74311']
+    (work / 'launch.json').write_text(json.dumps(manifest))
+    (work / 'status.json').write_text('{"state":"COMPLETED","exit_code":0}')
+    monkeypatch.setattr(probe, 'scheduler', lambda _: ({}, set()))
+    assert probe.snapshot(base, [receipt.name])[0]['state'] == 'RUNNING'
+    status = work / 'project/.cache/srun_sessions/one/training_status.json'
+    status.parent.mkdir(parents=True)
+    status.write_text('{"state":"RUNNING"}')
+    assert probe.snapshot(base, [receipt.name])[0]['state'] == 'RUNNING'
+    status.write_text('{"state":"COMPLETED"}')
+    assert probe.snapshot(base, [receipt.name])[0]['state'] == 'COMPLETED'
+
+
+def test_partial_episode_progress_and_final_metrics_include_cached_tasks(tmp_path):
+    root, base, work, receipt, manifest = fixture(tmp_path)
+    project = work / 'project'
+    out = project / manifest['evaluation']['output']
+    record = out / 'panels/00_model/videos/libero_90_0/eval_progress.json'
+    record.parent.mkdir(parents=True)
+    record.write_text('{"successes":[true,false],"total_episodes":2}')
+    p = probe.progress(project, manifest['evaluation'])
+    assert (p['completed'], p['total'], p['percent'], p['success_pct']) == (2, 4, 50, 50)
+    metric = out / 'metrics/eval_info_merged.json'
+    metric.parent.mkdir()
+    metric.write_text(json.dumps({'model': {'per_task': [
+        {'task_id': 1, 'metrics': {'successes': [True, True]}}]}}))
+    p = probe.progress(project, manifest['evaluation'])
+    assert (p['completed'], p['successes'], p['success_pct']) == (4, 3, 75)
+
+
+def test_sbatch_recorder_handles_arrays_parsable_output_and_errors(tmp_path):
+    real = tmp_path / 'actual'
+    wrapper = tmp_path / 'sbatch'
+    wrapper.write_text(yonsei.SBATCH_RECORDER)
+    record = tmp_path / 'jobs.jsonl'
+    import os
+    env = {**os.environ, 'SBD_YONSEI_REAL_SBATCH': str(real), 'SBD_YONSEI_JOB_FILE': str(record)}
+    for output in ('Submitted batch job 123', '124;cluster'):
+        real.write_text('#!/bin/sh\nprintf "%s\\n" "' + output + '"\n')
+        real.chmod(0o755)
+        result = subprocess.run([sys.executable, str(wrapper), '--array=0-3'], env=env, capture_output=True, text=True)
+        assert result.returncode == 0 and result.stdout.strip() == output
+    assert [json.loads(line)['job_id'] for line in record.read_text().splitlines()] == ['123', '124']
+    real.write_text('#!/bin/sh\nexit 1\n')
+    assert subprocess.run([sys.executable, str(wrapper)], env=env).returncode == 1
+    assert len(record.read_text().splitlines()) == 2
+
+
+def test_collection_copies_video_repairs_paths_suffixes_and_preserves_collision(tmp_path, monkeypatch):
+    root, base, work, receipt, manifest = fixture(tmp_path)
+    out = Path(manifest['project']) / manifest['evaluation']['output']
+    out.mkdir(parents=True)
+    (out / 'index.html').write_text('<video src="' + str(out) + '/video.mp4"></video>')
+    (out / 'video.mp4').write_bytes(b'video-fixture')
+    target = desk.destination(root, receipt, manifest)
+    target.mkdir(parents=True)
+    (target / 'keep.txt').write_text('existing local result')
+    calls = []
+    actual_run = subprocess.run
+    def local_rsync(command, **kwargs):
+        calls.append(command)
+        assert command[0] == 'rsync'
+        # Exercise actual rsync + checksum while replacing only its SSH transport.
+        local = command[:]
+        index = local.index('-e')
+        del local[index:index+2]
+        local[-2] = local[-2].removeprefix('fake:')
+        return actual_run(local, **kwargs)
+    monkeypatch.setattr(desk.subprocess, 'run', local_rsync)
+    copied = Path(desk.collect(root, receipt, manifest))
+    assert copied != target and copied.name.endswith('_yonsei')
+    assert (target / 'keep.txt').read_text() == 'existing local result'
+    assert (copied / 'video.mp4').read_bytes() == b'video-fixture'
+    assert str(copied) + '/video.mp4' in (copied / 'index.html').read_text()
+    assert '--checksum' in calls[1] and '--dry-run' in calls[1]
+    assert desk.collect(root, receipt, manifest) == str(copied)
+
+
+def test_collection_failure_retries_without_publishing_and_monitor_survives_disconnect(tmp_path):
+    root, base, work, receipt, manifest = fixture(tmp_path)
+    replies = [{'id': receipt.name, 'state': 'COMPLETED', 'jobs': [], 'job_ids': []}]
+    def fail(*args):
+        raise OSError('connection reset')
+    worker = desk.Worker(root, probe=lambda *args: replies, collector=fail)
+    worker.poll()
+    for _ in range(100):
+        if desk.load(receipt / 'collection.json', {}).get('state') == 'RETRY':
+            break
+        time.sleep(.01)
+    assert desk.load(receipt / 'collection.json')['state'] == 'RETRY'
+    assert not desk.destination(root, receipt, manifest).exists()
+    worker.probe = fail
+    state = worker.poll()
+    assert state['jobs'][0]['state'] == 'COMPLETED'
+    assert state['jobs'][0]['connection_error'] == 'connection reset'
+
+
+def test_output_spec_never_selects_whole_outputs_tree(tmp_path):
+    script = tmp_path / 'DP/eval/submit_eval.sh'
+    assert yonsei.evaluation_spec(script, {'eval_out_dir': str(tmp_path / 'eval/outputs/run')}, tmp_path)['output'] == 'eval/outputs/run'
+    with pytest.raises(ValueError):
+        yonsei.evaluation_spec(script, {'eval_out_dir': str(tmp_path / 'eval/outputs')}, tmp_path)

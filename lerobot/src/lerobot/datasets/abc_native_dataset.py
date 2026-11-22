@@ -489,9 +489,15 @@ class ABCNativeDataset(torch.utils.data.Dataset):
                     f"ABC SkillVLA {key} has {len(archive[key])} rows; "
                     f"expected {total_frames}: {path}"
                 )
+        # Keep arrays, not an open NpzFile: spawn workers must pickle this
+        # dataset, and per-frame reads must not decompress entire columns.
+        try:
+            annotation_arrays = {key: np.asarray(archive[key]) for key in required}
+        finally:
+            archive.close()
         return {
             "path": path,
-            "archive": archive,
+            "archive": annotation_arrays,
             "episode_position": {
                 int(episode_id): position
                 for position, episode_id in enumerate(episode_ids)
@@ -563,6 +569,13 @@ class ABCNativeDataset(torch.utils.data.Dataset):
     @property
     def num_frames(self) -> int:
         return len(self)
+
+    @property
+    def episode_sample_ranges(self) -> list[tuple[int, int]]:
+        """Compact frame-index ranges after selection and incomplete-tail removal."""
+        return [(int(end - length), int(length))
+                for end, length in zip(self._cumulative_lengths, self._usable_lengths, strict=True)
+                if length > 0]
 
     @property
     def num_episodes(self) -> int:
@@ -656,18 +669,20 @@ class ABCNativeDataset(torch.utils.data.Dataset):
         return task_index, task
 
     def _query_cameras(
-        self, row: dict, frame_index: int, queries: dict[str, list[int]]
+        self, row: dict, frame_index: int, queries: dict[str, list[int]],
+        *, camera_keys: list[str] | None = None,
     ) -> dict[str, torch.Tensor]:
-        if not self._camera_keys:
+        camera_keys = self._camera_keys if camera_keys is None else camera_keys
+        if not camera_keys:
             return {}
         episode_index = int(row["episode_index"])
         layout = json.loads(str(row["camera_layout_json"]))
         layouts = {f"observation.images.{entry['camera']}": entry for entry in layout}
-        missing = sorted(set(self._camera_keys) - set(layouts))
+        missing = sorted(set(camera_keys) - set(layouts))
         if missing:
             raise ValueError(f"ABC native episode {episode_index} has no camera layout for {missing}")
 
-        per_camera_indices = {key: queries.get(key, [frame_index]) for key in self._camera_keys}
+        per_camera_indices = {key: queries.get(key, [frame_index]) for key in camera_keys}
         unique_indices = sorted({value for values in per_camera_indices.values() for value in values})
         video_path = self._source_path(str(row["video_path"]), kind="video", episode_index=episode_index)
         stacked = decode_video_frames(
@@ -680,7 +695,7 @@ class ABCNativeDataset(torch.utils.data.Dataset):
         decoded = {frame: stacked[position] for position, frame in enumerate(unique_indices)}
 
         result: dict[str, torch.Tensor] = {}
-        for key in self._camera_keys:
+        for key in camera_keys:
             entry = layouts[key]
             start = int(entry["row_start"])
             end = int(entry["row_end"])

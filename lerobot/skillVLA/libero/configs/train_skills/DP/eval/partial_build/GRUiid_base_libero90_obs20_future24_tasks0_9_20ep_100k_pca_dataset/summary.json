@@ -1,0 +1,1892 @@
+{
+  "3872": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3873": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3874": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3875": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3876": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3877": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3878": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3879": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3880": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3881": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3882": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3883": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3884": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3885": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3886": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3887": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3888": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3889": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3890": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3891": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1238": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1239": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        90,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1240": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        65,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1241": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        75,
+        125,
+        145
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1242": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        80,
+        135
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1243": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70,
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1244": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1245": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1246": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        90,
+        115,
+        145
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1247": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        85,
+        135
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1248": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        75,
+        135
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1249": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30,
+        70,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1250": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1251": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        125,
+        145
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1252": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        80,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1253": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        105,
+        150
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1254": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        95,
+        115,
+        145,
+        165
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1255": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        75,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1256": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70,
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1257": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        100,
+        140
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "357": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "358": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "359": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "360": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "361": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "362": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "363": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "364": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "365": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "366": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "367": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "368": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "369": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "370": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "371": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "372": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40,
+        60
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "373": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "374": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "375": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "376": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "824": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "825": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        130
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "826": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        65,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "827": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "828": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70,
+        130
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "829": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "830": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "831": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "832": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "833": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "834": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "835": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "836": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "837": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        65,
+        110,
+        135
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "838": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "839": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        65,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "840": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45,
+        90,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "841": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "842": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        100,
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "843": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1551": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1552": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1553": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1554": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        95
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1555": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1556": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1557": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40,
+        60,
+        90,
+        145
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1558": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1559": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        90,
+        150
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1560": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40,
+        60,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1561": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1562": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1563": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1564": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1565": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        95
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1566": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        95
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1567": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1568": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45,
+        95
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1569": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        100,
+        155
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1570": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        50,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1096": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1097": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45,
+        65,
+        130
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1098": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30,
+        55,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1099": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1100": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        65,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1101": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1102": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        70,
+        135
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1103": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        45
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1104": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1105": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        65,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1106": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1107": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1108": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1109": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1110": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        60,
+        115,
+        140
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1111": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        95
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1112": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1113": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1114": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "1115": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3826": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3827": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3828": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3829": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3830": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        85
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3831": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        85
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3832": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        80
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3833": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        75,
+        95,
+        145
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3834": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3835": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3836": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3837": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        85
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3838": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        80
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3839": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        80
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3840": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70,
+        90
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3841": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3842": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        85
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3843": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        90
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3844": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        90
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3845": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        80
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3783": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3784": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3785": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3786": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3787": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3788": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3789": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3790": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3791": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3792": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3793": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3794": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3795": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3796": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3797": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3798": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3799": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3800": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3801": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3802": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3186": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        85,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3187": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        70,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3188": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        80,
+        110,
+        130,
+        155
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3189": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        45,
+        100,
+        135,
+        155
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3190": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40,
+        60,
+        85,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3191": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45,
+        90,
+        110,
+        140
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3192": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        85,
+        120,
+        140
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3193": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        85,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3194": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        75,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3195": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        110,
+        130
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3196": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30,
+        95,
+        120
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3197": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        85,
+        125
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3198": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30,
+        55,
+        130
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3199": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        80,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3200": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        95,
+        135
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3201": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        75,
+        105
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3202": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        80,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3203": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        50,
+        85,
+        110
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3204": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30,
+        115
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3205": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50,
+        140
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3460": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        60
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3461": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40,
+        60
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3462": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3463": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3464": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3465": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3466": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        50,
+        70
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3467": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        30,
+        60
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3468": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3469": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3470": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        35,
+        55,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3471": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        55,
+        100
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3472": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3473": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3474": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3475": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3476": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3477": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        25,
+        50
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3478": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        40
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  },
+  "3479": {
+    "true_h24_previous_action_unanchored": {
+      "boundaries": [
+        45,
+        65
+      ],
+      "threshold": 0.0008660639286972582,
+      "threshold_scope": "dataset"
+    }
+  }
+}

@@ -61,6 +61,12 @@ abc_sim_training_sets:
     sampling: random
     seed: 42
 
+  group_ABCVLA_easy_task_1k_eps:
+    tasks: group_ABCVLA_easy_task
+    episodes_per_task: 1000
+    sampling: random
+    seed: 42
+
 # Keep ABC checkpoints and evaluation outputs separate from LIBERO outputs.
 outputs_root: outputs_ABC
 

@@ -109,6 +109,9 @@ POLICY_ARGS=(
   --policy.history_conditioning="state"
   --policy.history_encoder="${DP_HISTORY_ENCODER}"
   --policy.history_encoder_dim="${DP_HISTORY_ENCODER_DIM}"
+  --policy.history_gru_stateful="${DP_HISTORY_GRU_STATEFUL}"
+  --policy.history_gru_layers="${DP_HISTORY_GRU_LAYERS}"
+  --policy.history_gru_training="${DP_HISTORY_GRU_TRAINING}"
   --policy.proprio_grounding="${DP_PROPRIO_GROUNDING}"
   --policy.drop_n_last_frames="${DP_DROP_N_LAST_FRAMES}"
   --policy.down_dims="${DP_DOWN_DIMS_ARG}"
@@ -165,6 +168,9 @@ echo "  config       : ${TRAIN_CONFIG_PATH}"
 echo "  policy       : ${DP_POLICY}"
 echo "  action seq   : ${DP_ACTION_SEQUENCE_MODE} (history=${DP_N_OBS_STEPS}, future=${DP_FUTURE_ACTION_HORIZON})"
 echo "  history enc  : ${DP_HISTORY_ENCODER} (dim=${DP_HISTORY_ENCODER_DIM})"
+if [ "${DP_HISTORY_ENCODER}" = gru ]; then
+  echo "  GRU          : ${DP_HISTORY_GRU_TRAINING}, layers=${DP_HISTORY_GRU_LAYERS}, stateful=${DP_HISTORY_GRU_STATEFUL}"
+fi
 echo "  trajectory   : ${DP_TRAJECTORY_HORIZON} semantic steps (execute=${DP_N_ACTION_STEPS})"
 echo "  UNet         : ${DP_UNET_SIZE} ${DP_DOWN_DIMS_ARG}"
 echo "  precision    : ${ACCELERATE_MIXED_PRECISION} (dp_amp=${DP_AMP})"
@@ -190,6 +196,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
   --dataset.video_backend=pyav \
   --batch_size="${DP_BATCH_SIZE}" \
   --num_workers="${DP_NUM_WORKERS}" \
+  --dataloader_persistent_workers="${DP_DATALOADER_PERSISTENT_WORKERS}" \
   ${RESUME_FLAG} || TRAIN_STATUS=$?
 
 handle_inline_cuda_guard_exit "${TRAIN_STATUS}"

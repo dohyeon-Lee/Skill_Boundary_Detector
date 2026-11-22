@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Package a shared project venv into one sequential read, then unpack it onto
 # a compute node's local scratch. This avoids thousands of Lustre metadata
 # operations during large PyTorch imports.

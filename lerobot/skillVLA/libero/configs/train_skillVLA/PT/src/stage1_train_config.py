@@ -882,6 +882,35 @@ def build_settings(config: dict) -> dict:
     ).strip().lower()
     if architecture_label.endswith("_dgd"):
         architecture_label = architecture_label[:-4] + "_dGD"
+    vlm_term = config.get("vlm_termination", {})
+    bottleneck_connection = str(config.get("bottleneck_connection", "final")).lower()
+    if bottleneck_connection not in {"final", "layerwise"}:
+        raise ValueError("bottleneck_connection must be final|layerwise.")
+    dual_bottleneck_layerwise = bottleneck_connection == "layerwise"
+    dual_fullskill_readout = str(config.get("fullskill_readout", "middle")).lower()
+    if dual_fullskill_readout not in {"middle", "final"}:
+        raise ValueError("fullskill_readout must be middle|final.")
+    if dual_fullskill_readout == "final" and (
+            architecture_label not in DUAL_BOTTLENECK_NAMES or architecture_label.endswith("_wovis")):
+        raise ValueError("Final full-skill readout requires a dual bottleneck without start proprio.")
+    if dual_bottleneck_layerwise and (
+            architecture_label not in DUAL_BOTTLENECK_NAMES or architecture_label.endswith(("_last", "_wovis"))):
+        raise ValueError("Layerwise bottleneck connections require the full dual-bottleneck 9+9 architecture.")
+    if not isinstance(vlm_term, dict):
+        raise ValueError("vlm_termination must be a mapping.")
+    unknown_vlm_term = set(vlm_term) - {"enabled", "loss_weight", "target_sigma", "positive_weight", "post_end_steps"}
+    if unknown_vlm_term:
+        raise ValueError(f"Unknown vlm_termination fields: {sorted(unknown_vlm_term)}")
+    vlm_termination_enabled = as_bool(vlm_term.get("enabled", False))
+    vlm_termination_loss_weight = float(vlm_term.get("loss_weight", 1.0))
+    vlm_termination_target_sigma = float(vlm_term.get("target_sigma", 1.0))
+    vlm_termination_positive_weight = float(vlm_term.get("positive_weight", 2.0))
+    vlm_termination_post_end_steps = int(vlm_term.get("post_end_steps", 10))
+    if vlm_termination_enabled and (architecture_label not in DUAL_BOTTLENECK_NAMES or architecture_label.endswith("_wovis")):
+        raise ValueError("vlm_termination requires a dual bottleneck without skill-start proprio.")
+    if any(not math.isfinite(x) or x < 0 for x in (
+            vlm_termination_loss_weight, vlm_termination_target_sigma, vlm_termination_positive_weight)) or vlm_termination_post_end_steps < 0:
+        raise ValueError("VLM termination loss values must be finite and non-negative.")
     architecture_config = config.get("architecture", {})
     if not isinstance(architecture_config, dict):
         raise ValueError("architecture must be a mapping.")
@@ -1711,12 +1740,21 @@ def build_settings(config: dict) -> dict:
     elif architecture_label in UV_BSPLINE_SKILL_NAMES:
         run_label = UV_BSPLINE_SKILL_NAMES[architecture_label]
     run_name = f"bs{batch_size}_{source}_{run_tag}_{run_label}"
+    if dual_bottleneck_layerwise:
+        run_name += "_layerwise"
+    if dual_fullskill_readout == "final":
+        run_name += "_fullskillL18"
+    if vlm_termination_enabled:
+        term_tag = (f"_vlmtermGT_k{vlm_termination_post_end_steps}_s{vlm_termination_target_sigma:g}"
+                    f"_pw{vlm_termination_positive_weight:g}_w{vlm_termination_loss_weight:g}")
+        run_name += term_tag.replace(".", "p")
     if cond_attention_backend != "eager":
         run_name = f"{run_name}_{cond_attention_backend}"
     if (is_arch2 or is_layerwise) and visual_bridge_last_n_layers != 1:
         bridge_tag = "layer" if is_window else "vlast"
         run_name = f"{run_name}_{bridge_tag}{visual_bridge_last_n_layers}"
-    if is_bspline and (bspline_tokens != 30 or bspline_loss_weight != 1.0):
+    # ABC keeps the default plan30_w1 visible for comparisons with plan90_w1.
+    if is_bspline and (bimanual_spatial_auxiliary or bspline_tokens != 30 or bspline_loss_weight != 1.0):
         run_name += f"_plan{bspline_tokens}_w{bspline_loss_weight:g}".replace(".", "p")
     if (is_arch5 or is_arch6 or is_arch13) and focus_uv_loss_weight != 1.0:
         run_name = f"{run_name}_uv{focus_uv_loss_weight:g}".replace(".", "p")
@@ -1927,6 +1965,13 @@ def build_settings(config: dict) -> dict:
         "proprio_grounding": contract["proprio_grounding"],
         "chunk_size": chunk_size,
         "mask_actions_after_skill_end": mask_actions_after_skill_end,
+        "dual_bottleneck_layerwise": dual_bottleneck_layerwise,
+        "dual_fullskill_readout": dual_fullskill_readout,
+        "vlm_termination_enabled": vlm_termination_enabled,
+        "vlm_termination_loss_weight": vlm_termination_loss_weight,
+        "vlm_termination_target_sigma": vlm_termination_target_sigma,
+        "vlm_termination_positive_weight": vlm_termination_positive_weight,
+        "vlm_termination_post_end_steps": vlm_termination_post_end_steps,
         "cumulative_xyz_loss_enabled": cumulative_xyz_loss_enabled,
         "cumulative_xyz_loss_weight": cumulative_xyz_loss_weight,
         "skill_flow_enabled": skill_flow_enabled,

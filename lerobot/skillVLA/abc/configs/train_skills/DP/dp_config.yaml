@@ -8,8 +8,8 @@ dp_dataset_root: dataset_ABC
 dp_dataset: abc_sim_all
 # all | one official task ID | a YAML list | a task group | a reproducible
 # training set from abc_sim_training_sets in global_config.yaml.
-dp_tasks: group_singletask_1k_eps
-
+# dp_tasks: grab_clutter
+dp_tasks: group_ABCVLA_easy_task_1k_eps
 # ABC/YAM coordinate contract:
 #   - observation.state remains the canonical 14D absolute joint position
 #   - dataset: train on the original 14D absolute joint targets
@@ -22,17 +22,20 @@ dp_tasks: group_singletask_1k_eps
 # In every transformed mode, the two grippers stay absolute. delta_pose is a
 # DP/SBD-only coordinate contract and intentionally has no IK postprocessor.
 # The raw dataset is never rewritten.
-dp_action_mode: delta_pose  # dataset | anchor_relative | delta_joint | delta_pose
+dp_action_mode: delta_joint  # dataset | anchor_relative | delta_joint | delta_pose
 dp_relative_exclude_joints: [gripper]
 
 # Fixed DP settings:
 #   - state-only conditioning (no camera encoder)
-#   - 1.0 s observation history and 1.2 s action prediction at 30 Hz
-dp_n_obs_steps: 30
+#   - 2.0 s observation history and 2.4 s action prediction at 30 Hz
+dp_n_obs_steps: 60              # IID/Transformer: 학습 history 길이. GRU_epi: TBPTT 구간 길이
 dp_future_action_horizon: 36
-dp_history_encoder: transformer
-dp_history_encoder_dim: 128
-dp_unet_size: small
+dp_history_encoder: transformer  # flat | GRU_iid | GRU_epi | transformer | transformer_cls
+# GRU는 둘 다 2층. 추론/SBD에서는 현재 state + 이전 hidden 사용, episode 시작에서 초기화.
+# GRU_iid: 무작위 window마다 hidden=0. GRU_epi: episode 내 구간을 순서대로 연결, 구간마다 gradient 분리.
+dp_history_encoder_dim: 128      # 고정. flat에서는 사용하지 않음
+dp_unet_size: base             # small=[128,256,512] | base=[512,1024,2048]
+# 폴더명: encoder 접미사(flat은 생략), small 접미사(base는 생략)를 자동 반영.
 dp_lr_scheduler: constant
 dp_lr: 0.0001
 dp_amp: false

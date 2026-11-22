@@ -17,6 +17,33 @@ from lerobot.configs.uv_fullskill import UV_BSPLINE_GT_XYZ_LABELS, UV_BSPLINE_RE
 from lerobot.configs.uv_fullskill import VANILA_LABELS, VANILA_REVISIONS, vanila_bridge_layers
 
 
+def test_vlm_termination_and_layerwise_experiments_have_distinct_saved_contracts(tmp_path):
+    import copy
+    config = _config(tmp_path, "arch8_1")
+    config["architecture"]["name"] = "UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio"
+    config["architecture"]["visual_bottleneck_tokens"] = 100
+    config["architecture"]["visual_bridge_last_n_layers"] = 9
+    baseline = build_settings(config)
+    term = copy.deepcopy(config)
+    term["vlm_termination"] = {"enabled": True, "post_end_steps": 10}
+    head = build_settings(term)
+    assert head["vlm_termination_enabled"] and head["vlm_termination_post_end_steps"] == 10
+    assert "_vlmtermGT_k10_s1_pw2_w1" in head["pt_run_name"]
+    layerwise = copy.deepcopy(config)
+    layerwise["bottleneck_connection"] = "layerwise"
+    layers = build_settings(layerwise)
+    assert layers["dual_bottleneck_layerwise"] and not layers["vlm_termination_enabled"]
+    final = copy.deepcopy(config)
+    final["fullskill_readout"] = "final"
+    last = build_settings(final)
+    assert last["dual_fullskill_readout"] == "final" and "_fullskillL18" in last["pt_run_name"]
+    assert baseline["dual_fullskill_readout"] == "middle"
+    assert not last["dual_bottleneck_layerwise"] and not last["vlm_termination_enabled"]
+    assert len({x["pt_run_name"] for x in (baseline, head, layers, last)}) == 4
+    term["vlm_termination"]["post_end_steps"] = 5
+    assert build_settings(term)["pt_run_name"] != head["pt_run_name"]
+
+
 def _config(tmp_path: Path, architecture: str = "arch0") -> dict:
     project = tmp_path / "project"
     run = "FSQ333_test"

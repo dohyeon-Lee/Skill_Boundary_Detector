@@ -168,9 +168,45 @@ def test_temporal_history_encoder_adds_policy_suffix(tmp_path: Path, history_enc
 
     assert settings["dp_history_encoder"] == history_encoder
     assert settings["dp_history_encoder_dim"] == 128
+    suffix = "gru_iid" if history_encoder == "gru" else history_encoder
     assert settings["dp_policy"] == (
-        f"dp_demo_full_full_future_only_obs4_future8_{history_encoder}"
+        f"dp_demo_full_full_future_only_obs4_future8_{suffix}"
     )
+
+
+@pytest.mark.parametrize('encoder', ['flat', 'GRU_iid', 'GRU_epi', 'transformer', 'transformer_cls'])
+@pytest.mark.parametrize('size,dims', [('small', [128, 256, 512]), ('base', [512, 1024, 2048])])
+def test_libero_architecture_choices_match_abc(tmp_path, encoder, size, dims):
+    settings = dp_train_settings({
+        **_config(tmp_path), 'dp_history_encoder': encoder, 'dp_unet_size': size,
+    })
+    is_gru = encoder.lower().startswith('gru')
+    assert settings['dp_history_encoder'] == ('gru' if is_gru else encoder)
+    assert settings['dp_history_gru_layers'] == 2
+    assert settings['dp_history_gru_stateful'] == is_gru
+    assert settings['dp_history_gru_training'] == ('epi' if encoder == 'GRU_epi' else 'iid')
+    assert settings['dp_dataloader_persistent_workers'] == (encoder == 'GRU_epi')
+    assert settings['dp_down_dims'] == dims
+    suffix = '' if encoder == 'flat' else '_' + encoder.lower()
+    size_suffix = '_small' if size == 'small' else ''
+    assert settings['dp_policy'] == f'dp_demo_full_full_future_only_obs4_future8{suffix}{size_suffix}'
+
+
+def test_epi_without_dataloader_workers_disables_persistence(tmp_path):
+    settings = dp_train_settings({**_config(tmp_path), 'dp_history_encoder': 'GRU_epi', 'dp_num_workers': 0})
+    assert settings['dp_dataloader_persistent_workers'] is False
+
+
+def test_old_gru_name_selects_new_iid_variant(tmp_path):
+    old = dp_train_settings({**_config(tmp_path), 'dp_history_encoder': 'gru'})
+    explicit = dp_train_settings({**_config(tmp_path), 'dp_history_encoder': 'GRU_iid'})
+    assert old == explicit
+
+
+@pytest.mark.parametrize('vision', ['action', 'resnet'])
+def test_streaming_gru_rejects_non_state_inputs_before_submission(tmp_path, vision):
+    with pytest.raises(ValueError, match='require dp_vision: state'):
+        dp_train_settings({**_config(tmp_path), 'dp_history_encoder': 'GRU_iid', 'dp_vision': vision})
 
 
 def test_dp_settings_reject_invalid_history_encoder(tmp_path: Path):
@@ -251,6 +287,10 @@ def test_dp_train_script_uses_bf16_toggle_and_inline_cuda_guard():
     assert '--policy.down_dims="${DP_DOWN_DIMS_ARG}"' in script
     assert '--policy.history_encoder="${DP_HISTORY_ENCODER}"' in script
     assert '--policy.history_encoder_dim="${DP_HISTORY_ENCODER_DIM}"' in script
+    assert '--policy.history_gru_stateful="${DP_HISTORY_GRU_STATEFUL}"' in script
+    assert '--policy.history_gru_layers="${DP_HISTORY_GRU_LAYERS}"' in script
+    assert '--policy.history_gru_training="${DP_HISTORY_GRU_TRAINING}"' in script
+    assert '--dataloader_persistent_workers="${DP_DATALOADER_PERSISTENT_WORKERS}"' in script
     assert '--policy.scheduler_name="${DP_LR_SCHEDULER}"' in script
     assert 'handle_inline_cuda_guard_exit "${TRAIN_STATUS}"' in script
     assert '--policy.history_conditioning=action' in script

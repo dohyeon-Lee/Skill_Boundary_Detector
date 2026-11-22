@@ -103,6 +103,34 @@ def test_other_owner_never_queried():
     assert gpu.snapshot()["errors"]
 
 
+def test_same_node_merges_allocations_and_retains_fresh_gpu_when_other_expires(tmp_path):
+    second = {**JOB, "job_id": "124"}
+    def runner(command, **kwargs):
+        if command[:3] == ["scontrol", "show", "job"]:
+            return DETAIL if command[-1] == "123" else DETAIL.replace("JobId=123", "JobId=124").replace("IDX:6", "IDX:7")
+        if command[:3] == ["scontrol", "show", "hostnames"]:
+            return "node200\n"
+        raise AssertionError("Use the allocation collectors, without SSH or new steps")
+    for identifier, index in [("123", 6), ("124", 7)]:
+        folder = tmp_path / identifier
+        folder.mkdir()
+        device = parse_gpu(f"{index}, GPU-{identifier}, B200, 1024, 1024, 2048")[0]
+        (folder / "node200.json").write_text(json.dumps(dict(
+            job_id=identifier, node="node200", uid=os.getuid(), sampled_at=time.time(), devices=[device])))
+    gpu = GPUs("test", runner, telemetry=tmp_path)
+    gpu.poll([JOB, second])
+    rows = gpu.snapshot()["devices"]
+    assert [(row["index"], row["job_ids"], row["stale"]) for row in rows] == [(6, ["123"], False), (7, ["124"], False)]
+    assert not gpu.snapshot()["errors"]
+    path = tmp_path / "124/node200.json"
+    data = json.loads(path.read_text()); data["sampled_at"] -= 60
+    path.write_text(json.dumps(data))
+    gpu.poll([JOB, second])
+    rows = gpu.snapshot()["devices"]
+    assert not rows[0]["stale"] and rows[1]["stale"]
+    assert len(gpu.snapshot()["errors"]) == 1
+
+
 def test_same_host_prefers_allocation_uuid_and_run_processes(tmp_path, monkeypatch):
     monkeypatch.setattr(module.socket, "gethostname", lambda: "node200")
     folder = tmp_path / "123"

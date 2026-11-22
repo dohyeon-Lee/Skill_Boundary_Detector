@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # Run the full SkillVLA data-generation pipeline in one submission (DINO는 어디서도 precompute
 # 안 함 — DP는 state/raw-frames, FSQ 학습·terminator는 ONLINE):
 #   job 1    build_skillset.sbatch  — DP skill segmentation (Slurm array over tasks)
@@ -10,6 +14,9 @@
 # rewired around them. Final outputs land in {skillvla_dataset}/{source}/{run_tag}/.
 
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../src/submit_job.sh"
@@ -90,10 +97,6 @@ if [ "${SKILLSET_SINGLE_GPU_WORKERS:-0}" -gt 0 ]; then
     # Run in the original allocation shell. No new GPU or overlapping srun step.
     env "${ENV[@]}" SLURM_SUBMIT_DIR="${SCRIPT_DIR}" bash "${SRC_DIR}/build_single_gpu.sbatch"
   else
-    if [ "$(submit_job_scheduler)" = slurm ] && [ "$(submit_job_slurm_mode)" = srun_existing ]; then
-      echo "Run submit_build_all.sh inside the original srun shell to reuse its GPU; no extra srun step was created." >&2
-      exit 2
-    fi
     TRAIN_SKILLVLA_CONFIG="${CONFIG_PATH}" SOURCE_DATA="${SOURCE_DATASET}" \
     SKILLVLA_ENV_SNAPSHOT="${SNAPSHOT_ENV}" \
       submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/build_single_gpu.sbatch"

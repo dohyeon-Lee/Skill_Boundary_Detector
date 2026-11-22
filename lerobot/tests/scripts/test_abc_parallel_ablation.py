@@ -1,7 +1,9 @@
 """Episode workers must never calibrate on their own partial selections."""
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -9,10 +11,34 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-SRC = ROOT / 'lerobot/skillVLA/abc/configs/train_skills/skill_eval/skill_boundary_detection/src'
+SRC = ROOT / 'lerobot/skillVLA/abc/configs/train_skills/DP/eval/src'
 spec = importlib.util.spec_from_file_location('abc_parallel_ablation_test', SRC / 'run_parallel_ablation.py')
 MOD = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(MOD)
+
+
+@pytest.mark.parametrize(('workers', 'episode_worker', 'expected'), [
+    (1, False, 8), (2, True, 4), (2, False, 8),
+])
+def test_cpu_budget_limits_already_loaded_native_pools(workers, episode_worker, expected):
+    code = f'''
+import importlib.util, json, os
+import numpy as np
+np.ones((8, 8)) @ np.ones((8, 8))
+spec = importlib.util.spec_from_file_location('parallel', {str(SRC / 'run_parallel_ablation.py')!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.configure_cpu_threads({{'workers': {workers}, 'cpu_budget': 8}}, episode_worker={episode_worker!r})
+import torch
+from threadpoolctl import threadpool_info
+assert torch.get_num_threads() == {expected}
+assert torch.get_num_interop_threads() == 1
+assert all(os.environ[name] == str({expected}) for name in module.THREAD_ENV_NAMES)
+pools = threadpool_info()
+assert pools and all(pool['num_threads'] <= {expected} for pool in pools), pools
+'''
+    env = dict(os.environ, OPENBLAS_NUM_THREADS='32', OMP_NUM_THREADS='32', MKL_NUM_THREADS='32')
+    subprocess.run([sys.executable, '-c', code], env=env, check=True, capture_output=True, text=True)
 
 
 def test_cache_worker_stops_before_any_partial_threshold_or_report(tmp_path, monkeypatch):
@@ -67,12 +93,15 @@ def test_global_merge_uses_original_selection_and_only_finished_caches(tmp_path,
                              _portable_path=lambda *a: tmp_path,
                              _probe_episode=lambda: 'unexpected inference')
     cache = {}
-    module._cluster_cache_load = lambda ep: cache.get(ep)
+    module._cluster_cache_load = lambda ep, *args: cache.get(ep)
     def merge(cfg):
         assert cfg is settings
         assert module._selected_episode_ids() == [1, 2, 3, 4]
         assert cfg['threshold_calibration']['expected_episodes'] == 4
         assert [module._cluster_cache_load(ep) for ep in selected()] == [10, 20, 30, 40]
+        assert module._cluster_cache_load('final10', {'descriptor_key': 'final_descriptors'}) is None
+        with pytest.raises(RuntimeError, match='Cluster cache miss'):
+            module._cluster_cache_load('missing_primary', {'schema': 2})
         with pytest.raises(RuntimeError, match='Raw cache miss'):
             module._probe_episode()
         return tmp_path / 'index.html'
@@ -131,29 +160,3 @@ def test_dataset_action_contract_keeps_legacy_path_unchanged(tmp_path, monkeypat
     with MOD.action_contract(facade, {'skillset_dir': str(tmp_path)}):
         assert skill.run_vf_analysis(action_mode='dataset') == 42
     assert 'relative_mask' not in seen
-
-
-def test_task_shard_preserves_parallel_worker_budget(tmp_path, monkeypatch):
-    spec = importlib.util.spec_from_file_location('abc_shard_worker_config', SRC / 'config.py')
-    config = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(config)
-    output = tmp_path / 'full_report'
-    payload = {'n_episodes': 5, 'task_ids': [1, 2, 3],
-               'threshold_calibration': {'source': 'selected', 'expected_episodes': 15}}
-    shared = SimpleNamespace(
-        build_settings=lambda *a, **kw: {'dp_ablation_output_dir': str(output),
-                                        'dp_ablation_settings_json': json.dumps(payload),
-                                        'dp_ablation_cpus': 8},
-        load_config=lambda *a: {'eval_workers': 4},
-        get_value=lambda cfg, key, default: cfg.get(key, default))
-    monkeypatch.setattr(config, '_shared_module', lambda: shared)
-    monkeypatch.setenv('ABC_SBD_SHARD_TAG', 'tasks1_3')
-    monkeypatch.setenv('ABC_SBD_TASK_IDS', '1,3')
-    settings = config.build_settings('config.yaml')
-    result = json.loads(settings['dp_ablation_settings_json'])
-    assert settings['dp_ablation_workers'] == result['workers'] == 4
-    assert result['cpu_budget'] == 8
-    assert result['task_ids'] == [1, 3]
-    assert result['threshold_calibration']['expected_episodes'] == 10
-    assert settings['dp_ablation_output_dir'] == str(output / 'shards/tasks1_3')
-    assert result['cache_source_dirs'][0] == str(output)

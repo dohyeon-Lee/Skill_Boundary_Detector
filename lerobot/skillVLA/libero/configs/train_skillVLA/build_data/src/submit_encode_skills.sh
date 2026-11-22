@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Step 4 of SkillVLA data generation: map each segmented skill to an FSQ latent vector.
 #   (sbatch) extract skill-level DINO tokens, then encode them with the trained FSQ.
 #
@@ -10,6 +14,9 @@
 #   skill latents    : {skillvla_dataset}/{source}/{run_tag}/skill_latents.npz
 
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../../src/submit_job.sh"

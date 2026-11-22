@@ -340,6 +340,41 @@ def _normalize_terminator_variant(value: str) -> str:
     return normalized
 
 
+class VLMCheckpointTerminator:
+    """Integrated VSA head with the same normalized current-state prefix."""
+    use_wrist = True
+    requires_state = True
+    requires_goal_uv = True
+    requires_goal_xyz = False
+    requires_start_proprio = False
+    termination_only = True
+    proprio_history = False
+    history_length = 1
+    uses_vsa_prefix = True
+
+    def __init__(self, policy):
+        self.policy = policy
+
+    def reset(self):
+        pass
+
+    def reset_skill(self, indices, state, *, seed_current=False):
+        pass
+
+    @torch.no_grad()
+    def terminate(self, codes, state, image, wrist_image, *, normalized_state, goal_uv, **kwargs):
+        batch = {
+            OBS_STATE: normalized_state,
+            "skill_code": codes,
+            "skill_focus_uv": goal_uv,
+            "skill_focus_valid": torch.isfinite(goal_uv).all(-1),
+            "observation.images.image": image,
+            "observation.images.wrist_image": wrist_image,
+        }
+        probability = self.policy.predict_termination_probability(batch)
+        return torch.zeros_like(probability), probability
+
+
 class CheckpointTerminator:
     """Inference adapter around the terminator currently attached to a policy."""
 
@@ -2559,6 +2594,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             terminator_kwargs = {
                 "previous_action": self._last_executed_action,
             }
+            if getattr(self.terminator, "uses_vsa_prefix", False):
+                terminator_kwargs["normalized_state"] = batch[OBS_STATE]
             if bool(getattr(self.terminator, "requires_start_proprio", False)):
                 if RAW_STATE not in batch:
                     raise ValueError(
@@ -4012,7 +4049,9 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         )
     policy.eval()
     terminator = (
-        CheckpointTerminator(policy, terminator_variant)
+        (VLMCheckpointTerminator(policy)
+         if advance_mode == "own" and getattr(policy.config, "vlm_termination_enabled", False)
+         else CheckpointTerminator(policy, terminator_variant))
         if advance_mode != "gt"
         else None
     )

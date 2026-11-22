@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Download the ORIGINAL LIBERO dataset before converting it to our LeRobot format.
 #
 # Inputs / references:

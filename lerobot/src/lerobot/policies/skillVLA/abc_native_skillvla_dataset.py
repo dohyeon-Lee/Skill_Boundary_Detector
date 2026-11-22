@@ -194,6 +194,8 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
         jitter_late_end_pmax: int = -1,
         jitter_distribution: str | None = None,
         bspline_skill_state_tokens: int = 0,
+        include_predictor_start_inputs: bool = False,
+        terminator_post_end_steps: int = 0,
         **kwargs,
     ) -> None:
         if float(jitter_pmax_percent) != 0.0:
@@ -240,6 +242,24 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
         if self._bspline_tokens not in (0,) and self._bspline_tokens < 2:
             raise ValueError("bspline_skill_state_tokens must be 0 or >=2.")
         self._bspline_cache: dict[tuple[int, int, int], torch.Tensor] = {}
+        self.include_predictor_start_inputs = bool(include_predictor_start_inputs)
+        self.terminator_post_end_steps = int(terminator_post_end_steps)
+
+    @property
+    def jitter_directional_pmaxes(self) -> dict[str, int]:
+        return dict(self._directional_pmaxes)
+
+    @property
+    def jitter_distribution(self) -> str:
+        return self._jitter_distribution
+
+    @property
+    def jitter_preserve_gripper(self) -> bool:
+        return False
+
+    @property
+    def native_episode_end_indices(self) -> np.ndarray:
+        return self._cumulative_lengths - 1
 
     @property
     def jitter_pmax(self) -> int:
@@ -274,15 +294,21 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
     def __getitem__(self, index) -> dict:
         pair_id, pair_fallback, latent_group = -1, False, -1
         jitter_override = None
+        effective_de_override = None
+        terminal_repeat = False
         if isinstance(index, tuple):
-            if len(index) == 3:
+            if len(index) == 2:
+                index, terminal_repeat = index
+            elif len(index) == 3:
                 index, pair_id, pair_fallback = index
-            elif len(index) in (5, 6):
+            elif len(index) in (5, 6, 7):
                 values = index
                 index, pair_id, pair_fallback = values[:3]
                 jitter_override = (int(values[3]), int(values[4]))
-                if len(values) == 6:
+                if len(values) >= 6:
                     latent_group = int(values[5])
+                if len(values) == 7:
+                    effective_de_override = int(values[6])
             else:
                 raise ValueError(f"Unsupported ABC SkillVLA grouped index: {index!r}")
         selected_position, row, current_frame = self._locate(int(index))
@@ -360,6 +386,8 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
             ),
             dtype=torch.long,
         )
+        if effective_de_override is not None:
+            item[SKILL_EFFECTIVE_DE] = torch.tensor(effective_de_override, dtype=torch.long)
         progress = (current_frame - gt_start) / max(int(lengths[kp]) - 1, 1)
         item[SKILL_PROGRESS] = torch.tensor(
             float(np.clip(progress, 0, 1)), dtype=torch.float32
@@ -376,4 +404,46 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
         item[SAME_SKILL_PAIR_ID] = torch.tensor(int(pair_id), dtype=torch.long)
         item[SAME_SKILL_PAIR_FALLBACK] = torch.tensor(bool(pair_fallback))
         item[LATENT_SKILL_GROUP_ID] = torch.tensor(int(latent_group), dtype=torch.long)
+        if self.include_predictor_start_inputs:
+            keys = ["observation.images.top", "observation.images.left_wrist", "observation.images.right_wrist"]
+            images = self._query_cameras(row, causal_frame, {}, camera_keys=keys)
+            if self.image_transforms is not None:
+                images = {key: self.image_transforms(image) for key, image in images.items()}
+            item["skill_start_image"], item["skill_start_wrist_image"], item["skill_start_right_wrist_image"] = (
+                images[key] for key in keys
+            )
+            # Text proprio and instruction must describe exactly this invocation,
+            # including calls jittered to the preceding/following prompt segment.
+            item["observation.state"] = torch.from_numpy(start_state.copy())
+            item["task_index"], item["task"] = self._prompt_at(row, causal_frame)
+
+        if self.terminator_post_end_steps:
+            from lerobot.policies.skillVLA.newterm_supervision import (
+                post_end_conditions, POST_END_CODES, POST_END_VALID,
+                POST_END_START_STATE, TERMINAL_FRAME,
+            )
+            steps = self.terminator_post_end_steps
+            past_codes, past_valid, ranks = post_end_conditions(
+                current_frame, k, starts, codes, steps,
+                terminal_repeat=terminal_repeat, return_skill_indices=True,
+            )
+            past_starts = np.zeros((steps, self.state_dim), dtype=np.float32)
+            past_xyz = np.zeros((steps, 2, 3), dtype=np.float32)
+            past_uv = np.zeros((steps, 2, 2), dtype=np.float32)
+            past_uv_valid = np.zeros((steps, 2), dtype=bool)
+            for slot in np.flatnonzero(past_valid.numpy()):
+                rank = int(ranks[slot]); start = int(starts[rank])
+                past_starts[slot] = self._iss.state(episode_id, rank, 0, start)
+                target = self._spatial.targets(episode_id, rank, start, current_frame)
+                past_xyz[slot] = target["endpoint"]
+                past_uv[slot] = target["uv"][:2]
+                past_uv_valid[slot] = target["valid"][:2]
+            item[POST_END_CODES], item[POST_END_VALID] = past_codes, past_valid
+            item[POST_END_START_STATE] = torch.from_numpy(past_starts)
+            item["terminator_post_end_goal_uv"] = torch.from_numpy(past_uv)
+            item["terminator_post_end_goal_uv_valid"] = torch.from_numpy(past_uv_valid)
+            item["terminator_post_end_bimanual_xyz"] = torch.from_numpy(past_xyz)
+            item[TERMINAL_FRAME] = torch.tensor(terminal_repeat)
+            position = self._spatial.episode_position[episode_id]
+            item["terminator_top_camera_projection"] = torch.from_numpy(self._spatial.top_projection[position].copy())
         return item

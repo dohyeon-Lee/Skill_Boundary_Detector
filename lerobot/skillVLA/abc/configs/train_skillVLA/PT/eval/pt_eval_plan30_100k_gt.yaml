@@ -1,0 +1,53 @@
+dataset: abc_sim_all
+tasks:
+- grab_clutter
+policy:
+  type: skillvla
+  skillvla:
+    condition_source: gt
+    gt_dataset: dataset_ABC/skillvla/abc_sim_all/FSQ3332_contrastive_1000_pt/skillvla
+    gt_episode_ids: null
+    vsa:
+      run_name: bs16_abc_sim_all_FSQ3332_contrastive_1000_pt_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_plan30_w1_base
+      checkpoint: 100000
+    predictor:
+      run_name: bs16_FSQ3332_contrastive_1000_pt_abc_sim_all_predictor_uv_fullvlm_mode2
+      checkpoint: 100000
+    terminator:
+      run_name: bs32_FSQ3332_contrastive_1000_pt_abc_sim_all_terminator_Term_Token_1_dinoS_freeze_k15
+      checkpoint: 100000
+    termination_threshold: 0.5
+    min_skill_steps: 0
+    max_skill_steps: 300
+    fullskill_overlay: true
+  action_chunk_size: 15
+  num_inference_steps: 10
+  device: cuda
+  dtype: bfloat16
+rollout:
+  backend: mujoco
+  num_worlds: 50
+  parallel_worlds: 4
+  seed: 20261113
+  max_steps: 3540
+  stop_on_success: true
+  randomization: null
+camera:
+  names:
+  - top
+  - left
+  - right
+  height: 168
+  width: 224
+video:
+  enable: true
+  fps: 30
+  every_n_steps: 1
+output:
+  root: lerobot/skillVLA/abc/configs/train_skillVLA/PT/eval/outputs
+  run_name: auto
+slurm:
+  gres: gpu:1
+  cpus: 8
+  memory: 96G
+  time: '12:00:00'

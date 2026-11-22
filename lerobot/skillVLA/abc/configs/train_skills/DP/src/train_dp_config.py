@@ -25,9 +25,9 @@ YAM_JOINT_NAMES = [
 ]
 UNET_DIMS = {
     "small": [128, 256, 512],
-    "base": [256, 512, 1024],
-    "large": [512, 1024, 2048],
+    "base": [512, 1024, 2048],
 }
+HISTORY_ENCODERS = {"flat", "gru", "gru_iid", "gru_epi", "transformer", "transformer_cls"}
 ACTION_MODES = {"dataset", "anchor_relative", "delta_joint", "delta_pose"}
 
 
@@ -285,15 +285,19 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
             "ABC DP prediction horizon must be positive, "
             f"got {future_horizon}."
         )
-    history_encoder = str(cfg.get("dp_history_encoder", "transformer"))
+    history_encoder = str(cfg.get("dp_history_encoder", "transformer")).strip().lower()
     history_dim = int(cfg.get("dp_history_encoder_dim", 128))
-    if history_encoder != "transformer" or history_dim != 128:
-        raise ValueError("ABC DP currently uses the 128D Transformer history encoder.")
-    unet_size = str(cfg.get("dp_unet_size", "small"))
+    if history_encoder not in HISTORY_ENCODERS:
+        raise ValueError(f"dp_history_encoder must be one of {sorted(HISTORY_ENCODERS)}.")
+    history_variant = "gru_iid" if history_encoder == "gru" else history_encoder
+    gru_training = "epi" if history_variant == "gru_epi" else "iid"
+    if history_variant in {"gru_iid", "gru_epi"}:
+        history_encoder = "gru"
+    if history_dim != 128:
+        raise ValueError("ABC DP keeps dp_history_encoder_dim fixed at 128.")
+    unet_size = str(cfg.get("dp_unet_size", "small")).strip().lower()
     if unet_size not in UNET_DIMS:
         raise ValueError(f"dp_unet_size must be one of {sorted(UNET_DIMS)}.")
-    if unet_size != "small":
-        raise ValueError("The first ABC DP run is fixed to dp_unet_size: small.")
     lr_scheduler = str(cfg.get("dp_lr_scheduler", "constant"))
     if lr_scheduler != "constant":
         raise ValueError("ABC DP is fixed to a constant learning rate.")
@@ -320,9 +324,15 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "delta_joint": "delta-joint",
         "delta_pose": "delta-pose-eef",
     }[action_mode]
+    # Match the shared LIBERO naming convention while preserving every
+    # existing transformer/small checkpoint path. Flat/base omit suffixes.
+    history_suffix = "" if history_encoder == "flat" else f"_{history_encoder}"
+    if history_encoder == "gru":
+        history_suffix = f"_{history_variant}"
+    unet_suffix = "_small" if unet_size == "small" else ""
     run_name = (
         f"{dataset_name}_{task_suffix}_{action_tag}_future_only_"
-        f"obs{n_obs_steps}_future{future_horizon}_transformer_constLR_small"
+        f"obs{n_obs_steps}_future{future_horizon}{history_suffix}_constLR{unet_suffix}"
     )
     outputs_root = project_root / str(cfg.get("outputs_root", "outputs_ABC")) / "DP"
     output_dir = outputs_root / run_name
@@ -379,7 +389,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "dp_n_action_steps": future_horizon,
         "dp_drop_n_last_frames": future_horizon - 1,
         "dp_history_encoder": history_encoder,
+        "dp_history_encoder_variant": history_variant,
         "dp_history_encoder_dim": history_dim,
+        "dp_history_gru_stateful": history_encoder == "gru",
+        "dp_history_gru_layers": 2,
+        "dp_history_gru_training": gru_training,
         "dp_unet_size": unet_size,
         "dp_down_dims_arg": json.dumps(UNET_DIMS[unet_size]),
         "dp_lr_scheduler": lr_scheduler,
@@ -388,6 +402,11 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "dp_steps": steps,
         "dp_batch_size": int(cfg.get("dp_batch_size", 64)),
         "dp_num_workers": int(cfg.get("dp_num_workers", 8)),
+        # Episodic passes contain far fewer targets than IID passes. Reuse
+        # spawned workers rather than paying their startup cost every pass.
+        "dp_dataloader_persistent_workers": (
+            gru_training == "epi" and int(cfg.get("dp_num_workers", 8)) > 0
+        ),
         "dp_seed": int(cfg.get("dp_seed", 42)),
         "dp_log_freq": int(cfg.get("dp_log_freq", 200)),
         "dp_save_freq": save_freq,

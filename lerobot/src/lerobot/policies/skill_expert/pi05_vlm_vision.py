@@ -109,6 +109,12 @@ class Pi05VLMVisionMixin:
         self.agent_patch_align_head = WristPatchAlignmentHead(config.visual_bottleneck_width, width)
         self.wrist_patch_align_head = WristPatchAlignmentHead(config.visual_bottleneck_width, width)
         self._final_right_wrist_patch_tokens = None
+        self._last_vlm_termination_logits = None
+        self._vlm_termination_image_tokens = None
+        if config.vlm_termination_enabled:
+            self.vlm_termination_head = nn.Sequential(
+                nn.LayerNorm(width), nn.Linear(width, 256), nn.SiLU(), nn.Linear(256, 1),
+            )
 
     def _condition_tokens(self, images, *, batch_size=None, skill_code=None):
         del batch_size, skill_code
@@ -133,7 +139,10 @@ class Pi05VLMVisionMixin:
             tokens.append((features * math.sqrt(features.shape[-1])).to(self.working_dtype))
         if any(token.shape != tokens[0].shape for token in tokens[1:]):
             raise ValueError("All VLM cameras must have matching image token shapes.")
-        return torch.cat(tokens, dim=1)
+        memory = torch.cat(tokens, dim=1)
+        if self.config.vlm_termination_enabled and self.training:
+            self._vlm_termination_image_tokens = memory
+        return memory
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
         del focus_uv
@@ -180,7 +189,7 @@ class Pi05VLMVisionMixin:
         embedding = self.cond_encoder.model.embed_tokens(ids)
         return (embedding * math.sqrt(embedding.shape[-1])).to(self.working_dtype), mask
 
-    def _vlm_layer_step(self, index, hidden, latent, mask, positions, rotary, image_tokens):
+    def _vlm_hidden_step(self, index, hidden, mask, positions, rotary):
         layer = self.cond_encoder.model.layers[index]
         normalized, gate = layernorm_forward(layer.input_layernorm, hidden, None)
         options = {"is_causal": False} if self._cond_attention_is_sdpa else {}
@@ -192,10 +201,56 @@ class Pi05VLMVisionMixin:
         hidden = _gated_residual(hidden, layer.mlp(normalized.to(layer.mlp.up_proj.weight.dtype)), gate)
         if index == len(self.cond_encoder.model.layers) - 1:
             hidden, _ = layernorm_forward(self.cond_encoder.model.norm, hidden, None)
+        return hidden
+
+    def _vlm_layer_step(self, index, hidden, latent, mask, positions, rotary, image_tokens):
+        hidden = self._vlm_hidden_step(index, hidden, mask, positions, rotary)
         # Conditions can influence every image through bidirectional prefix
         # attention, but bottleneck/patch heads only read real image tokens.
         memory = self.layerwise_condition_memory_norm(hidden[:, :image_tokens].float())
         return hidden, self._update_layerwise_latent(index, latent, memory)
+
+    def _vlm_termination_readout(self, hidden, valid):
+        # The last real prefix token attends bidirectionally to images, skill,
+        # goal UV and current state. Padding must never become the readout.
+        rows = torch.arange(hidden.shape[0], device=hidden.device)
+        pooled = hidden[rows, valid.long().sum(-1) - 1]
+        dtype = next(self.vlm_termination_head.parameters()).dtype
+        return self.vlm_termination_head(pooled.to(dtype)).float().squeeze(-1)
+
+    def vlm_termination_from_image_tokens(self, image_tokens, state, skill_code, end_pose):
+        """Recondition shared image embeddings for post-end skill positives.
+
+        This branch runs only the shared VLM and its termination head, with no
+        Action Expert, bottleneck readers, start-state input or cache mutation.
+        """
+        if not self.config.vlm_termination_enabled:
+            raise RuntimeError("Shared-VLM termination is disabled.")
+        uv, valid_uv, _ = self._split_uv_goal(end_pose)
+        text, text_mask = self._embed_condition_text(
+            (state, self._code_to_zq(skill_code), uv, valid_uv), image_tokens.device,
+        )
+        hidden = torch.cat((image_tokens, text), dim=1)
+        valid = torch.cat((torch.ones(image_tokens.shape[:2], device=hidden.device, dtype=torch.bool), text_mask), dim=1)
+        allowed = valid[:, None, None, :].expand(-1, 1, hidden.shape[1], -1)
+        mask = torch.where(allowed, 0.0, OPENPI_ATTENTION_MASK_VALUE).to(hidden.dtype)
+        positions = (valid.long().cumsum(1) - 1).clamp_min(0)
+        rotary = self.cond_encoder.model.rotary_emb(hidden, positions)
+        depth = len(self.cond_encoder.model.layers)
+        for index in range(depth):
+            args = (index, hidden, mask, positions, rotary)
+            if self._checkpoint_layer("vlm", index, depth):
+                hidden = torch.utils.checkpoint.checkpoint(
+                    self._vlm_hidden_step, *args, use_reentrant=False, preserve_rng_state=True,
+                )
+            else:
+                hidden = self._vlm_hidden_step(*args)
+        return self._vlm_termination_readout(hidden, valid)
+
+    def take_vlm_termination_outputs(self):
+        logits, memory = self._last_vlm_termination_logits, self._vlm_termination_image_tokens
+        self._last_vlm_termination_logits = self._vlm_termination_image_tokens = None
+        return logits, memory
 
     def _encode_layerwise_latents(self, condition_tokens, condition_state):
         text, text_mask = self._embed_condition_text(condition_state, condition_tokens.device)
@@ -217,6 +272,9 @@ class Pi05VLMVisionMixin:
             else:
                 hidden, latent = self._vlm_layer_step(*args)
             latents.append(latent)
+        if self.config.vlm_termination_enabled:
+            logits = self._vlm_termination_readout(hidden, valid)
+            self._last_vlm_termination_logits = logits if self.training else logits.detach()
         self._on_final_condition_hidden(hidden[:, :count])
         self._on_final_bottleneck_latent(latent)
         return latents

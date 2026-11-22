@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Build the ABC LeRobot-v3 dataset(s) from the staged mcap subset:
 #   ② MCAP→cache (30Hz 리샘플+다운스케일)  ③ cache→v3 (pyav)  ④ quantile stats
 # Download is NOT done here — run ./download_ABC.sh (or submit_build_ABC.sh) first.

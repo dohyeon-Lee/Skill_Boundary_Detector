@@ -41,6 +41,6 @@ visualize:
   output: ""
 
   force: false             # true: ignore matching media cache and re-encode
-  ffmpeg: ffmpeg           # executable name in PATH, or an absolute path
+  ffmpeg: ffmpeg           # PATH에서 찾고, 없으면 imageio_ffmpeg 내장 실행 파일 사용. 절대 경로도 가능.
   crf: 23                  # H.264 quality: 0..51, lower is higher quality
   preset: veryfast         # ultrafast|superfast|veryfast|faster|fast|medium|slow

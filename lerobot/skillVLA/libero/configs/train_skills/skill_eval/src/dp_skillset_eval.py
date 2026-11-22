@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections import defaultdict
@@ -1898,8 +1899,18 @@ def _cached_episode_video_clip(
 
     temporary_path = output_path.with_name(output_path.stem + ".tmp.mp4")
     temporary_path.unlink(missing_ok=True)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        except (ImportError, RuntimeError) as exc:
+            raise RuntimeError(
+                "Video reports require ffmpeg: no system executable or imageio-ffmpeg bundled executable was found"
+            ) from exc
     command = [
-        "ffmpeg",
+        ffmpeg,
         "-hide_banner",
         "-loglevel",
         "error",

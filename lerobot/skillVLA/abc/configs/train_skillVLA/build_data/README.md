@@ -15,6 +15,11 @@ Run after the configured FSQ checkpoint exists:
 ./submit_build_all.sh
 ```
 
+Use `./submit_build_all.sh --73428` to run encoding followed by assembly in
+the existing allocation's worker, without a new allocation or Slurm step.
+Existing encoded latents are reused. Without a job selector, the two stages
+retain the usual batch-job dependency chain.
+
 Before enabling the bimanual UV contract, validate the exact recorded
 left/right EEF projections over the original top-camera video:
 

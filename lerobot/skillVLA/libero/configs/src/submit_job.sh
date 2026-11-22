@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Submit a batch script the way this server runs jobs (``scheduler:`` in servers/<name>.yaml):
 #   slurm (default)  sbatch, or persistent srun+tmux via slurm_submit_mode
 #   local (RunPod)   queue/run scripts on this machine, detached from the terminal
@@ -8,8 +12,9 @@
 #   submit_job_active <id>     # 0 while that job is pending or running (squeue / local record)
 # Options must use the --opt=value form (all launchers do). Env assignments before the call reach
 # the job either way. SBD_SCHEDULER=slurm|local overrides the server setting.
+# Launchers accept --JOB_ID to reuse an allocation (for example --73428).
 # SBD_SLURM_SUBMIT_MODE=sbatch|srun|srun_existing overrides the server setting.
-# SBD_SRUN_JOB_ID overrides srun_job_id when attaching an additional step.
+# SBD_SRUN_JOB_ID selects the original allocation's internal worker; no extra step.
 #
 # Local jobs
 # * run in the current directory, like Slurm; stdout/stderr follow the script's #SBATCH
@@ -116,14 +121,21 @@ _submit_job_local() {
   _submit_job_local_python submit "$@"
 }
 
-# Existing raw-sbatch launchers keep their exact Slurm submission behavior.
-# Only local servers route these batches through the detached local runner.
+# Keep raw-batch behavior unless an existing allocation was explicitly selected.
 submit_batch() {
   local scheduler
   scheduler="$(submit_job_scheduler)" || return 1
   case "${scheduler}" in
     local) _submit_job_local "$@" ;;
-    slurm) sbatch "$@" ;;
+    slurm)
+      if [ "$(submit_job_slurm_mode)" = srun_existing ]; then
+        # Never silently allocate another GPU when the user selected --JOB_ID.
+        # Unsupported arrays/dependencies are rejected by the shared srun runner.
+        submit_job "$@"
+      else
+        sbatch "$@"
+      fi
+      ;;
     *) echo "submit_job: unknown scheduler '${scheduler}' (slurm or local)." >&2; return 2 ;;
   esac
 }

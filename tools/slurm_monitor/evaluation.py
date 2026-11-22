@@ -6,6 +6,13 @@ import json
 from pathlib import Path
 import re
 
+if __package__:
+    from .sbd_evaluation import progress as sbd_progress
+    from .slurm import read_log
+else:
+    from sbd_evaluation import progress as sbd_progress
+    from slurm import read_log
+
 
 def _load_probe():
     path = Path(__file__).resolve().parents[1] / "runpod/desk_probe.py"
@@ -101,6 +108,13 @@ class Evaluations:
 
     def enrich(self, row):
         result = {}
+        if row.get("sbd_eval_launch_path"):
+            try:
+                progress = sbd_progress(self, row, read_log)
+                if progress:
+                    return {"evaluation_progress": progress}
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                return {"evaluation_error": "DP 부분빌드 진행률을 확인할 수 없습니다. 다음 조회에서 다시 확인합니다."}
         identifier = str(row.get("run_id") or str(row.get("job_id", "")).split("_")[0])
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", identifier):
             return result

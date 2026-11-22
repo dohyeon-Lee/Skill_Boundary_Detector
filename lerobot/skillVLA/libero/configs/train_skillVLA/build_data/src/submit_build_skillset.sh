@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Steps 2-3 of SkillVLA data generation, in one submission:
 #   (login)  slice per-episode DINO for the source dataset from the base full DINO
 #   (sbatch) run the trained DP to segment the source dataset into skills (skillset)
@@ -12,6 +16,9 @@
 #   skillset         : {skillvla_dataset}/{source}/_work/seg_{dp}_ck{ckpt}/skillset/skills/
 
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../../src/submit_job.sh"

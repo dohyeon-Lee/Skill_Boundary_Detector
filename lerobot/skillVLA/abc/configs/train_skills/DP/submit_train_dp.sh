@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # Submit ABC Diffusion Policy training using dp_config.yaml.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${ABC_DP_CONFIG:-${SCRIPT_DIR}/dp_config.yaml}"
@@ -45,6 +52,7 @@ fi
 echo "  state   : 14D absolute YAM joints (state only)"
 echo "  action  : ${DP_ACTION_MODE} (relative exclude: ${DP_RELATIVE_EXCLUDE_JOINTS_CSV:-none})"
 echo "  horizon : obs=${DP_N_OBS_STEPS}, future=${DP_FUTURE_ACTION_HORIZON} @ 30 Hz"
+echo "  encoder : ${DP_HISTORY_ENCODER_VARIANT}; U-Net=${DP_UNET_SIZE}"
 echo "  output  : ${DP_OUTPUT_DIR}"
 echo "  save    : every ${DP_SAVE_FREQ} steps through ${DP_STEPS}"
 echo "  slurm   : partition=${DP_PARTITION} qos=${DP_QOS} gres=${DP_GRES}"

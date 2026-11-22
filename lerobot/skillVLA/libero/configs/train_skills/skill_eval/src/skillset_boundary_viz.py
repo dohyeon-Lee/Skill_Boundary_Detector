@@ -7,7 +7,7 @@ containing the available SBD metrics and gripper signals.
 Data-source agnostic on purpose: callers pass a per-episode ``skills`` list
 ``[(frame_start, frame_end, label_or_None), ...]``, the raw episode frames, and an
 optional curve dict. Used by ``dp_skillset_eval`` for the
-``train_skills/skill_eval/skill_boundary_detection`` visualizations (skills from
+``train_skills/DP/eval`` visualizations (skills from
 the FSQ_dataset skillset npz).
 
 Requires ``train_skills/skill_eval/src`` on sys.path (for codebook_visualizer).
@@ -708,7 +708,7 @@ def _shade_excluded_initial_motion(ax, curve: dict) -> None:
             min(base_end, end),
             color="#93c5fd",
             alpha=0.22,
-            label="initial motion excluded",
+            label="initial DP history mask" if "initial_mask_frames" in curve else "initial motion excluded",
         )
     if end > base_end:
         ax.axvspan(
@@ -821,6 +821,12 @@ def plot_boundary_curve(ax, curve: dict, skills) -> None:
         )
     if len(peak_ts):
         ax.scatter(peak_ts, peak_vals, color="red", s=36, zorder=5, label="boundary peak")
+    rejected_ts = np.asarray(curve.get("curvature_rejected_ts", [])).reshape(-1)
+    rejected_values = np.asarray(curve.get("curvature_rejected_values", [])).reshape(-1)
+    if len(rejected_ts):
+        cutoff = float(np.asarray(curve.get("peak_curvature_threshold", 0)).item())
+        ax.scatter(rejected_ts, rejected_values, color="#2563eb", marker="x", s=40,
+                   zorder=6, label=f"curvature rejected (<{cutoff:.3g})")
     power1_ax = None
     if "score_power1_mean" in curve and not np.isclose(score_power, 1.0):
         power1_curve = np.power(
@@ -1024,10 +1030,20 @@ def _render_timeline(skills, curve, gripper_signal, gripper_labels) -> dict | No
         if gripper.ndim != 2:
             raise ValueError(f"gripper_signal must be (T, G), got {gripper.shape}")
 
+    def plot_step7(ax, data, cuts):
+        plot_boundary_curve(ax, data, cuts)
+        ax.set_title("Step 7 x0-hat — SBD boundaries", fontsize=8, loc="left")
+
+    def plot_final10(ax, data, cuts):
+        plot_boundary_curve(ax, data["final_comparison"], cuts)
+        ax.set_title("Final 10 — comparison only; boundaries from step 7", fontsize=8, loc="left")
+
     metric_plotters = []
     if curve is not None:
         if "div_cos" in curve:
-            metric_plotters.append(plot_boundary_curve)
+            metric_plotters.append(plot_step7 if "final_comparison" in curve else plot_boundary_curve)
+        if "final_comparison" in curve:
+            metric_plotters.append(plot_final10)
         if "action_error_normalized_mse" in curve:
             metric_plotters.append(plot_action_error)
         if "denoising_gain" in curve:
@@ -1078,7 +1094,7 @@ def _render_timeline(skills, curve, gripper_signal, gripper_labels) -> dict | No
     axes[-1].set_xlabel("timestep (100-step major ticks)", fontsize=8)
     plot_left = min(0.12, 1.1 / fig_w)
     plot_right = 0.995
-    plot_top = 0.97
+    plot_top = 0.93 if curve is not None and "final_comparison" in curve else 0.97
     plot_bottom = 0.12
     fig.subplots_adjust(
         left=plot_left,

@@ -211,6 +211,26 @@ def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, 
     ]
 
 
+def test_vsa_vision_only_checkpointing_reaches_launcher(tmp_path):
+    config = _vsa_setup(tmp_path)
+    config.setdefault('training', {})['gradient_checkpointing'] = {'vision': True}
+    settings = VSA.build_settings(config)
+    assert settings['gradient_checkpointing'] is False
+    assert settings['vision_checkpointing'] == 'true'
+    for name in ('action_expert', 'skill_planner', 'vlm'):
+        assert settings[name + '_checkpointing'] == 'false'
+    script = (CONFIGS / 'FT/VSA/src/train.sbatch').read_text()
+    match = re.search(r'(?ms)^TRAIN_ARGS\+=\(\n.*?^\)', script)
+    env = {**os.environ, **{key.upper(): str(value).lower() for key, value in settings.items()}}
+    result = subprocess.run(
+        ['bash', '-c', 'set -eu\nTRAIN_ARGS=()\n' + match.group() + '\nprintf "%s\\n" "${TRAIN_ARGS[@]}"'],
+        env=env, capture_output=True, text=True, check=True,
+    )
+    assert '--policy.vision_checkpointing=true' in result.stdout.splitlines()
+    for name in ('gradient', 'action_expert', 'skill_planner', 'vlm'):
+        assert '--policy.' + name + '_checkpointing=false' in result.stdout.splitlines()
+
+
 def test_vsa_transition_oversampling_opt_out_preserves_original_conditions(tmp_path):
     config = _vsa_setup(tmp_path)
     baseline = VSA.build_settings(config)

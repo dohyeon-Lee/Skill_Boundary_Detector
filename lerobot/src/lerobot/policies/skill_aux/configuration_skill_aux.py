@@ -27,6 +27,8 @@ class SkillAuxConfig(PreTrainedConfig):
 
     max_state_dim: int = 32
     max_action_dim: int = 32
+    bimanual_spatial_auxiliary: bool = False
+    skill_image_keys: list[str] = field(default_factory=list)
     skill_vocab_size: int = 27
     skill_fsq_levels: list[int] = field(default_factory=lambda: [3, 3, 3])
     # Stable semantic identity of the FSQ model that generated the dataset's
@@ -234,6 +236,17 @@ class SkillAuxConfig(PreTrainedConfig):
         return migrate_predictor_config(config)
 
     def __post_init__(self) -> None:
+        if self.bimanual_spatial_auxiliary:
+            expected = ["observation.images.top", "observation.images.left_wrist", "observation.images.right_wrist"]
+            if self.skill_image_keys != expected or self.max_state_dim != 14 or self.max_action_dim != 14:
+                raise ValueError("ABC auxiliaries require 14D state/action and ordered Top/LeftWrist/RightWrist inputs.")
+            if self.train_terminator and (
+                self.terminator_context != "proprio" or self.terminator_arch != "fusion"
+                or self.terminator_cameras != "both" or self.terminator_goal_xyz
+                or self.terminator_proprio_history or self.terminator_start_randomization
+                or self.terminator_agent_patch_align_weight or self.terminator_wrist_patch_align_weight
+            ):
+                raise ValueError("ABC supports the Term_Token input profiles with current proprio and paired UV goals.")
         renamed = migrate_predictor_config({
             "skill_predictor_mode": self.skill_predictor_mode,
             "skill_predictor_mode_schema": self.skill_predictor_mode_schema,

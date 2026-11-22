@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # Submit ABC reconstructor-only FSQ training using fsq_config.yaml.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${ABC_FSQ_CONFIG:-${SCRIPT_DIR}/fsq_config.yaml}"

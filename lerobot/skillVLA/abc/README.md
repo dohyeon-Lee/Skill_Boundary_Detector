@@ -15,8 +15,8 @@ implementations where appropriate while keeping ABC configs and data contracts.
 | [configs/train_skills/DP/](configs/train_skills/DP/) | Diffusion Policy training and native action-statistics preparation. |
 | [configs/train_skills/build_data/](configs/train_skills/build_data/) | DP-based SBD curves, global boundary thresholds and segmented skillsets. |
 | [configs/train_skills/FSQ/](configs/train_skills/FSQ/) | Skill tokenizer training from the selected skillset. |
-| [configs/train_skills/skill_eval/skill_boundary_detection/](configs/train_skills/skill_eval/skill_boundary_detection/) | SBD analysis/ablations, boundary results and interactive reports. |
-| [configs/train_skills/skill_eval/fsq_codebook/](configs/train_skills/skill_eval/fsq_codebook/) | FSQ codebook and decoder evaluation. |
+| [configs/train_skills/DP/eval/](configs/train_skills/DP/eval/) | SBD analysis/ablations, boundary results and interactive reports. |
+| [configs/train_skills/FSQ/eval/](configs/train_skills/FSQ/eval/) | FSQ codebook and decoder evaluation. |
 | [configs/train_skillVLA/build_data/](configs/train_skillVLA/build_data/) | Encode skills and build native SkillVLA annotations, initial states and bimanual spatial targets. |
 | [configs/train_skillVLA/PT/](configs/train_skillVLA/PT/) | ABC VSA post-training; the launcher is under `VSA/`. |
 | [configs/train_pi05/PT/](configs/train_pi05/PT/) | PI0.5 post-training on ABC native data. |

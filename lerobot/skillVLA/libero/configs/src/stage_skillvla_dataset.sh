@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Stage one SkillVLA run on job-local storage.
 #
 # The LeRobot dataset is the run's ``skillvla/`` directory, while auxiliary
@@ -41,7 +45,9 @@ stage_skillvla_dataset_on_node() {
   owner="${USER:-user}"
   if [ -n "${SLURM_JOB_ID:-}" ]; then
     job_key="${SLURM_JOB_ID}"
-    if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
+    if [ -n "${SBD_SRUN_TASK_ID:-}" ]; then
+      job_key="${job_key}_${SBD_SRUN_TASK_ID}"
+    elif [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
       job_key="${job_key}_step${SLURM_STEP_ID:?Additional srun step requires SLURM_STEP_ID}"
     fi
   else

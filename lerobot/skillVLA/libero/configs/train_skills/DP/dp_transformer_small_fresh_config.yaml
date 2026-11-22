@@ -1,0 +1,38 @@
+# Fresh training of the original LIBERO Transformer-small DP recipe.
+# Existing dp_config.yaml and the original 10k checkpoint remain separate.
+target_dataset: libero_90_full_full
+
+dp_vision: state
+dp_proprio_grounding: episode_start_xyz
+dp_relative: false
+dp_action_sequence_mode: future_only
+dp_n_obs_steps: 20
+dp_future_action_horizon: 24
+dp_history_encoder: transformer   # 2 layers / 4 heads
+dp_history_encoder_dim: 128
+dp_unet_size: small              # [128, 256, 512]
+dp_amp: false
+dp_lr_scheduler: constant
+
+# A separate output folder: no initialization from the original model.
+# Re-running this YAML later resumes its own last checkpoint automatically.
+dp_policy_name: "{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}_{dp_action_sequence_mode}_obs{dp_n_obs_steps}_future{dp_future_action_horizon}{dp_history_encoder_suffix}{dp_lr_scheduler_suffix}{dp_unet_suffix}_fresh_20261119"
+dp_checkpoint: "100000"
+dp_overwrite_output: false
+train_DP: true
+dp_base_config: skillVLA/libero/configs/train_skills/DP/src/train_dp_base.yaml
+
+# Original training used batch 64, seed 42, and four data workers.
+dp_steps: 100000
+dp_batch_size: 64
+dp_seed: 42
+dp_num_workers: 4
+dp_save_freq: 10000
+dp_log_freq: 200
+dp_eval_freq: 0
+
+# Paths, partition, and QoS follow global_config.yaml.
+dp_gres: gpu:1
+dp_cpus_per_task: 8
+dp_mem: 64G
+dp_time: "48:00:00"

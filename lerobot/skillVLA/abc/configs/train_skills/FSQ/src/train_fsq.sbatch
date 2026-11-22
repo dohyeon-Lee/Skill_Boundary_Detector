@@ -22,7 +22,7 @@ source "${PROJECT_ROOT}/.venv/bin/activate"
 source "${PROJECT_ROOT}/lerobot/skillVLA/abc/configs/src/runtime_env.sh"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-echo "Preparing/reusing ${ABC_SOURCE_TASKS_LABEL} absolute-action statistics..."
+echo "Preparing/reusing ${ABC_SOURCE_TASKS_LABEL} native source statistics (${FSQ_ACTION_SPACE})..."
 FSQ_STATS_PATH="$(
   PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     python "${SUBMIT_DIR}/src/prepare_native_fsq_stats.py" \
@@ -54,6 +54,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "action_gripper_indices": [${FSQ_ACTION_GRIPPER_INDICES_STR// /, }],
   "action_gripper_weight": ${FSQ_ACTION_GRIPPER_WEIGHT},
   "stats_path": "${FSQ_STATS_PATH}",
+  "action_stats_path": "${FSQ_OUTPUT_DIR}/action_stats.npz",
   "autoencoder_mode": "${FSQ_AUTOENCODER_MODE}",
   "quantizer": "${FSQ_QUANTIZER}",
   "fsq_levels": [${FSQ_LEVELS_STR// /, }],
@@ -90,6 +91,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --skills_dir "${SKILLSET_DIR}/skills" \
     --raw_dataset_dir "${RAW_DATASET_DIR}" \
     --stats_path "${FSQ_STATS_PATH}" \
+    --action_space "${FSQ_ACTION_SPACE}" \
     --output_dir "${FSQ_OUTPUT_DIR}" \
     --quantizer "${FSQ_QUANTIZER}" \
     --bsq_code_dim "${BSQ_CODE_DIM}" \

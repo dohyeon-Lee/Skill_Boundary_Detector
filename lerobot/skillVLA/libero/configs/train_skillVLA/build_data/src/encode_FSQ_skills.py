@@ -37,6 +37,11 @@ from train_FSQ import (
     attach_episode_offsets,
     load_skill_files,
 )
+from action_representation import (  # noqa: E402
+    pack_action_state_context,
+    prepare_fsq_actions,
+    unpack_delta_joint_context,
+)
 
 
 @dataclass
@@ -310,6 +315,7 @@ def _encode_boundary_sweep(
     segments,
     skill_actions,
     metadata,
+    dec_states=None,
 ) -> None:
     """Encode every valid deterministic boundary offset around each clean skill."""
     max_offset = int(args.boundary_sweep_max_offset)
@@ -321,6 +327,11 @@ def _encode_boundary_sweep(
         getattr(getattr(model, "cfg", None), "encoder_arch", "spline") == "action_seq"
     )
     source = skill_actions if action_seq_encoder else segments
+    delta_joint = getattr(model.cfg, "action_space", "dataset") == "delta_joint"
+    if delta_joint:
+        if dec_states is None:
+            raise ValueError("Delta-joint boundary encoding requires state anchors.")
+        source = [pack_action_state_context(a, s) for a, s in zip(skill_actions, dec_states, strict=True)]
     contexts = build_boundary_augmentation_contexts(source, metadata, pmax=max_offset)
     with np.load(clean_latents_path, allow_pickle=False) as clean:
         clean_latents = clean["latents"].astype(np.float32)
@@ -350,6 +361,10 @@ def _encode_boundary_sweep(
                     context, str(direction), int(offset), min_length
                 )
                 if trajectory is not None:
+                    if delta_joint:
+                        trajectory = unpack_delta_joint_context(
+                            trajectory, model.cfg.action_dim, model.cfg.action_gripper_indices
+                        )
                     rows.append(row)
                     trajectories.append(trajectory)
             if not trajectories:
@@ -668,6 +683,7 @@ def _encode_one(
     segments,
     skill_actions,
     metadata,
+    dec_states=None,
 ) -> None:
     model = load_model(model_path, device)
     print(f"[FSQ encode] model={model_path}")
@@ -679,6 +695,13 @@ def _encode_one(
     # encodes the state trajectory. No images either way.
     action_seq_encoder = getattr(getattr(model, "cfg", None), "encoder_arch", "spline") == "action_seq"
     source = skill_actions if action_seq_encoder else segments
+    if getattr(model.cfg, "action_space", "dataset") == "delta_joint":
+        if dec_states is None:
+            raise ValueError("Delta-joint encoding requires state anchors.")
+        source = [
+            prepare_fsq_actions(a, s, "delta_joint", model.cfg.action_gripper_indices)
+            for a, s in zip(skill_actions, dec_states, strict=True)
+        ]
     for item in tqdm(source, desc="Encoding FSQ skills"):
         if action_seq_encoder:
             latents.append(model.encode_actions_numpy(item, device=device))
@@ -750,6 +773,7 @@ def main(args: Args) -> None:
                 segments=segments,
                 skill_actions=skill_actions,
                 metadata=metadata,
+                dec_states=dec_states,
             )
         if sweep_output_path is not None and not sweep_complete:
             model = load_model(model_path, device)
@@ -762,6 +786,7 @@ def main(args: Args) -> None:
                 segments=segments,
                 skill_actions=skill_actions,
                 metadata=metadata,
+                dec_states=dec_states,
             )
         if terminator_output_path is not None and not terminator_complete:
             if not args.raw_dataset_dir:

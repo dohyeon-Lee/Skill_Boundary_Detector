@@ -21,6 +21,34 @@ from test_uv_gt_xyz import goal_batch
 LABELS = [NO_PROPRIO, NO_PROPRIO_LAST, NO_EARLY_VISION]
 
 
+def test_bimanual_three_camera_forward_and_fullskill90(monkeypatch):
+    model = tiny_vlm_model(
+        monkeypatch, NO_PROPRIO, dtype=torch.bfloat16,
+        bimanual_spatial_auxiliary=True,
+        skill_image_keys=["observation.images.top", "observation.images.left_wrist",
+                          "observation.images.right_wrist"],
+        skill_plan_state_dim=14, chunk_end_state_dim=14, bspline_tokens=90, chunk_size=30,
+        skill_fsq_levels=[3, 3, 3, 2], skill_vocab_size=54,
+        chunk_end_state_q01=[-1.] * 14, chunk_end_state_q99=[1.] * 14,
+        bimanual_goal_xyz_q01=[-1.] * 6, bimanual_goal_xyz_q99=[1.] * 6,
+    )
+    images = [torch.rand(2, 3, 4, 4) for _ in range(3)]
+    state, skill = torch.randn(2, 32), torch.tensor([1, 2])
+    goal = torch.tensor([[.2, -.3, -.1, .4, 1., 1.]] * 2)
+    residual = model(images, state, skill, torch.randn(2, 30, 32),
+                     end_pose=goal, fullskill_target=torch.randn(2, 90, 14))
+    flow = model.take_fullskill_flow_loss()
+    upper, lower = model.predict_training_dual_auxiliaries()
+    assert [x.shape for x in upper] == [x.shape for x in lower] == [(2, 4)] * 4 + [(2, 6)]
+    loss = residual.square().mean() + flow.mean() + sum(x.square().mean() for x in (*upper, *lower))
+    assert torch.isfinite(loss)
+    loss.backward()
+    for parameter in (model.end_pose_condition[0].weight,
+                      model.agent_end_state_head[-1].weight,
+                      model.lower_agent_end_state_head[-1].weight):
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+
+
 def packed_goal(label, goal):
     return torch.cat((goal[:, :3], torch.randn(len(goal), 8)), dim=-1) if label == NO_EARLY_VISION else goal
 

@@ -15,6 +15,11 @@ import imageio.v2 as imageio
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from skill_trace_report import (
+    SKILL_OVERLAY_VERSION, TERMINATION_CSS, active_skill, load_skill_trace,
+    skill_color, termination_script, termination_widget,
+)
+
 
 OVERLAY_VERSION = "abc_language_outcome/v1"
 
@@ -85,6 +90,9 @@ def annotate_video(source: Path, destination: Path, world: dict, fps: float = 30
     reader = imageio.get_reader(str(source), input_params=["-threads", "1"])
     writer = None
     frames = 0
+    skills = load_skill_trace(world)
+    stride = int(world.get("video_every_n_steps", 1))
+    skill_banners = {}
     try:
         fps = float(reader.get_meta_data().get("fps", fps))
         for frame in reader:
@@ -92,7 +100,20 @@ def annotate_video(source: Path, destination: Path, world: dict, fps: float = 30
                 top, bottom = annotation_banners(frame.shape[1], world)
                 writer = imageio.get_writer(str(temporary), fps=fps, codec="libx264", macro_block_size=1,
                                             ffmpeg_params=["-crf", "18", "-preset", "fast", "-threads", "1"])
-            writer.append_data(np.concatenate([top, frame[:, :, :3], bottom], axis=0))
+            parts = [top, frame[:, :, :3]]
+            current = active_skill(skills, frames * stride)
+            if current is not None:
+                key = (current["order"], current["code"])
+                if key not in skill_banners:
+                    bar = Image.new("RGB", (frame.shape[1], 30), skill_color(current["code"]))
+                    draw = ImageDraw.Draw(bar)
+                    label = f"CURRENT SKILL ID: {current['code']}  |  SKILL #{current['order'] + 1}"
+                    f = font(15)
+                    draw.text(((bar.width - draw.textlength(label, font=f)) / 2, 5), label, font=f, fill="white")
+                    skill_banners[key] = np.asarray(bar)
+                parts.append(skill_banners[key])
+            parts.append(bottom)
+            writer.append_data(np.concatenate(parts, axis=0))
             frames += 1
     finally:
         reader.close()
@@ -106,12 +127,14 @@ def annotate_video(source: Path, destination: Path, world: dict, fps: float = 30
         if sum(1 for _ in encoded.decode(video=0)) != frames:
             raise ValueError(f"Frame count changed during annotation: {source}")
     temporary.replace(destination)
-    return {"version": OVERLAY_VERSION, "frames": frames, "fps": fps}
+    return {"version": SKILL_OVERLAY_VERSION if skills else OVERLAY_VERSION,
+            "frames": frames, "fps": fps, "video_every_n_steps": stride}
 
 
 def finish_video(raw: Path, target: Path, world: dict, fps: float) -> None:
     world["raw_video_path"] = str(raw)
-    world["video_overlay"] = annotate_video(raw, target, world, fps)
+    source = Path(world["camera_overlay_path"]) if world.get("camera_overlay_path") else raw
+    world["video_overlay"] = annotate_video(source, target, world, fps)
     world["video_path"] = str(target)
 
 
@@ -134,6 +157,9 @@ def render_report(output: Path, result: dict) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    assets = output / "src" if result["policy"]["type"] == "skillvla" else output
+    assets.mkdir(parents=True, exist_ok=True)
+    asset_prefix = "src/" if assets != output else ""
     tasks = result["tasks"]
     if not tasks:
         return
@@ -150,9 +176,9 @@ def render_report(output: Path, result: dict) -> None:
         ax.text(rate + 1, i, f"{rate:g}% ({task['successes']}/{task['num_worlds']})", va="center", fontsize=9)
     ax.grid(axis="x", alpha=0.2)
     fig.tight_layout()
-    fig.savefig(output / "task_success_rates.tmp.png", dpi=150)
+    fig.savefig(assets / "task_success_rates.tmp.png", dpi=150)
     plt.close(fig)
-    (output / "task_success_rates.tmp.png").replace(output / "task_success_rates.png")
+    (assets / "task_success_rates.tmp.png").replace(assets / "task_success_rates.png")
 
     worlds = [(task, w) for task in tasks for w in sorted(task["worlds"], key=lambda x: x["world_index"])]
     fig, ax = plt.subplots(figsize=(12, 3.5))
@@ -163,27 +189,49 @@ def render_report(output: Path, result: dict) -> None:
     ax.set_title("Episode duration — green: success · red: failure")
     ax.grid(axis="y", alpha=0.2)
     fig.tight_layout()
-    fig.savefig(output / "episode_steps.tmp.png", dpi=150)
+    fig.savefig(assets / "episode_steps.tmp.png", dpi=150)
     plt.close(fig)
-    (output / "episode_steps.tmp.png").replace(output / "episode_steps.png")
+    (assets / "episode_steps.tmp.png").replace(assets / "episode_steps.png")
 
     completed, success = result["num_worlds"], result["successes"]
     expected = result.get("expected_worlds", completed)
-    summary_name = "summary.json" if (output / "metrics/summary.json").exists() else "partial_summary.json"
+    summary_name = "summary.json" if (assets / "metrics/summary.json").exists() else "partial_summary.json"
     cards = []
     for task, world in worlds:
         outcome = "success" if world["success"] else "failure"
         prompt = html.escape(str(world["prompt"]))
         video = world.get("video_path")
-        video_html = (f'<video controls playsinline preload="none" src="{href(Path(video), output)}"></video>'
+        video_url = href(Path(video), output) if video else ""
+        if video and result["policy"]["type"] == "skillvla":
+            video_url += "?overlay=" + quote(world.get("video_overlay", {}).get("version", "raw"), safe="")
+        video_html = (f'<video controls playsinline preload="none" src="{video_url}"></video>'
                       if video else '<p>No video recorded</p>')
-        metric = output / "metrics/tasks" / slug(task["task"]) / f"world_{world['world_index']:03d}.json"
+        if video and result["policy"]["type"] == "skillvla":
+            video_html += termination_widget(world, result["policy"].get("skillvla", {}), output=output)
+        metric = assets / "metrics/tasks" / slug(task["task"]) / f"world_{world['world_index']:03d}.json"
+        trace = (f' · <a href="{href(Path(world["skill_trace_path"]), output)}">Skill transitions</a>'
+                 if world.get("skill_trace_path") else "")
+        plan = (f' · <a href="{href(Path(world["fullskill_plan_path"]), output)}">Joint/XYZ plans</a>'
+                if world.get("fullskill_plan_path") else "")
+        original = (f' · <a href="{href(Path(world["raw_video_path"]), output)}">Original video</a>'
+                    if world.get("camera_overlay_path") and world.get("raw_video_path") else "")
         cards.append(f'''<article data-outcome="{outcome}"><div class="card-head"><b>Episode {world['world_index']:03d}</b>
 <span class="{outcome}">{outcome.upper()}</span></div>{video_html}<p>{prompt}</p>
 <p class="muted">{html.escape(task['requested_task'])} · Seed {world['seed']} · {world['steps']:,} actions</p>
-<a href="{href(metric, output)}">Episode metrics</a></article>''')
+<a href="{href(metric, output)}">Episode metrics</a>{trace}{plan}{original}</article>''')
     task_rows = "".join(f"<tr><td>{html.escape(t['requested_task'])}</td><td>{t['successes']}/{t['num_worlds']}</td>"
                         f"<td>{100*t['successes']/t['num_worlds']:.1f}%</td></tr>" for t in tasks if t["num_worlds"])
+    overlay_description = ""
+    if result['policy']['type'] == 'skillvla':
+        if result['policy'].get('skillvla', {}).get('video_overlay_version'):
+            overlay_description = ('Top only: full-skill FK paths and input UV goals (left cyan / right orange). '
+                'All views: auxiliary patch rectangles and XYZ crosses (Upper coral / Lower purple). '
+                'Patch readouts update at replans. Full-skill points span skill progress, not fixed simulator steps. '
+                'Original video links preserve the unmarked camera recording.')
+        else:
+            overlay_description = ('Full-skill overlay: cyan = left arm, orange = right arm. '
+                'Lines = predicted joint trajectory converted by FK; crosses = input top-view goals. '
+                'Full-skill points represent skill progress, not fixed simulator steps.')
     text = f'''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ABC evaluation — {html.escape(output.name)}</title><style>
 body{{background:#10151d;color:#e8edf4;font:16px system-ui;margin:0 auto;padding:28px;max-width:1380px}}a{{color:#8ebcff}}
@@ -194,13 +242,16 @@ h1{{font-size:26px}}.muted{{color:#a3afbf;font-size:14px}}.stats,.charts,.videos
 .success{{color:#7de49d}}.failure{{color:#ff9292}}table{{border-collapse:collapse;margin:20px 0}}td,th{{padding:10px 24px 10px 0;text-align:left}}
 input,select{{padding:10px;background:#1a2330;color:white;border:1px solid #506079;border-radius:6px;margin:0 10px 18px 0}}[hidden]{{display:none!important}}
 @media(max-width:500px){{body{{padding:14px}}.videos,.charts{{grid-template-columns:1fr}}}}
+{TERMINATION_CSS}
 </style><h1>ABC evaluation</h1><p>{html.escape(output.name)}</p>
 <div class="stats"><div>Success rate<b>{100*success/completed if completed else 0:.1f}%</b></div><div>Successful<b>{success} / {completed}</b></div>
 <div>Completed episodes<b>{completed} / {expected}</b></div><div>Failed<b>{completed-success}</b></div></div>
 <p class="muted">Checkpoint: {html.escape(str(result['policy'].get('checkpoint', result['policy'].get('type', ''))))}</p>
-<p><a href="metrics/{summary_name}">Summary JSON</a> · <a href="metrics/resolved_config.json">Evaluation config</a></p>
-<div class="charts"><div class="chart"><a href="task_success_rates.png"><img src="task_success_rates.png" alt="Task success rates"></a></div>
-<div class="chart"><a href="episode_steps.png"><img src="episode_steps.png" alt="Episode action counts by outcome"></a></div></div>
+<p class="muted">{html.escape(str(result['policy'].get('evaluation_protocol', '')))}</p>
+<p><a href="{asset_prefix}metrics/{summary_name}">Summary JSON</a> · <a href="{asset_prefix}metrics/resolved_config.json">Evaluation config</a></p>
+<p class="muted">{overlay_description}</p>
+<div class="charts"><div class="chart"><a href="{asset_prefix}task_success_rates.png"><img src="{asset_prefix}task_success_rates.png" alt="Task success rates"></a></div>
+<div class="chart"><a href="{asset_prefix}episode_steps.png"><img src="{asset_prefix}episode_steps.png" alt="Episode action counts by outcome"></a></div></div>
 <table><tr><th>Task</th><th>Success / completed</th><th>Success rate</th></tr>{task_rows}</table>
 <h2>Episodes</h2><select id="outcome"><option value="all">All outcomes</option><option value="success">Success only</option><option value="failure">Failure only</option></select>
 <input id="search" type="search" placeholder="Search language, seed or episode" aria-label="Search episodes"><span id="count"></span>
@@ -208,6 +259,7 @@ input,select{{padding:10px;background:#1a2330;color:white;border:1px solid #5060
 function filter(){{let count=0;for(const card of document.querySelectorAll('article')){{card.hidden=!(
 (outcome.value==='all'||card.dataset.outcome===outcome.value)&&card.textContent.toLowerCase().includes(search.value.toLowerCase()));if(!card.hidden)count++;}}document.getElementById('count').textContent=count+' episodes';}}
 const outcome=document.getElementById('outcome'),search=document.getElementById('search');outcome.addEventListener('change',filter);search.addEventListener('input',filter);filter();
+{termination_script() if result['policy']['type'] == 'skillvla' else ''}
 </script></html>'''
     target = output / "index.html"
     temporary = target.with_suffix(".html.tmp")
@@ -272,14 +324,56 @@ def organize_existing(output: Path, workers=4) -> dict:
     return result
 
 
+def refresh_existing(output: Path, workers=4, *, html_only=False) -> dict:
+    """Refresh saved SkillVLA presentation without inference or changing outcomes."""
+    output = output.resolve(strict=True)
+    metrics = output / "src/metrics"
+    summary = metrics / "summary.json"
+    if not summary.exists():
+        summary = metrics / "partial_summary.json"
+    result = json.loads(summary.read_text())
+    resolved = json.loads((metrics / "resolved_config.json").read_text())
+    stride = int(resolved.get("video_every_n_steps", 1))
+    jobs = []
+    for task in result["tasks"]:
+        for world in task["worlds"]:
+            world.setdefault("video_every_n_steps", stride)
+            if world.get("raw_video_path") and world.get("video_path"):
+                expected = SKILL_OVERLAY_VERSION if world.get("skill_trace_path") else OVERLAY_VERSION
+                if world.get("video_overlay", {}).get("version") != expected:
+                    jobs.append((task, world))
+    render_report(output, result)
+    if html_only:
+        return result
+
+    def convert(job):
+        task, world = job
+        finish_video(Path(world["raw_video_path"]), Path(world["video_path"]), world,
+                     float(resolved.get("video_fps", 30)))
+        atomic_json(metrics / "tasks" / slug(task["task"]) / f"world_{world['world_index']:03d}.json", world)
+        print(f"Skill banner: episode {world['world_index']:03d}", flush=True)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(convert, jobs))
+    for task in result["tasks"]:
+        atomic_json(metrics / "tasks" / slug(task["task"]) / "summary.json", task)
+    atomic_json(summary, result)
+    render_report(output, result)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--html-only", action="store_true", help="Refresh saved SkillVLA HTML without encoding videos")
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be positive")
-    organize_existing(args.output, args.workers)
+    if (args.output / "src/metrics").exists():
+        refresh_existing(args.output, args.workers, html_only=args.html_only)
+    else:
+        organize_existing(args.output, args.workers)
 
 
 if __name__ == "__main__":

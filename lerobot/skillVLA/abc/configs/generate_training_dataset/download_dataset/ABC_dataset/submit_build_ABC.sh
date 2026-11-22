@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # ONE-SHOT: download on THIS node (login → internet guaranteed), then submit the heavy
 # part (MCAP→cache→v3 conversion + stats) as a CPU Slurm job.
 #
@@ -7,6 +11,9 @@
 #   ABC_ONLY="abc_toy" ./submit_build_ABC.sh           # subset
 #   FORCE=1 WORKERS=8 ./submit_build_ABC.sh            # knobs pass through
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../../src/submit_job.sh"

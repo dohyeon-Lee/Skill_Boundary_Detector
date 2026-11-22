@@ -99,6 +99,8 @@ if [ "${SKILL_AUX_GROUP_WORKER:-0}" = 1 ]; then
     exit 1
   fi
   SKILLVLA_DATASET_DIR="${SKILL_AUX_GROUP_DATASET_DIR}"
+elif [ "${SKIP_DATASET_STAGING:-false}" = true ]; then
+  echo "dataset staging: skipped (native dataset references raw source in place)"
 else
   source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/stage_skillvla_dataset.sh"
   stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "Auxiliary dataset"
@@ -158,6 +160,8 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --transition_oversampling.distribution="${TRANSITION_OVERSAMPLING_DISTRIBUTION:-uniform}" \
     --transition_oversampling.weight="${TRANSITION_OVERSAMPLING_WEIGHT:-2}" \
     --policy.type=skill_aux \
+    --policy.bimanual_spatial_auxiliary="${BIMANUAL_SPATIAL_AUXILIARY:-false}" \
+    --policy.skill_image_keys="${SKILL_IMAGE_KEYS:-[]}" \
     "${PRETRAIN_ARGS[@]}" \
     --policy.train_terminator="${TRAIN_TERMINATOR}" \
     --policy.fsq_path="${FSQ_PATH}" \
@@ -283,6 +287,7 @@ if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
     --save_freq="${SAVE_FREQ}" \
     --save_steps="[${SAVE_STEPS}]" \
     --keep_checkpoints="${KEEP_CHECKPOINTS:--1}" \
+    --protect_checkpoints="${PROTECT_CHECKPOINTS:-[]}" \
     --checkpoint_archive="${CHECKPOINT_ARCHIVE:-}" \
     --eval_freq=0 \
     --wandb.enable="${WANDB_ENABLE}" \

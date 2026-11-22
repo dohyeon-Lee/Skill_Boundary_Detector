@@ -100,6 +100,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --probe_alpha "${SKILLSET_PROBE_ALPHA}" \
     --probe_generation "${SKILLSET_PROBE_GENERATION}" \
     --gaussian_sampling "${SKILLSET_GAUSSIAN_SAMPLING}" \
+    --gaussian_center "${SKILLSET_GAUSSIAN_CENTER}" \
     "${GAUSSIAN_MEAN_ARG[@]}" \
     --gaussian_seed "${SKILLSET_GAUSSIAN_SEED}" \
     --denoise_steps "${SKILLSET_DENOISE_STEPS}" \

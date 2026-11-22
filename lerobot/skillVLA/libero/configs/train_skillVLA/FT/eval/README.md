@@ -5,14 +5,15 @@ with results under `outputs/`.
 
 All simulator evaluation configurations share **`ft_eval_config.yaml`**. Set
 `models`, Predictor and Terminator selectors, thresholds, oracle settings and a
-distinct `output_name` there. The current configuration fixes new-SBD
-dual-bottleneck `_noproprio` frozen-expert VSA FT **10k** and mode2 UV Predictor
-FT **10k**, comparing `Term_Token_1` through `Term_Token_4`, each
-`dinoS_freeze` FT **20k**. It uses threshold **0.3**, LIBERO-10 Tasks 0–9 and
-ten episodes per task: four panels, **400 episodes** total.
-Yonsei submission requests four one-GPU array tasks with one worker each,
-16 CPUs, 128 GiB RAM and an eight-hour limit per task. The server profile
-selects partitions and QoS; checkpoint and dataset paths resolve from the checkout.
+distinct `output_name` there. The current configuration uses the integrated
+termination VSA FT **5k**, the official mode2 UV Predictor FT **20k**, and the
+VSA's own termination signal at threshold **0.3**. It evaluates LIBERO-10
+Tasks 0–9 with ten episodes per task (**100 episodes**), using the default
+benchmark initial states (**x1**, without an expanded initial-state bank).
+It requests one GPU with two evaluation workers, 16 CPUs, 256 GiB RAM and an
+eight-hour limit. GPU type (`train_gres`, or `gpu:1` when unset), node, partition
+and QoS follow the global/server profile. A `--JOB_ID` selector instead reuses
+the GPU already assigned to that Slurm allocation.
 Editing this file does not launch an evaluation or create a Pod. Prepare inputs
 with `./submit_eval.sh --prepare-runpod`; on RunPod, `./submit_eval.sh` downloads
 the verified inputs and starts evaluation.

@@ -13,7 +13,7 @@ from tools.runpod import finish_eval as finish
 
 @pytest.mark.parametrize("complete", [False, True])
 def test_boundary_backup_inventory_requires_complete_reports(tmp_path, complete):
-    out = tmp_path / "lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs/run"
+    out = tmp_path / "lerobot/skillVLA/libero/configs/train_skills/DP/eval/outputs/run"
     out.mkdir(parents=True)
     jobs = tmp_path / ".cache/local_jobs"
     jobs.mkdir(parents=True)
@@ -175,7 +175,7 @@ def test_verified_results_restore_after_pod_stops_so_download_does_not_extend_gp
 @pytest.mark.parametrize("corrupt", [False, True])
 def test_hf_restore_pins_revision_and_publishes_only_verified_outputs(tmp_path, monkeypatch, corrupt):
     monkeypatch.setattr(finish, "ROOT", tmp_path)
-    prefix = "lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs/run"
+    prefix = "lerobot/skillVLA/libero/configs/train_skills/DP/eval/outputs/run"
     source = tmp_path / "metric.json"
     source.write_bytes(b"verified")
     inventory = {source.name: finish.hashes(source)}
@@ -207,7 +207,7 @@ def test_hf_archive_backup_verifies_original_inventory_and_restores_from_pinned_
     (original / "metric.json").write_text('{"success": 1}')
     archive_dir = tmp_path / "archive"
     manifest = eval_archive.pack(original, archive_dir)
-    prefix = "lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs/run"
+    prefix = "lerobot/skillVLA/libero/configs/train_skills/DP/eval/outputs/run"
 
     class Hub:
         def repo_info(self, *a, **kw):

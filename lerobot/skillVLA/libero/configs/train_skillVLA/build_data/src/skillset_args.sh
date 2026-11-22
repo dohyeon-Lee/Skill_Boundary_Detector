@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # One argv source for initial generation, curve collection/cached segmentation
 # and missing-episode retries. Missing exports fail instead of using defaults.
 skillvla_skillset_args() {

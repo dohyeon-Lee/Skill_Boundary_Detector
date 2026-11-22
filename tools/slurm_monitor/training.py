@@ -94,6 +94,10 @@ def collect(project_root, allocations, known=(), history_days=3):
                    "resource_status_path": record.get("resource_status_path", ""),
                    "parent_run_id": record.get("parent_run_id", "")}
             row["training_progress"] = training_progress(row, logs)
+            if launch.get("environment", {}).get("DP_ABLATION_SETTINGS_JSON"):
+                row["sbd_eval_launch_path"] = str(manifest)
+            elif rows.get(key, {}).get("sbd_eval_launch_path"):
+                row["sbd_eval_launch_path"] = rows[key]["sbd_eval_launch_path"]
             # The journal and latest status file describe the same attempt.
             if key not in rows or not rows[key]["terminal"]:
                 rows[key] = row

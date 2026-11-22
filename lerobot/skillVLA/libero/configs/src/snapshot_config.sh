@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Shared helper: freeze a launcher's local and global YAML config at SUBMIT time.
 #
 # Slurm only spools the .sbatch script text; every launcher re-reads its YAML (re-runs the config

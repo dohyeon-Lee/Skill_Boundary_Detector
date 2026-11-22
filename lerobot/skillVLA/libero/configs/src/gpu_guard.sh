@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Shared CUDA preflight for every GPU job in this project.
 #
 # A node can present a healthy GPU in nvidia-smi and still fail torch's CUDA

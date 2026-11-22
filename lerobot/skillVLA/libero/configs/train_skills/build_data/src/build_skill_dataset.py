@@ -66,6 +66,7 @@ from action_manifold import (
 )
 from lerobot.datasets.proprio_grounding import normalize_proprio_grounding
 from sbd_multimodality import (
+    cosine_curve,
     covariance_gated_cosine_curve,
     iid_scheduler_noise,
 )
@@ -157,6 +158,8 @@ class Args:
     gaussian_include_mean: bool = True
     """Whether to prepend the zero-noise conditional mean to Gaussian probes."""
     gaussian_seed: int = 42
+    gaussian_center: Literal["current_gt", "previous_action"] = "current_gt"
+    """Scheduler probe center; previous_action holds the last observed action over the future."""
     denoise_steps: int = 1
     denoise_output: str = "prev_sample"
     """prev_sample (legacy) or the clean-action estimate pred_original_sample."""
@@ -180,7 +183,7 @@ class Args:
     """Raw valid low/high gripper commands for discrete projection."""
     gripper_threshold: float = 0.0
     score_metric: str = "legacy_cosine"
-    """legacy_cosine or covariance_gated_cosine."""
+    """legacy_cosine, cosine (eval's unanchored GMM), or covariance_gated_cosine."""
     gmm_covariance: str = "full"
     gmm_n_init: int = 10
     gmm_max_iter: int = 300
@@ -198,6 +201,8 @@ class Args:
     """Multiplier applied to the episode or global arithmetic mean."""
     score_power: float = 1.0
     """Non-negative contrast power applied after SG smoothing."""
+    initial_mask_frames: int | None = None
+    """Inherited from checkpoint n_obs_steps; excluded before smoothing/thresholding."""
     terminal_mask_frames: int = 0
     """Tail of the valid detector curve excluded before smoothing/thresholding."""
     terminal_mask_mode: Literal["fixed_frames", "abc_terminal_release"] = "fixed_frames"
@@ -318,6 +323,7 @@ def _skillset_manifest(
         ),
         "min_skill_len": args.min_skill_len,
         "min_skills": args.min_skills,
+        "initial_mask_frames": args.initial_mask_frames,
     }
     if mode == "gaussian_x0hat":
         probe_contract.update(
@@ -328,6 +334,8 @@ def _skillset_manifest(
             denoise_steps=args.denoise_steps,
             denoise_output=args.denoise_output,
         )
+        if args.gaussian_center != "current_gt":
+            probe_contract["gaussian_center"] = args.gaussian_center
         detector_contract.update(
             score_metric=args.score_metric,
             gmm_covariance=args.gmm_covariance,
@@ -398,7 +406,8 @@ def _action_names(dataset_dir: Path) -> list[str] | None:
 
 
 def _iter_state_action_episodes(
-    dataset_dir: Path, source_tasks: tuple[str, ...] = ()
+    dataset_dir: Path, source_tasks: tuple[str, ...] = (),
+    episode_ids: tuple[int, ...] | None = None,
 ):
     """Stream complete episodes from ordered LeRobot parquet shards."""
     from lerobot.datasets.abc_native_io import (
@@ -408,7 +417,7 @@ def _iter_state_action_episodes(
 
     if is_abc_native_dataset(dataset_dir):
         yield from iter_abc_native_state_action(
-            dataset_dir, source_tasks=source_tasks or None
+            dataset_dir, source_tasks=source_tasks or None, episode_ids=episode_ids
         )
         return
 
@@ -442,6 +451,8 @@ def _iter_state_action_episodes(
             episode_id = int(episode_id)
             if pending_id is not None and episode_id != pending_id:
                 completed = _flush()
+                if completed is not None and episode_ids is not None and completed[0] not in episode_ids:
+                    completed = None
                 if completed is not None:
                     yield completed
                 pending_actions = []
@@ -451,7 +462,7 @@ def _iter_state_action_episodes(
             pending_states.append(states)
 
     completed = _flush()
-    if completed is not None:
+    if completed is not None and (episode_ids is None or completed[0] in episode_ids):
         yield completed
 
 
@@ -470,13 +481,14 @@ def _fit_dataset_action_pca(
     scale_mode: str,
     metadata: dict,
     source_tasks: tuple[str, ...] = (),
+    episode_ids: tuple[int, ...] | None = None,
 ) -> ActionPCA:
     if stride < 1:
         raise ValueError(f"pca_stride must be positive, got {stride}.")
     accumulator = RunningCovariance(len(action_indices))
     anchor_batch_size = 4096
     n_episodes = 0
-    episode_stream = (
+    episode_stream = _iter_state_action_episodes(dataset_dir, source_tasks, episode_ids) if episode_ids is not None else (
         _iter_state_action_episodes(dataset_dir, source_tasks)
         if source_tasks
         else _iter_state_action_episodes(dataset_dir)
@@ -533,6 +545,7 @@ def _fit_dataset_trajectory_pca(
     scale_mode: str,
     metadata: dict,
     source_tasks: tuple[str, ...] = (),
+    episode_ids: tuple[int, ...] | None = None,
 ) -> ActionPCA:
     """Fit PCA to complete normalized action trajectories, not their mean.
 
@@ -546,7 +559,7 @@ def _fit_dataset_trajectory_pca(
     accumulator = RunningCovariance(feature_dim)
     anchor_batch_size = 1024
     n_episodes = 0
-    episode_stream = (
+    episode_stream = _iter_state_action_episodes(dataset_dir, source_tasks, episode_ids) if episode_ids is not None else (
         _iter_state_action_episodes(dataset_dir, source_tasks)
         if source_tasks
         else _iter_state_action_episodes(dataset_dir)
@@ -595,16 +608,9 @@ def _fit_dataset_trajectory_pca(
 def _boundary_savgol(
     values: np.ndarray, window: int, polyorder: int
 ) -> np.ndarray:
-    """Boundary smoothing with native SciPy support for even window lengths."""
-    from scipy.signal import savgol_filter
-
-    values = np.asarray(values, dtype=np.float64)
-    if int(window) <= 1:
-        return values.copy()
-    win = min(int(window), len(values))
-    if win <= int(polyorder):
-        return values.copy()
-    return savgol_filter(values, window_length=win, polyorder=int(polyorder))
+    """Use the same odd-window SG smoothing as standalone evaluation."""
+    from lerobot.utils.sbd_smoothing import smooth_savgol
+    return smooth_savgol(values, window, polyorder)
 
 
 def _prepare_boundary_curve(
@@ -613,7 +619,7 @@ def _prepare_boundary_curve(
     args: Args,
     terminal_mask_start_frame: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int]:
-    """Smooth/transform a score curve while isolating its terminal guard."""
+    """Smooth/transform only anchors outside the initial and terminal masks."""
     timestamps = np.asarray(replan_ts, dtype=np.int64)
     values = np.asarray(scores, dtype=np.float64)
     if timestamps.ndim != 1 or values.ndim != 1 or len(timestamps) != len(values):
@@ -637,13 +643,14 @@ def _prepare_boundary_curve(
         valid_count = int(np.searchsorted(timestamps, cutoff, side="right"))
     else:
         valid_count = len(timestamps)
-    if valid_count < 1:
+    valid_start = int(np.searchsorted(timestamps, args.initial_mask_frames or 0, side="left"))
+    if valid_count <= valid_start:
         raise ValueError(
-            f"terminal_mask_frames={args.terminal_mask_frames} masks every detector anchor."
+            "Initial/terminal masks leave no detector anchors."
         )
 
     base = _boundary_savgol(
-        values[:valid_count], args.smooth_window, args.savgol_polyorder
+        values[valid_start:valid_count], args.smooth_window, args.savgol_polyorder
     )
     transformed = (
         base.copy()
@@ -651,7 +658,8 @@ def _prepare_boundary_curve(
         else np.power(np.maximum(base, 0.0), float(args.score_power))
     )
     smooth = np.full(len(values), float(transformed[-1]), dtype=np.float64)
-    smooth[:valid_count] = transformed
+    smooth[:valid_start] = float(transformed[0])
+    smooth[valid_start:valid_count] = transformed
     return timestamps, smooth, valid_count
 
 
@@ -660,23 +668,24 @@ def _terminal_edge_is_peak(
     args: Args,
     valid_count: int,
     terminal_mask_start_frame: int | None = None,
+    valid_start: int = 0,
 ) -> bool:
     """Use the first masked anchor only to confirm a peak at the valid edge."""
     from scipy.signal import find_peaks
 
     values = np.asarray(scores, dtype=np.float64)
     mask_active = terminal_mask_start_frame is not None or bool(args.terminal_mask_frames)
-    if not mask_active or valid_count >= len(values) or valid_count < 2:
+    if not mask_active or valid_count >= len(values) or valid_count - valid_start < 2:
         return False
     base = _boundary_savgol(
-        values[: valid_count + 1], args.smooth_window, args.savgol_polyorder
+        values[valid_start: valid_count + 1], args.smooth_window, args.savgol_polyorder
     )
     topology = (
         base
         if np.isclose(args.score_power, 1.0)
         else np.power(np.maximum(base, 0.0), float(args.score_power))
     )
-    return bool((valid_count - 1) in set(find_peaks(topology)[0].tolist()))
+    return bool((valid_count - valid_start - 1) in set(find_peaks(topology)[0].tolist()))
 
 
 def _detect_boundaries(
@@ -692,17 +701,18 @@ def _detect_boundaries(
     timestamps, sg_vals, valid_count = _prepare_boundary_curve(
         replan_ts, div_cos, args, terminal_mask_start_frame
     )
-    valid_sg = sg_vals[:valid_count]
-    valid_ts = timestamps[:valid_count]
+    valid_start = int(np.searchsorted(timestamps, args.initial_mask_frames or 0, side="left"))
+    valid_sg = sg_vals[valid_start:valid_count]
+    valid_ts = timestamps[valid_start:valid_count]
     threshold = _threshold_for_episode(valid_sg, args, global_threshold)
     peak_ts, peak_vals = _find_peaks_above_threshold(
         valid_sg,
         valid_ts.tolist(),
         threshold=threshold,
         min_distance=nms_dist,
-        start_margin=nms_dist,
+        start_margin=max(0, int(timestamps[0]) + nms_dist - int(valid_ts[0])),
         include_last_if_peak=_terminal_edge_is_peak(
-            div_cos, args, valid_count, terminal_mask_start_frame
+            div_cos, args, valid_count, terminal_mask_start_frame, valid_start
         ),
     )
     peak_by_frame = {
@@ -767,8 +777,9 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         replan_ts, div_cos, args, terminal_mask_start_frame
     )
     sg_vals = sg_vals.astype(np.float32)
-    valid_sg = sg_vals[:valid_count]
-    valid_ts = replan_ts[:valid_count]
+    valid_start = int(np.searchsorted(replan_ts, args.initial_mask_frames or 0, side="left"))
+    valid_sg = sg_vals[valid_start:valid_count]
+    valid_ts = replan_ts[valid_start:valid_count]
     threshold = _threshold_for_episode(valid_sg, args, global_threshold)
     nms_dist = (args.nms_dist if args.nms_dist is not None
                 else args.replan_interval * 2) if args.peak_nms else 0
@@ -777,9 +788,9 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         valid_ts.tolist(),
         threshold=threshold,
         min_distance=nms_dist,
-        start_margin=nms_dist,
+        start_margin=max(0, int(replan_ts[0]) + nms_dist - int(valid_ts[0])),
         include_last_if_peak=_terminal_edge_is_peak(
-            div_cos, args, valid_count, terminal_mask_start_frame
+            div_cos, args, valid_count, terminal_mask_start_frame, valid_start
         ),
     )
     accepted_peaks = set(boundaries[1:-1])
@@ -830,6 +841,9 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         episode_id=np.array(ep_id), task_id=np.array(task_id),
         replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
         threshold_valid_count=np.array(valid_count, dtype=np.int64),
+        threshold_valid_start=np.array(valid_start, dtype=np.int64),
+        initial_mask_frames=np.array(args.initial_mask_frames or 0, dtype=np.int64),
+        initial_mask_until_frame=np.array(args.initial_mask_frames or 0, dtype=np.int64),
         terminal_mask_frames=np.array(args.terminal_mask_frames, dtype=np.int64),
         terminal_mask_mode=np.array(args.terminal_mask_mode),
         terminal_mask_start_frame=np.array(
@@ -857,6 +871,7 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         probe_type=np.array(args.probe_type),
         probe_alpha=np.array(args.probe_alpha, dtype=np.float32),
         probe_generation=np.array(args.probe_generation),
+        gaussian_center=np.array(args.gaussian_center),
         denoise_output=np.array(args.denoise_output),
         score_metric=np.array(args.score_metric),
         pca_scale_mode=np.array(args.pca_scale_mode),
@@ -873,6 +888,8 @@ def _curve_has_current_metrics(path: Path, contract: dict | None = None) -> bool
         return False
     required = {
         "curve_schema_version",
+        "initial_mask_frames",
+        "threshold_valid_start",
         "denoising_gain",
         "denoising_gain_sg",
         "delta_bic",
@@ -968,6 +985,7 @@ def _load_global_threshold(path: str, args: Args) -> float:
         "denoise_output": args.denoise_output,
         "score_metric": args.score_metric,
         "score_power": str(float(args.score_power)),
+        "initial_mask_frames": str(args.initial_mask_frames or 0),
         "terminal_mask_frames": str(args.terminal_mask_frames),
         "terminal_mask_mode": args.terminal_mask_mode,
         "terminal_release_pre_offset_frames": str(
@@ -976,6 +994,8 @@ def _load_global_threshold(path: str, args: Args) -> float:
     }
     for key, expected in expected_provenance.items():
         observed = str(provenance.get(key, ""))
+        if key == "initial_mask_frames" and not observed and int(expected) > 0:
+            raise ValueError("Global threshold predates the history mask; recompute it from masked curves.")
         if observed and observed != expected:
             raise ValueError(
                 f"Global threshold provenance mismatch for {key}: "
@@ -1067,8 +1087,21 @@ def _write_too_short_marker(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main(args: Args) -> None:
+    from lerobot.utils.sbd_smoothing import validate_savgol
+    validate_savgol(args.smooth_window, args.savgol_polyorder,
+                    order_name='savgol_polyorder')
+    # Read metadata only, including for CPU-only cached-curve segmentation.
+    history = int(json.loads((Path(args.policy_path) / "config.json").read_text())["n_obs_steps"])
+    if history < 1 or (args.initial_mask_frames is not None and args.initial_mask_frames != history):
+        raise ValueError("initial_mask_frames must equal checkpoint n_obs_steps.")
+    args.initial_mask_frames = history
+    print(f"Initial SBD mask: [0, {history}) frames (checkpoint history)")
     dataset_dir = Path(args.dataset_dir)
     output_dir = Path(args.output_dir)
+    if args.use_cached_curves:
+        manifest = json.loads((output_dir / "skillset_manifest.json").read_text())
+        if manifest.get("detector", {}).get("initial_mask_frames") != history:
+            raise ValueError("Cached skillset predates/differs from the initial history mask; use a separate build output.")
     probe_mode = _infer_probe_mode(args)
     contract = json.loads(args.segmentation_contract_json) if args.segmentation_contract_json else None
     if contract is not None:
@@ -1103,9 +1136,9 @@ def main(args: Args) -> None:
             "The production build currently supports gaussian_sampling=iid only, "
             f"got {args.gaussian_sampling!r}."
         )
-    if args.score_metric not in {"legacy_cosine", "covariance_gated_cosine"}:
+    if args.score_metric not in {"legacy_cosine", "cosine", "covariance_gated_cosine"}:
         raise ValueError(
-            "score_metric must be legacy_cosine|covariance_gated_cosine, "
+            "score_metric must be legacy_cosine|cosine|covariance_gated_cosine, "
             f"got {args.score_metric!r}."
         )
     global_threshold = None
@@ -1591,12 +1624,13 @@ def main(args: Args) -> None:
                         denoise_output=args.denoise_output,
                         probe_generation=args.probe_generation,
                         scheduler_gaussian_include_mean=args.gaussian_include_mean,
+                        scheduler_gaussian_center=args.gaussian_center,
                         compute_legacy_divergence=(
                             args.score_metric == "legacy_cosine"
                         ),
                     )
                     div_cos = (
-                        covariance_gated_cosine_curve(
+                        (cosine_curve if args.score_metric == "cosine" else covariance_gated_cosine_curve)(
                             descriptor_clouds,
                             components=args.n_gmm_components,
                             covariance=args.gmm_covariance,
@@ -1605,7 +1639,7 @@ def main(args: Args) -> None:
                             min_effective_samples=args.min_effective_samples,
                             weighted=args.gmm_weighted,
                         )
-                        if args.score_metric == "covariance_gated_cosine"
+                        if args.score_metric in {"cosine", "covariance_gated_cosine"}
                         else legacy_div_cos
                     )
             except EpisodeTooShortError as e:

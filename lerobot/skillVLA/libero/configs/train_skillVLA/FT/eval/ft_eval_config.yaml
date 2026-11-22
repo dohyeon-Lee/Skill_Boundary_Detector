@@ -1,17 +1,19 @@
+# Default LIBERO benchmark initial states (x1); no expanded initial-state bank.
 model_defaults:
   focus_source: predictor
   pose_source: auto
   expert_xyz_source: auto
 models:
-- label: dual_noproprio_Term1
-  predictor_checkpoint: '020000'
-  predictor_dir: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
-  terminator_checkpoint: '020000'
-  terminator_dir: bs32_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_terminator_Term_Token_1_dinoS_freeze_lab
-  vsa_checkpoint:
-  - '005000'
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline_dino_fullloss
-output_name: FT_skillVLA_5k_20k_20k
+- label: VSA_FT5k_VLM_termination
+  model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlmtermGT_k10_s1_pw2_w1_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_dino_fullloss
+  checkpoint: '005000'
+  external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
+  external_predictor_checkpoint: '020000'
+  skill_source: external
+  advance_mode: own
+  end_mode: termination
+  focus_source: predictor
+output_name: ft_nonproprio_vlmtermGT_PT100k_FT5k_PredFT20k_10eps_th03_range1
 resume: true
 target_task: libero_10
 task_ids:
@@ -27,6 +29,7 @@ task_ids:
 - 9
 eval_num_gpus: 1
 eval_max_workers_per_gpu: 2
+
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -60,8 +63,8 @@ logging:
   wandb:
     enable: true
     project: VLA_NewTask_FT_eval
+# GPU 종류·노드·partition·QoS는 global/server 설정을 따름.
 slurm:
-  gres: gpu:1
   cpus: 16
   memory: 256G
   time: '8:00:00'
@@ -70,4 +73,3 @@ gt_dataset:
   source: libero_10_full_1
   run: FSQ333_contrastive_2000_ft_grounded
 seed: 1000
-initial_state_bank: lerobot/skillVLA/libero/configs/train_pi05/FT/eval/initial_state_banks/libero_10_range3_shared_8cd6c711e97204f6/eval_init_states.npz

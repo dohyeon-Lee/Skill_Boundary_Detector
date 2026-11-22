@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 
 EVAL_SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/skill_eval/src"
@@ -20,7 +21,10 @@ from skillset_boundary_viz import (  # noqa: E402
 )
 
 
-def test_episode_video_clip_is_h264_and_reused(monkeypatch, tmp_path: Path):
+@pytest.mark.parametrize("system_ffmpeg", [None, "/system/bin/ffmpeg"])
+def test_episode_video_clip_is_h264_and_reused(monkeypatch, tmp_path: Path, system_ffmpeg):
+    import imageio_ffmpeg
+
     source = tmp_path / "long-av1-chunk.mp4"
     source.write_bytes(b"source-video")
     cache_dir = tmp_path / "cache"
@@ -32,6 +36,11 @@ def test_episode_video_clip_is_h264_and_reused(monkeypatch, tmp_path: Path):
         Path(command[-1]).write_bytes(b"short-h264-clip")
 
     monkeypatch.setattr(dp_eval.subprocess, "run", fake_run)
+    monkeypatch.setattr(dp_eval.shutil, "which", lambda name: system_ffmpeg)
+    def bundled():
+        assert system_ffmpeg is None
+        return "/python-env/bundled-ffmpeg"
+    monkeypatch.setattr(imageio_ffmpeg, "get_ffmpeg_exe", bundled)
     first = dp_eval._cached_episode_video_clip(
         source,
         episode_id=42,
@@ -52,6 +61,7 @@ def test_episode_video_clip_is_h264_and_reused(monkeypatch, tmp_path: Path):
     assert first == second
     assert first.read_bytes() == b"short-h264-clip"
     assert len(commands) == 1
+    assert commands[0][0] == (system_ffmpeg or "/python-env/bundled-ffmpeg")
     assert commands[0][commands[0].index("-c:v") + 1] == "libx264"
     assert commands[0][commands[0].index("-movflags") + 1] == "+faststart"
     assert json.loads(first.with_suffix(".json").read_text())["episode_start_sec"] == 123.5
@@ -185,13 +195,24 @@ def test_episode_player_shades_terminal_motion_mask_red():
         "peak_ts": np.asarray([5]),
         "peak_vals": np.asarray([0.64]),
         "terminal_mask_start_frame": np.asarray(11),
+        "initial_mask_frames": np.asarray(4),
+        "initial_mask_until_frame": np.asarray(4),
+        "curvature_rejected_ts": np.asarray([10]),
+        "curvature_rejected_values": np.asarray([0.04]),
+        "peak_curvature_threshold": np.asarray(0.01),
         "n_frames": np.asarray(15),
     }
     figure, axis = plt.subplots()
     plot_boundary_curve(axis, curve, [(0, 5, None), (5, 15, None)])
     try:
         labels = axis.get_legend_handles_labels()[1]
-        assert "terminal motion excluded" in labels
+        assert "terminal SBD mask" in labels
+        assert "initial DP history mask" in labels
+        assert any(label.startswith("curvature rejected") for label in labels)
+        assert any(np.allclose(collection.get_edgecolor()[0], to_rgba("#2563eb"))
+                   for collection in axis.collections if len(collection.get_edgecolor()))
+        assert any(np.allclose(np.asarray(patch.get_facecolor()),
+                               to_rgba("#93c5fd", alpha=0.22)) for patch in axis.patches)
         expected = np.asarray(to_rgba("#fca5a5", alpha=0.26))
         assert any(
             np.allclose(np.asarray(patch.get_facecolor()), expected)

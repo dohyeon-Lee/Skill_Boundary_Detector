@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../../remote.sh"
+fi
 # Submit unified PT/FT skill predictor + FSQ terminator training.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}"
@@ -47,6 +54,13 @@ SBATCH_ARGS=(
   --mem="${TRAIN_MEM}"
   --time="${TRAIN_TIME}"
 )
+if [ "${BIMANUAL_SPATIAL_AUXILIARY:-false}" = true ]; then
+  if [ "${TRAIN_SKILL_PREDICTOR}" = true ]; then
+    SBATCH_ARGS+=(--job-name=ABC_SkillVLA_Predictor)
+  else
+    SBATCH_ARGS+=(--job-name=ABC_SkillVLA_Terminator)
+  fi
+fi
 if [ -n "${TRAIN_NODELIST}" ]; then
   SBATCH_ARGS+=(--nodelist="${TRAIN_NODELIST}")
 fi

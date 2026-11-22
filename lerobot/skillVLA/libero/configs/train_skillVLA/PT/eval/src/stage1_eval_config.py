@@ -967,11 +967,12 @@ def _checkpoint_contract(policy_path: Path, project_root: Path) -> dict:
             )
     run_dir = skill_dataset_dir.parent
     source_dir = run_dir.parent
-    has_terminator = as_bool(policy.get("train_terminator", False))
+    has_terminator = (as_bool(policy.get("train_terminator", False))
+                      or as_bool(policy.get("vlm_termination_enabled", False)))
     has_predictor = as_bool(policy.get("train_skill_predictor", False)) or str(
         policy.get("training_skill_source", "gt")
     ).strip().lower() == "predictor"
-    if has_terminator and not fsq_path.is_file():
+    if as_bool(policy.get("train_terminator", False)) and not fsq_path.is_file():
         raise FileNotFoundError(
             f"FSQ checkpoint referenced by Stage 1 not found: {fsq_path}"
         )
@@ -2704,9 +2705,15 @@ def build_settings(config: dict) -> dict:
         # with their own chunk.  Every worker runs the idempotent merge step;
         # the last one therefore annotates and writes the complete report.
         "eval_expected_tasks": len(env_task_ids),
-        "eval_num_gpus": int(get_value(config, "eval_num_gpus", 1)),
+        # Server-specific packing takes priority over the experiment's defaults.
+        "eval_num_gpus": int(get_value(
+            config, "server_eval_num_gpus", get_value(config, "eval_num_gpus", 1)
+        )),
         "eval_max_workers_per_gpu": int(
-            get_value(config, "eval_max_workers_per_gpu", 4)
+            get_value(
+                config, "server_eval_max_workers_per_gpu",
+                get_value(config, "eval_max_workers_per_gpu", 4),
+            )
         ),
         "n_episodes": int(get_value(config, "n_episodes", 3)),
         "episode_exact_repeat": repeat_episodes,
@@ -2801,7 +2808,9 @@ def build_settings(config: dict) -> dict:
             )
             or "debug",
             "eval_qos": str(get_value(config, "train_qos", "base_qos")),
-            "eval_gres": str(_at(config, "slurm", "gres", default="gpu:1")),
+            "eval_gres": str(
+                _at(config, "slurm", "gres", default=get_value(config, "train_gres", "gpu:1"))
+            ),
             "eval_cpus_per_task": int(_at(config, "slurm", "cpus", default=8)),
             "eval_mem": str(_at(config, "slurm", "memory", default="64G")),
             "eval_time": str(_at(config, "slurm", "time", default="4:00:00")),

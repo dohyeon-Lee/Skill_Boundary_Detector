@@ -208,7 +208,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
             policy_type = getattr(cfg.policy, "type", None)
             if policy_type in {"skill_aux", "skill_expert", "skill_vla_stage2"}:
                 if is_abc_native:
-                    if policy_type != "skill_expert":
+                    if policy_type not in {"skill_expert", "skill_aux"}:
                         raise NotImplementedError(
                             "ABC-native SkillVLA currently supports Stage-1 skill_expert "
                             f"training, not {policy_type}."
@@ -391,6 +391,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
                                 or getattr(cfg.policy, "training_skill_source", "gt") != "gt"
                             ),
                             include_preskill_plan_inputs=getattr(cfg.policy, "uses_bspline_preskill_memory", False),
+                            vlm_termination_enabled=bool(getattr(cfg.policy, "vlm_termination_enabled", False)),
+                            vlm_termination_post_end_steps=int(getattr(cfg.policy, "vlm_termination_post_end_steps", 10)),
                             goal_xyz_uv_noise=(getattr(cfg.policy, "uses_gt_expert_xyz", False)
                                                or getattr(cfg.policy, "uses_skill_uv_goal_conditioning", False)),
                             include_terminator_start_inputs=bool(
@@ -618,6 +620,13 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
 
                     dataset_cls = partial(
                         ABCNativeSkillVLADataset,
+                        include_predictor_start_inputs=bool(
+                            policy_type == "skill_aux" and getattr(cfg.policy, "train_skill_predictor", False)
+                        ),
+                        terminator_post_end_steps=(
+                            int(getattr(cfg.policy, "terminator_post_end_steps", 0))
+                            if policy_type == "skill_aux" and getattr(cfg.policy, "train_terminator", False) else 0
+                        ),
                         jitter_pmax=int(
                             getattr(cfg.policy, "transition_jitter_pmax", 0)
                         ),

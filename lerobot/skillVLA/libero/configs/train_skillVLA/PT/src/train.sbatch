@@ -86,6 +86,7 @@ elif [ "${ARCHITECTURE}" = layerwise_cond_bottleneck ]; then
   echo "bridge  : recurrent ${VISUAL_BOTTLENECK_TOKENS}x${VISUAL_BOTTLENECK_WIDTH} Cond-reader tokens -> final ${VISUAL_BRIDGE_LAST_N_LAYERS} expert layer(s)"
 fi
 echo "base loss: flow (fixed)"
+echo "fullskill: readout=${DUAL_FULLSKILL_READOUT}; 9+9 conditions/bridges unchanged"
 echo "loss mask: after_skill_end=${MASK_ACTIONS_AFTER_SKILL_END}"
 echo "proprio : grounding=${PROPRIO_GROUNDING}"
 echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE_XYZ_LOSS_WEIGHT}"
@@ -97,7 +98,7 @@ echo "foveate : enabled=${FOVEATED_VISION_ENABLED} mode=${FOVEATION_MODE} crop=$
 echo "           shape=${FOVEATION_SHAPE} sharp=${FOVEATION_SHARP_SIZE}px feather=${FOVEATION_FEATHER}px periphery=${FOVEATION_PERIPHERAL_MODE} peripheral_blur=${FOVEATION_PERIPHERAL_BLUR_RADIUS}"
 echo "augments: enabled=${FOVEATION_RANDOMIZATION_ENABLED} color=${FOVEATION_COLOR_ENABLED} crop(top-only)=${FOVEATION_CROP_ENABLED} outer=${FOVEATION_CROP_OFFSET_MIN_PX}:${FOVEATION_CROP_OFFSET_MAX_PX}px inner=${FOVEATION_INNER_BOX_OFFSET_MIN_PX}:${FOVEATION_INNER_BOX_OFFSET_MAX_PX}px input_blur(top+wrist)=${FOVEATION_INPUT_BLUR_ENABLED}"
 echo "predict : frozen skill source=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
-echo "train   : action model only (no predictor/terminator co-training)"
+echo "train   : VSA; integrated VLM termination=${VLM_TERMINATION_ENABLED}, weight=${VLM_TERMINATION_LOSS_WEIGHT}, post-end=${VLM_TERMINATION_POST_END_STEPS}"
 echo "optim   : muon=${USE_MUON} base_lr=${LR}"
 echo "checkpoint: global=${GRADIENT_CHECKPOINTING} action=${ACTION_EXPERT_CHECKPOINTING:-null} planner=${SKILL_PLANNER_CHECKPOINTING:-null} vlm=${VLM_CHECKPOINTING:-null} vision=${VISION_CHECKPOINTING:-null}"
 echo "schedule: steps=${STEPS}   mode=${SCHEDULER_MODE}   warmup=${SCHEDULER_WARMUP_STEPS}"
@@ -170,6 +171,13 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --policy.bottleneck_termination_loss_weight="${BOTTLENECK_TERMINATION_LOSS_WEIGHT}" \
     --policy.bottleneck_termination_target_sigma="${BOTTLENECK_TERMINATION_TARGET_SIGMA}" \
     --policy.bottleneck_termination_positive_weight="${BOTTLENECK_TERMINATION_POSITIVE_WEIGHT}" \
+    --policy.vlm_termination_enabled="${VLM_TERMINATION_ENABLED}" \
+    --policy.dual_bottleneck_layerwise="${DUAL_BOTTLENECK_LAYERWISE}" \
+    --policy.dual_fullskill_readout="${DUAL_FULLSKILL_READOUT}" \
+    --policy.vlm_termination_loss_weight="${VLM_TERMINATION_LOSS_WEIGHT}" \
+    --policy.vlm_termination_target_sigma="${VLM_TERMINATION_TARGET_SIGMA}" \
+    --policy.vlm_termination_positive_weight="${VLM_TERMINATION_POSITIVE_WEIGHT}" \
+    --policy.vlm_termination_post_end_steps="${VLM_TERMINATION_POST_END_STEPS}" \
     --policy.skill_end_pose_mode="${SKILL_END_POSE_MODE}" \
     --policy.vision_backbone=dino \
     --policy.dino_model_path="${DINO_MODEL_PATH}" \

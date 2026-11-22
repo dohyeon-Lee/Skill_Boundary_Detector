@@ -15,8 +15,10 @@ srun_gpu_reserve_gib: 0.3
 # srun_job_id는 squeue에서 RUNNING인 본인 잡 ID로 변경. 별도 tmux + 공유 GPU step으로 실행.
 # slurm_submit_mode: srun_existing
 # srun_job_id: "68847"
-# 일회성: SBD_SLURM_SUBMIT_MODE=srun_existing SBD_SRUN_JOB_ID=68847 ./submit_train.sh <model>
-# 평가: 같은 환경변수를 붙여 eval 폴더의 ./submit_eval.sh 실행. 추가 GPU는 요청하지 않음.
+# 일회성: ./submit_train.sh --68847 <model>
+# 평가: eval 폴더에서 ./submit_eval.sh --68847 실행. 추가 GPU는 요청하지 않음.
+# ABC/LIBERO의 submit*.sh에 공통 적용되며, 기존 옵션과 함께 쓸 수 있음.
+# 배열/의존성 빌드는 기존 할당 재사용을 지원하지 않으면 새 잡 없이 오류로 중단.
 
 # --- Slurm common defaults (canonical; every module reads these) ---
 train_partition: debug

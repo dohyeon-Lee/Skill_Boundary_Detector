@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 
-RELATIVE = Path("lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection")
+RELATIVE = Path("lerobot/skillVLA/libero/configs/train_skills/DP/eval")
 
 
 def load(name, path):
@@ -21,20 +21,15 @@ def configuration(root, config):
     merged = resolver.load_config(config)
     settings = json.loads(resolver.build_settings(str(config))["dp_ablation_settings_json"])
     skillset = Path(settings["skillset_dir"])
-    manifest = evaluator._load_manifest(skillset)
+    manifest = settings["source_manifest"]
     dataset = evaluator._portable_path(manifest["dataset_dir"], "dataset_filtered")
     override = settings.get("policy_checkpoint_override")
     checkpoint = evaluator._portable_path(
         str(root / override) if override and not Path(override).is_absolute() else override or manifest["policy_path"],
         "outputs_filtered")
-    selected = evaluator._selected_episode_ids(skillset, task_ids=settings["task_ids"],
-        task_id_space=settings["task_id_space"], target_task=settings["target_task"], n_episodes=settings["n_episodes"])
-    calibration = evaluator._threshold_calibration_episode_ids(settings, skillset, selected)
-    paths = {checkpoint, skillset / "skillset_manifest.json", skillset / "action_probe_pca.npz",
-             skillset / "skills", dataset / "data", dataset / "meta"}
-    provenance = skillset / "global_boundary_threshold.json"
-    if provenance.is_file():
-        paths.add(provenance)
+    selected = [int(row["episode_index"]) for row in manifest["evaluation_episodes"]]
+    calibration = selected
+    paths = {checkpoint, dataset / "data", dataset / "meta"}
     if settings["task_id_space"] == "suite":
         paths.add(dataset.parent / "skillvla_dataset" / dataset.name / "eval_init_states.npz")
     # Step data is needed for the complete calibration/PCA fit. Report video

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Optional compatibility export: materialize ABC Sim as a full LeRobot v3 dataset.
 # Normal DP/FSQ/SkillVLA training should use build_ABC_sim_dataset.sh instead.
 set -euo pipefail

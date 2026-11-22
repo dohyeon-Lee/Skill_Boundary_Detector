@@ -46,8 +46,9 @@ Inside the original running srun shell, run `./submit_build_all.sh` to use its
 visible GPU directly. No nested/overlapping srun or additional GPU is requested;
 the runner requires exactly one visible CUDA device. From outside an allocation,
 the same command requests one GPU using the server's `slurm_submit_mode`; local
-RunPod uses the existing local job runner. `srun_existing` from outside the
-original shell is rejected for this workflow. Existing allocations are never
+RunPod uses the existing local job runner. `--JOB_ID` from outside the original
+shell dispatches through the worker inside that allocation, without another
+srun step. Existing allocations are never
 cancelled/requeued by this build. Worker CUDA/OOM or storage-full errors stop
 the build without automatic resubmission. Parallelism does not reserve a VRAM
 budget per worker; choose the count for the GPU's available memory.

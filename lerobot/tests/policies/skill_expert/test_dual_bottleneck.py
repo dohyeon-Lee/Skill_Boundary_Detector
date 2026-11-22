@@ -21,6 +21,134 @@ def inputs():
             torch.tensor([[.2, -.3, 1., .1, .2, .3]] * 2))
 
 
+@pytest.mark.parametrize('layerwise', [False, True])
+def test_final_fullskill_keeps_9_plus_9_conditions_and_both_bridges(monkeypatch, layerwise):
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NOPROPRIO_LABEL
+    model = tiny_vlm_model(monkeypatch, DUAL_BOTTLENECK_NOPROPRIO_LABEL,
+                           dual_fullskill_readout='final', dual_bottleneck_layerwise=layerwise, device='cpu')
+    _, state, skill, actions, goal = inputs()
+    model._project_condition_state(state, skill_code=skill, end_pose=goal)
+    time = torch.full((2,), .4)
+    condition = model._expert_condition(time, end_pose=goal)
+    latents = [torch.randn(2, 200, 16) for _ in range(18)]
+    observed = []
+    def capture(*args):
+        observed.append(args)
+        return args[1]
+    monkeypatch.setattr(model, '_expert_layer_with_latent_bridge', capture)
+    model._run_expert_with_layerwise_latents(actions, condition, model._skill_broadcasts(skill)[1], latents)
+    action_calls = observed.copy()
+    observed.clear()
+    latent = model._last_lower_latent if layerwise else latents[-1]
+    model._planner_forward(torch.randn(2, 30, model.width), time, skill, goal, latent)
+    assert len(observed) == 18
+    for action, plan in zip(action_calls, observed, strict=True):
+        index = plan[0]
+        assert index == action[0]
+        torch.testing.assert_close(plan[4], action[4])
+        torch.testing.assert_close(plan[6], action[6])
+        assert (plan[5] is None) == (index >= 9)
+        if index < 9:
+            torch.testing.assert_close(plan[5], action[5])
+    torch.testing.assert_close(observed[-1][4], model._time_condition(time))
+
+
+@pytest.mark.parametrize('checkpoint', [False, True])
+def test_final_fullskill_gradients_reach_l18_action_stays_identical(monkeypatch, checkpoint):
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NOPROPRIO_LABEL
+    model = tiny_vlm_model(monkeypatch, DUAL_BOTTLENECK_NOPROPRIO_LABEL,
+                           dual_fullskill_readout='final', device='cpu')
+    model.config.skill_planner_checkpointing = checkpoint
+    model.configure_stream_checkpointing()
+    images, state, skill, actions, goal = inputs()
+    noise, time = torch.randn_like(actions), torch.full((2,), .5)
+    parameters = sum(p.numel() for p in model.parameters())
+    torch.manual_seed(123)
+    final_actions = model(images, state, skill, actions, end_pose=goal, noise=noise, time=time,
+                          fullskill_target=torch.randn(2, 30, 8))
+    flow = model.take_fullskill_flow_loss()
+    late = model.gemma_expert.model.layers[-1].self_attn.q_proj.weight
+    grad = torch.autograd.grad(flow.mean(), late, retain_graph=True)[0]
+    assert torch.isfinite(grad).all() and grad.abs().sum() > 0
+    (final_actions.square().mean() + flow.mean()).backward()
+    for p in (model.bspline_noise_input.weight, model.lower_layerwise_latent_queries,
+              model.layerwise_latent_queries):
+        assert p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
+    model.config.dual_fullskill_readout = 'middle'
+    torch.manual_seed(123)
+    middle_actions = model(images, state, skill, actions, end_pose=goal, noise=noise, time=time,
+                           fullskill_target=torch.randn(2, 30, 8))
+    model.take_fullskill_flow_loss()
+    torch.testing.assert_close(final_actions, middle_actions, rtol=0, atol=0)
+    assert sum(p.numel() for p in model.parameters()) == parameters
+    model.config.dual_fullskill_readout = 'final'
+    model.eval()
+    model.sample_actions(images, state, skill, num_steps=1, end_pose=goal)
+    plan = model.generate_visualization_plan(skill, goal)
+    assert plan.shape == (2, 30, 8) and torch.isfinite(plan).all()
+
+
+def test_final_fullskill_config_roundtrip(tmp_path):
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NOPROPRIO_LABEL
+    cfg = _skill_config(DUAL_BOTTLENECK_NOPROPRIO_LABEL, dual_fullskill_readout='final')
+    cfg.save_pretrained(tmp_path)
+    assert PreTrainedConfig.from_pretrained(tmp_path).dual_fullskill_readout == 'final'
+    with pytest.raises(ValueError, match='middle\\|final'):
+        replace(cfg, dual_fullskill_readout='typo')
+
+
+def test_layerwise_connection_matches_each_expert_depth_and_fullskill_prefix(monkeypatch):
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NOPROPRIO_LABEL
+    model = tiny_vlm_model(monkeypatch, DUAL_BOTTLENECK_NOPROPRIO_LABEL,
+                           dual_bottleneck_layerwise=True, device="cpu")
+    images, state, skill, actions, goal = inputs()
+    model._project_condition_state(state, skill_code=skill, end_pose=goal)
+    condition = model._expert_condition(torch.ones(2), end_pose=goal)
+    latents = [torch.randn(2, 200, 16) for _ in range(18)]
+    observed = []
+    def capture(index, hidden, mask, positions, cond, code, latent, rotary):
+        observed.append((index, latent))
+        return hidden
+    monkeypatch.setattr(model, '_expert_layer_with_latent_bridge', capture)
+    model._run_expert_with_layerwise_latents(actions, condition, model._skill_broadcasts(skill)[1], latents)
+    for index, latent in observed:
+        expected = latents[index][:, :100] if index < 9 else latents[index][:, 100:]
+        torch.testing.assert_close(latent, expected)
+    observed.clear()
+    model._planner_forward(torch.randn(2, 30, model.width), torch.ones(2), skill, goal, model._last_lower_latent)
+    assert len(observed) == 9
+    for index, latent in observed:
+        torch.testing.assert_close(latent, latents[index][:, :100])
+
+
+def test_abc_bimanual_forward_backward_has_four_uv_inputs_and_five_aux_queries(monkeypatch):
+    from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NOPROPRIO_LABEL
+    model = tiny_vlm_model(
+        monkeypatch, DUAL_BOTTLENECK_NOPROPRIO_LABEL,
+        bimanual_spatial_auxiliary=True, skill_plan_state_dim=14, chunk_end_state_dim=14,
+        chunk_end_state_q01=[-1.] * 14, chunk_end_state_q99=[1.] * 14,
+        bimanual_goal_xyz_q01=[-1.] * 6, bimanual_goal_xyz_q99=[1.] * 6,
+        skill_image_keys=['observation.images.top', 'observation.images.left_wrist',
+                          'observation.images.right_wrist'],
+    )
+    assert model.end_pose_condition[0].in_features == 4
+    assert model._alignment_token_count == 5
+    images = [torch.rand(2, 3, 4, 4) for _ in range(3)]
+    goal = torch.tensor([[.2, -.3, .4, -.5, 1., 1.], [.1, .2, .3, .4, 1., 0.]])
+    residual = model(images, torch.randn(2, 32), torch.tensor([1, 2]),
+                     torch.randn(2, 10, 32), end_pose=goal,
+                     fullskill_target=torch.randn(2, 30, 14))
+    flow = model.take_fullskill_flow_loss()
+    upper, lower = model.predict_training_dual_auxiliaries()
+    for readouts in (upper, lower):
+        assert [x.shape for x in readouts] == [torch.Size([2, 4])] * 4 + [torch.Size([2, 6])]
+    loss = residual.square().mean() + flow.mean()
+    loss = loss + sum(x.square().mean() for x in (*upper, *lower))
+    loss.backward()
+    assert model.end_pose_condition[-1].weight.grad is not None
+    assert torch.isfinite(model.end_pose_condition[-1].weight.grad).all()
+
+
 @pytest.fixture(params=[LABEL, DUAL_BOTTLENECK_LAST_LABEL])
 def label(request):
     return request.param

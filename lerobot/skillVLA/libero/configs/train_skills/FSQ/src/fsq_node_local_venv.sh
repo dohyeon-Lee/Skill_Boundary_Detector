@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # FSQ-only helpers for turning the many-file project venv into one sequential
 # Lustre read, then running from node-local storage. Other training stages do
 # not source this file and the shared venv is never modified.

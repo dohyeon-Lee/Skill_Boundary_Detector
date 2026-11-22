@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # ABC native SkillVLA data pipeline:
 #   1) encode the already-built FSQ training skillset with the selected epoch
 #   2) build storage-light native annotations + ISS and copy FSQ.pt
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${ABC_SKILLVLA_CONFIG:-${SCRIPT_DIR}/train_skillVLA_config.yaml}"
@@ -39,6 +46,28 @@ if [ -f "${SKILLVLA_RUN_DIR}/build_manifest.json" ] \
 fi
 
 mkdir -p "${SCRIPT_DIR}/logs"
+# Existing allocations run both phases in one worker; batch dependency and
+# parsable options cannot be used by the allocation runner.
+if [ "$(submit_job_scheduler)" = slurm ] \
+   && [ "$(submit_job_slurm_mode)" = srun_existing ]; then
+  PIPELINE_CPUS="${SKILLVLA_BUILD_CPUS_PER_TASK}"
+  if [ "${SKILLVLA_ENCODE_CPUS_PER_TASK}" -gt "${PIPELINE_CPUS}" ]; then
+    PIPELINE_CPUS="${SKILLVLA_ENCODE_CPUS_PER_TASK}"
+  fi
+  cd "${SCRIPT_DIR}"
+  echo "Queue ABC SkillVLA encode + build in the selected allocation"
+  ABC_SKILLVLA_CONFIG="${CONFIG_PATH}" submit_job \
+    --job-name=ABC_skillVLA_build \
+    --gres="${SKILLVLA_ENCODE_GRES}" \
+    --cpus-per-task="${PIPELINE_CPUS}" \
+    --mem="${SKILLVLA_BUILD_MEM}" \
+    --time="${SKILLVLA_BUILD_TIME}" \
+    --output=logs/%x_%j.out --error=logs/%x_%j.err \
+    "${SCRIPT_DIR}/src/build_existing.sbatch"
+  echo "Final outputs -> ${SKILLVLA_RUN_DIR}"
+  exit 0
+fi
+
 ENCODE_ARGS=(
   --partition="${SKILLVLA_ENCODE_PARTITION}"
   --qos="${SKILLVLA_ENCODE_QOS}"

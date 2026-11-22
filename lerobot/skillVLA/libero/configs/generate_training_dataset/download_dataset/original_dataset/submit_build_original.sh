@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # ONE-SHOT: download original LIBERO HDF5 on THIS node (login → internet
 # guaranteed), then submit HDF5→LeRobot-v3 conversion + stats as a Slurm job.
 #
@@ -7,6 +11,9 @@
 #   CONVERT_SUITE=libero_10 ./submit_build_original.sh
 #   CONVERT_OVERWRITE=true ./submit_build_original.sh
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../../src/submit_job.sh"

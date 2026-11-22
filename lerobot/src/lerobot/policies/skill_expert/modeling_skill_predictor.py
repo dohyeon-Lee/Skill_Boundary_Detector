@@ -103,7 +103,7 @@ class FrozenVLMSkillPredictor(nn.Module):
                 nn.LayerNorm(width),
                 nn.Linear(width, width),
                 nn.SiLU(),
-                nn.Linear(width, 2),
+                nn.Linear(width, 4 if getattr(config, "bimanual_spatial_auxiliary", False) else 2),
                 nn.Tanh(),
             )
         if config.skill_predictor_end_state_mode != "off":
@@ -321,7 +321,11 @@ class FrozenVLMSkillPredictor(nn.Module):
         """UV VSA consumes original-frame coordinates, never Predictor crop coordinates."""
         if not self.uses_top_crop:
             return uv
-        return (top_crop or self.top_crop(top_image, training=False)).to_original_uv(uv)
+        crop = top_crop or self.top_crop(top_image, training=False)
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            points = uv.reshape(-1, 2, 2)
+            return torch.stack([crop.to_original_uv(points[:, arm]) for arm in range(2)], dim=1).flatten(1)
+        return crop.to_original_uv(uv)
 
     def skill_reader_hidden(
         self,
@@ -708,8 +712,11 @@ class FrozenVLMSkillPredictor(nn.Module):
         predicted_uv = self.predict_focus_uv_from_memory(
             memory, key_ignore, skill_code
         )
-        target_uv = focus_uv.to(device=predicted_uv.device).reshape(-1, 2)
-        source_valid = focus_valid.to(device=predicted_uv.device).reshape(-1).bool()
+        bimanual = bool(getattr(self.config, "bimanual_spatial_auxiliary", False))
+        if bimanual:
+            predicted_uv = predicted_uv.reshape(-1, 2, 2)
+        target_uv = focus_uv.to(device=predicted_uv.device).reshape_as(predicted_uv)
+        source_valid = focus_valid.to(device=predicted_uv.device).reshape(predicted_uv.shape[:-1]).bool()
         if target_uv.shape[0] != predicted_uv.shape[0] or source_valid.shape[0] != predicted_uv.shape[0]:
             raise ValueError(
                 "Focus-UV batch shape mismatch: "
@@ -721,12 +728,18 @@ class FrozenVLMSkillPredictor(nn.Module):
         # still a useful nearest-border target and must receive UV loss.
         finite = torch.isfinite(target_uv).all(-1)
         target_uv = torch.where(
-            finite[:, None], target_uv.float(), torch.zeros_like(target_uv).float()
+            finite[..., None], target_uv.float(), torch.zeros_like(target_uv).float()
         ).clamp(-1.0, 1.0)
-        valid = finite
+        valid = finite & source_valid if bimanual else finite
         crop_clipped = torch.zeros_like(valid)
         if crop is not None:
-            target_uv, crop_valid, crop_clipped = crop.to_model_uv_with_clipping(target_uv)
+            if bimanual:
+                transformed = [crop.to_model_uv_with_clipping(target_uv[:, arm]) for arm in range(2)]
+                target_uv, crop_valid, crop_clipped = (
+                    torch.stack([result[i] for result in transformed], dim=1) for i in range(3)
+                )
+            else:
+                target_uv, crop_valid, crop_clipped = crop.to_model_uv_with_clipping(target_uv)
             valid = valid & crop_valid
         else:
             target_uv = target_uv.to(dtype=predicted_uv.dtype)

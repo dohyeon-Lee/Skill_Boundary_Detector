@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/data1/dohyeon/Skill_Boundary_Detector/.cache/maintenance/stop_abc_fsq_delta_20261120/stop.py", line 18, in <module>
+    with os.fdopen(os.pidfd_open(pid),'rb') as descriptor:
+                   ^^^^^^^^^^^^^
+AttributeError: module 'os' has no attribute 'pidfd_open'

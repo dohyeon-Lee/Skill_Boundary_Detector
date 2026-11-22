@@ -99,7 +99,7 @@ def test_cached_curve_mode_does_not_load_policy(monkeypatch, tmp_path):
     pd.DataFrame({"task_index": [0], "task": ["demo"]}).to_parquet(
         dataset_dir / "meta" / "tasks.parquet"
     )
-    (output_dir / "skillset_manifest.json").write_text("{}")
+    (output_dir / "skillset_manifest.json").write_text('{"detector": {"initial_mask_frames": 20}}')
 
     monkeypatch.setattr(
         build_skill_dataset,
@@ -114,10 +114,13 @@ def test_cached_curve_mode_does_not_load_policy(monkeypatch, tmp_path):
         lambda _path: pd.DataFrame({"episode_index": pd.Series(dtype=np.int64)}),
     )
 
+    policy = tmp_path / "metadata-only-policy"
+    policy.mkdir()
+    (policy / "config.json").write_text('{"n_obs_steps": 20}')
     build_skill_dataset.main(
         Args(
             dataset_dir=str(dataset_dir),
-            policy_path=str(tmp_path / "missing-policy"),
+            policy_path=str(policy),
             output_dir=str(output_dir),
             task_ids=[0],
             use_cached_curves=True,

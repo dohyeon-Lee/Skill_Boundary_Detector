@@ -67,46 +67,50 @@ class SkillAuxModules(nn.Module):
         )
         self.fsq_term_train = None
         if config.train_terminator:
-            terminator = build_trainable_fsq_terminator(
-                config.fsq_path,
-                warm_start=config.terminator_fsq_warm_start,
-                termination_only=config.terminator_termination_only,
-                progress_detach_backbone=(
-                    config.terminator_progress_detach_backbone
-                ),
-                context=config.terminator_context,
-                cameras=config.terminator_cameras,
-                default_arch=config.terminator_arch,
-                vision_backbone=config.terminator_vision_backbone,
-                dino_model_path=config.terminator_dino_model_path or None,
-                freeze_vision_encoder=config.terminator_freeze_vision_encoder,
-                goal_xyz=config.terminator_goal_xyz,
-                goal_uv=config.terminator_goal_uv,
-                skill_skip=config.terminator_skill_skip,
-                agent_patch_alignment=(
-                    config.terminator_agent_patch_align_weight > 0.0
-                ),
-                wrist_patch_alignment=(
-                    config.terminator_wrist_patch_align_weight > 0.0
-                ),
-                chunk_end_pose_mode=config.terminator_chunk_end_pose_mode,
-                chunk_end_state_dim=config.terminator_chunk_end_state_dim,
-                proprio_history=config.terminator_proprio_history,
-                history_mask_padding=config.terminator_history_mask_padding,
-                history_reset_on_skill=config.terminator_history_reset_on_skill,
-                start_proprio=config.terminator_start_proprio,
-                current_proprio=config.terminator_current_proprio,
-                proprio_conditioning=config.terminator_proprio_conditioning,
-                proprio_noise_magnitude=config.terminator_proprio_noise_magnitude,
-                proprio_noise_distribution=config.terminator_proprio_noise_distribution,
-                proprio_noise_exclude_last_n=config.terminator_proprio_noise_exclude_last_n,
-                proprio_noise_clamp=config.terminator_proprio_noise_clamp,
-                history_length=config.terminator_history_length,
-                history_dim=config.terminator_history_dim,
-                history_layers=config.terminator_history_layers,
-                history_heads=config.terminator_history_heads,
-            )
-            terminator.freeze_vision_encoder = bool(config.terminator_freeze_vision_encoder)
+            if config.bimanual_spatial_auxiliary:
+                from .bimanual_terminator import build_bimanual_terminator
+                terminator = build_bimanual_terminator(config)
+            else:
+                terminator = build_trainable_fsq_terminator(
+                    config.fsq_path,
+                    warm_start=config.terminator_fsq_warm_start,
+                    termination_only=config.terminator_termination_only,
+                    progress_detach_backbone=(
+                        config.terminator_progress_detach_backbone
+                    ),
+                    context=config.terminator_context,
+                    cameras=config.terminator_cameras,
+                    default_arch=config.terminator_arch,
+                    vision_backbone=config.terminator_vision_backbone,
+                    dino_model_path=config.terminator_dino_model_path or None,
+                    freeze_vision_encoder=config.terminator_freeze_vision_encoder,
+                    goal_xyz=config.terminator_goal_xyz,
+                    goal_uv=config.terminator_goal_uv,
+                    skill_skip=config.terminator_skill_skip,
+                    agent_patch_alignment=(
+                        config.terminator_agent_patch_align_weight > 0.0
+                    ),
+                    wrist_patch_alignment=(
+                        config.terminator_wrist_patch_align_weight > 0.0
+                    ),
+                    chunk_end_pose_mode=config.terminator_chunk_end_pose_mode,
+                    chunk_end_state_dim=config.terminator_chunk_end_state_dim,
+                    proprio_history=config.terminator_proprio_history,
+                    history_mask_padding=config.terminator_history_mask_padding,
+                    history_reset_on_skill=config.terminator_history_reset_on_skill,
+                    start_proprio=config.terminator_start_proprio,
+                    current_proprio=config.terminator_current_proprio,
+                    proprio_conditioning=config.terminator_proprio_conditioning,
+                    proprio_noise_magnitude=config.terminator_proprio_noise_magnitude,
+                    proprio_noise_distribution=config.terminator_proprio_noise_distribution,
+                    proprio_noise_exclude_last_n=config.terminator_proprio_noise_exclude_last_n,
+                    proprio_noise_clamp=config.terminator_proprio_noise_clamp,
+                    history_length=config.terminator_history_length,
+                    history_dim=config.terminator_history_dim,
+                    history_layers=config.terminator_history_layers,
+                    history_heads=config.terminator_history_heads,
+                )
+                terminator.freeze_vision_encoder = bool(config.terminator_freeze_vision_encoder)
             terminator.requires_grad_(True)
             if terminator.freeze_vision_encoder:
                 terminator.vision_encoder.requires_grad_(False).eval()
@@ -580,7 +584,71 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 ).sum().div(valid_count).item()
         return objective, metrics
 
+    def _bimanual_terminator_objective(self, batch):
+        from .bimanual_terminator import project_bimanual_goal
+        from lerobot.policies.skillVLA.newterm_supervision import (
+            POST_END_CODES, POST_END_VALID, POST_END_START_STATE,
+        )
+        terminator = self.model.fsq_term_train
+        device, dtype = next(terminator.parameters()).device, next(terminator.parameters()).dtype
+        cameras = [self._as_channels_first(batch[key]).to(device=device, dtype=dtype)
+                   for key in self.config.skill_image_keys]
+        image_size = (cameras[0].shape[-1], cameras[0].shape[-2])
+        image_tokens = terminator._prepare_image_tokens(cameras[0], torch.stack(cameras[1:], dim=1))
+        state = batch["skill_decoder_state"].to(device=device, dtype=dtype)
+        if state.ndim == 3:
+            state = state[:, -1]
+        code = self._true_skill_code(batch)
+        z_q = self._code_to_zq(code.to(self._fsq_strides.device)).to(device=device, dtype=dtype)
+        camera = batch["terminator_top_camera_projection"].to(device=device)
+        noise = self.config.terminator_goal_noise_max_m if self.training else 0.0
+        kwargs = {}
+        if self.config.terminator_start_proprio:
+            kwargs["start_state"] = batch[SKILL_START_STATE].to(device=device, dtype=dtype)
+        if self.config.terminator_goal_uv:
+            from lerobot.policies.skillVLA.dataset_skillVLA import SKILL_END_XYZ
+            kwargs["goal_uv"] = project_bimanual_goal(
+                batch[SKILL_END_XYZ].to(device), camera,
+                batch[SKILL_FOCUS_VALID].to(device), image_size=image_size, noise_max=noise,
+            )
+        progress, logits = terminator._forward_from_image_tokens(z_q, state, image_tokens, **kwargs)
+        progress_target, target = self._termination_targets(batch, device, self.config.terminator_end_target_sigma)
+        objective, metrics = self._termination_loss_and_metrics(
+            prefix="terminator", progress_prediction=progress, termination_logits=logits,
+            progress_target=progress_target, termination_target=target,
+            positive_weight=self.config.terminator_end_pos_weight,
+            termination_only=self.config.terminator_termination_only,
+        )
+        if self.config.terminator_post_end_steps:
+            valid = batch[POST_END_VALID].to(device=device, dtype=torch.bool)
+            rows, slots = valid.nonzero(as_tuple=True)
+            post_loss = logits.sum() * 0
+            if rows.numel():
+                past_codes = batch[POST_END_CODES].to(device)[rows, slots]
+                past_z = self._code_to_zq(past_codes.to(self._fsq_strides.device)).to(device=device, dtype=dtype)
+                past_kwargs = {}
+                if self.config.terminator_start_proprio:
+                    past_kwargs["start_state"] = batch[POST_END_START_STATE].to(device=device, dtype=dtype)[rows, slots]
+                if self.config.terminator_goal_uv:
+                    past_kwargs["goal_uv"] = project_bimanual_goal(
+                        batch["terminator_post_end_bimanual_xyz"].to(device)[rows, slots], camera[rows],
+                        batch["terminator_post_end_goal_uv_valid"].to(device)[rows, slots],
+                        image_size=image_size, noise_max=noise,
+                    )
+                _, past_logits = terminator._forward_from_image_tokens(
+                    past_z, state[rows], image_tokens[rows], **past_kwargs
+                )
+                post_loss = self._post_end_loss(past_logits, logits.shape[0], self.config.terminator_end_pos_weight)
+            objective = objective + post_loss
+            metrics["terminator/current_termination_loss"] = metrics["terminator/termination_loss"]
+            metrics["terminator/post_end_loss"] = post_loss.detach().item()
+            metrics["terminator/post_end_conditions_per_frame"] = rows.numel() / logits.shape[0]
+            metrics["terminator/termination_loss"] = metrics["terminator/loss"] = objective.detach().item()
+        return objective, metrics
+
     def _terminator_objective(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
+        if self.config.bimanual_spatial_auxiliary:
+            return self._bimanual_terminator_objective(batch)
         required = ["skill_ds", "skill_de"]
         terminator = self.model.fsq_term_train
         if terminator is None:
@@ -1205,6 +1273,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
         )
         if uses_wrist:
             required += ("skill_start_wrist_image",)
+            if self.config.bimanual_spatial_auxiliary:
+                required += ("skill_start_right_wrist_image",)
         missing = [key for key in required if key not in batch]
         if missing:
             raise ValueError(f"Skill predictor training batch is missing {missing}.")
@@ -1222,6 +1292,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
         ]
         if uses_wrist:
             images.append(self._as_channels_first(batch["skill_start_wrist_image"]).to(device))
+            if self.config.bimanual_spatial_auxiliary:
+                images.append(self._as_channels_first(batch["skill_start_right_wrist_image"]).to(device))
         tokens = batch[OBS_LANGUAGE_TOKENS].to(device)
         token_mask = batch[OBS_LANGUAGE_ATTENTION_MASK].to(device)
         if self.config.skill_predictor_focus_uv_enabled:

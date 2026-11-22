@@ -73,6 +73,9 @@ def test_model_entries_pair_run_folder_and_html_name() -> None:
         ]
     }
     assert CONFIG._model_entries(config) == config["fsq_eval_models"]
+    assert CONFIG._model_entries({"fsq_eval_models": [{"run_name": "folder_a"}]}) == [
+        {"run_name": "folder_a", "model_name": "folder_a"}
+    ]
     assert CONFIG._model_entries(
         {
             "fsq_eval_run_name": ["folder_a", "folder_b"],
@@ -89,7 +92,7 @@ def test_model_entries_pair_run_folder_and_html_name() -> None:
     [
         ([], "non-empty list"),
         (["folder_a"], "must be a mapping"),
-        ([{"run_name": "folder_a"}], "requires non-empty"),
+        ([{"model_name": "Model A"}], "requires non-empty"),
         (
             [
                 {"run_name": "folder_a", "model_name": "same"},
@@ -760,6 +763,33 @@ def test_abc_native_browser_video_asset_links_source_and_keeps_top_crop(
     }
 
 
+def test_lerobot_browser_video_asset_keeps_episode_offset_in_shared_mp4(tmp_path: Path) -> None:
+    import pandas as pd
+
+    reader = RUNNER._EpisodeFrameReader.__new__(RUNNER._EpisodeFrameReader)
+    reader.native_abc = False
+    reader.dataset_dir = tmp_path / "dataset"
+    reader.video_key = RUNNER.VIDEO_KEY
+    reader.fps = 20.0
+    reader.path_template = "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
+    reader.index = pd.DataFrame([{
+        "episode_index": 7,
+        f"videos/{reader.video_key}/chunk_index": 0,
+        f"videos/{reader.video_key}/file_index": 1,
+        f"videos/{reader.video_key}/from_timestamp": 7.5,
+    }]).set_index("episode_index")
+    source = reader.dataset_dir / reader.path_template.format(
+        video_key=reader.video_key, chunk_index=0, file_index=1
+    )
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    output = tmp_path / "report"
+    asset = reader.browser_video_asset(7, output)
+    assert (output / asset["video_path"]).resolve() == source
+    assert asset["video_from_timestamp"] == 7.5
+    assert asset["video_crop_row_start"] == asset["video_crop_row_end"] == 0
+
+
 def test_frame_pair_uses_next_frame_start() -> None:
     assert RUNNER._frame_pair(_Occurrence(0, 2), episode_length=5) == (0, 2)
 
@@ -863,7 +893,7 @@ def test_write_image_preserves_rendered_frame(tmp_path: Path) -> None:
     np.testing.assert_array_equal(np.asarray(Image.open(path)), frame)
 
 
-def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
+def test_report_shows_inline_videos_and_group_playback(tmp_path: Path) -> None:
     payload = {
         "levels": [3, 3, 3],
         "run_name": "fsq333",
@@ -917,20 +947,23 @@ def test_report_shows_start_and_final_image_pair(tmp_path: Path) -> None:
     assert "images/test_start.png" in data
     assert "images/test_final.png" in data
     assert "videos/episode_00000.mp4" in data
-    assert '<video class="video-source"' in html
-    assert 'id="videoModal"' in html
-    assert "Play top-view skill clip" in html
-    assert "openSkillVideo" in html
+    assert '<video muted playsinline preload="metadata"' in html
+    assert 'id="videoModal"' not in html
+    assert 'class="pair"' not in html
+    assert 'class="skill-grid"' in html
+    assert 'data-skill-view="task"' in html
+    assert 'data-skill-view="all"' in html
+    assert "Any play button starts all clips" in html
+    assert "new SkillVideoGrid" in html
     assert "video_crop_row_start" in data
-    assert 'class="pair"' in html
-    assert "GT start" in html
-    assert "GT end" in html
+    assert "playAll()" in html
+    assert "pauseAll()" in html
     assert 'id="checkpoint"' in html
     assert 'id="tasks"' in html
-    assert 'class="task-group"' in html
-    assert 'class="occ-row"' in html
     assert 'id="positionMode"' in html
     assert "Cohesion" in html
+    assert '<details class="panel" open>' not in html
+    assert 'class="codebook-selection"' in html
     assert "cohesionTable()" in html
     assert "codebook used (train)" in html
     assert "mean effective codes per cell" in html

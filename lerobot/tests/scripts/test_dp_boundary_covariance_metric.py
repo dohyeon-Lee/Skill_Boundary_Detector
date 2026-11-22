@@ -6,12 +6,24 @@ import numpy as np
 
 SCRIPT = (
     Path(__file__).resolve().parents[2]
-    / "skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/src/evaluate.py"
+    / "skillVLA/libero/configs/train_skills/DP/eval/src/evaluate.py"
 )
 SPEC = importlib.util.spec_from_file_location("dp_boundary_ablation_eval", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
+
+
+def test_full_build_plain_cosine_matches_eval_unanchored_recipe() -> None:
+    from sbd_multimodality import cosine_curve
+    rng = np.random.default_rng(42)
+    clouds = rng.normal(size=(3, 96, 4))
+    clouds[1] += np.array([3, -2, 1, .5])  # Unanchored scores retain this translation.
+    cfg = {'selection': 'fixed', 'k': 5, 'covariance': 'diag', 'n_init': 10,
+           'max_iter': 300, 'min_effective_samples': 0, 'weighted': True,
+           'reference_center': 'none'}
+    expected = MODULE._cluster_scores(clouds, cfg)['cosine']
+    np.testing.assert_allclose(cosine_curve(clouds), expected, rtol=1e-6, atol=1e-7)
 
 
 def test_directional_reliability_ignores_parallel_variance() -> None:

@@ -89,6 +89,8 @@ class DiffusionPolicy(PreTrainedPolicy):
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
         self._executed_action_history = deque(maxlen=self.config.n_obs_steps)
+        self._gru_hidden = None
+        self._gru_condition = None
         if self.config.image_features:
             self._queues[OBS_IMAGES] = deque(maxlen=self.config.n_obs_steps)
         if self.config.env_state_feature:
@@ -97,6 +99,11 @@ class DiffusionPolicy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
         """Predict a chunk of actions given environment observations."""
+        if self.config.history_gru_stateful:
+            self._gru_condition, self._gru_hidden = self.diffusion.gru_step(
+                batch[OBS_STATE], self._gru_hidden
+            )
+            return self.diffusion.sample_actions_from_condition(self._gru_condition, noise=noise)
         # stack n latest observations from the queue
         batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
         if self.config.history_conditioning == "action":
@@ -140,10 +147,21 @@ class DiffusionPolicy(PreTrainedPolicy):
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
             batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
         # NOTE: It's important that this happens after stacking the images into a single key.
-        self._queues = populate_queues(self._queues, batch)
+        if self.config.history_gru_stateful:
+            # Update on EVERY environment step, including while executing a
+            # previously predicted action chunk. Never re-encode a window.
+            self._gru_condition, self._gru_hidden = self.diffusion.gru_step(
+                batch[OBS_STATE], self._gru_hidden
+            )
+        else:
+            self._queues = populate_queues(self._queues, batch)
 
         if len(self._queues[ACTION]) == 0:
-            actions = self.predict_action_chunk(batch, noise=noise)
+            actions = (
+                self.diffusion.sample_actions_from_condition(self._gru_condition, noise=noise)
+                if self.config.history_gru_stateful
+                else self.predict_action_chunk(batch, noise=noise)
+            )
             self._queues[ACTION].extend(actions.transpose(0, 1))
 
         action = self._queues[ACTION].popleft()
@@ -187,6 +205,7 @@ class DiffusionHistoryEncoder(nn.Module):
         self.mode = config.history_encoder
         self.n_obs_steps = config.n_obs_steps
         self.output_dim = config.history_encoder_dim
+        self._episode_training_states = {True: {}, False: {}}
 
         if self.mode == "gru":
             self.encoder = nn.GRU(
@@ -243,6 +262,44 @@ class DiffusionHistoryEncoder(nn.Module):
         if self.use_cls_token:
             return self.output_norm(encoded[:, 0])
         return self.output_norm(encoded[:, -1])
+
+    def step(self, state: Tensor, hidden: Tensor | None = None) -> tuple[Tensor, Tensor]:
+        """Consume exactly one real state; the caller owns episode resets."""
+        if self.mode != "gru" or state.ndim != 2:
+            raise ValueError("GRU step expects one state per batch item, shaped (B, F).")
+        if hidden is not None and hidden.shape[1] != state.shape[0]:
+            raise ValueError("GRU batch size changed; reset the policy at episode boundaries.")
+        _sequence, hidden = self.encoder(state.unsqueeze(1), hidden)
+        return self.output_norm(hidden[-1]), hidden
+
+    def episode_training_condition(self, history: Tensor, episodes: Tensor, frames: Tensor) -> Tensor:
+        """Carry hidden across nonoverlapping chunks; detach between updates."""
+        cache = self._episode_training_states[self.training]
+        episodes, frames = episodes.reshape(-1).tolist(), frames.reshape(-1).tolist()
+        if len(set(episodes)) != len(episodes):
+            raise ValueError("GRU_epi batches must contain distinct episode streams.")
+        if history.shape[:2] != (len(episodes), self.n_obs_steps):
+            raise ValueError("GRU_epi requires one n_obs_steps chunk per episode stream.")
+        chunks, initial = [], []
+        for i, (episode, frame) in enumerate(zip(episodes, frames, strict=True)):
+            prior = cache.get(episode)
+            if prior is not None and frame == prior[0] + self.n_obs_steps:
+                initial.append(prior[1])
+                chunks.append(history[i])
+            elif 0 <= frame < self.n_obs_steps:
+                initial.append(history.new_zeros(self.encoder.num_layers, 1, self.output_dim))
+                # First anchors vary across passes. Ignore copy-padding while
+                # still consuming every real frame from the episode start.
+                chunks.append(history[i, -(frame + 1):])
+            else:
+                raise ValueError("GRU_epi needs chronological chunks from its episode batch sampler.")
+        packed = nn.utils.rnn.pack_sequence(chunks, enforce_sorted=False)
+        _sequence, hidden = self.encoder(packed, torch.cat(initial, dim=1))
+        self._episode_training_states[self.training] = {
+            episode: (frame, hidden[:, i:i + 1].detach().clone())
+            for i, (episode, frame) in enumerate(zip(episodes, frames, strict=True))
+        }
+        return self.output_norm(hidden[-1])
 
 
 class DiffusionModel(nn.Module):
@@ -430,6 +487,8 @@ class DiffusionModel(nn.Module):
             "observation.environment_state": (B, n_obs_steps, environment_dim)
         }
         """
+        if self.config.history_gru_stateful:
+            raise ValueError("Stateful GRU inference requires carried hidden; use policy.select_action or gru_step.")
         history_key = (
             OBS_ACTION_HISTORY
             if self.config.history_conditioning == "action"
@@ -441,8 +500,15 @@ class DiffusionModel(nn.Module):
         # Encode image features and concatenate them all together along with the state vector.
         global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
 
-        # run sampling
-        actions = self.conditional_sample(batch_size, global_cond=global_cond, noise=noise)
+        return self.sample_actions_from_condition(global_cond, noise=noise)
+
+    def gru_step(self, state: Tensor, hidden: Tensor | None = None) -> tuple[Tensor, Tensor]:
+        if not self.config.history_gru_stateful:
+            raise ValueError("gru_step requires a stateful GRU checkpoint.")
+        return self.history_encoder.step(state, hidden)
+
+    def sample_actions_from_condition(self, global_cond: Tensor, noise: Tensor | None = None) -> Tensor:
+        actions = self.conditional_sample(global_cond.shape[0], global_cond=global_cond, noise=noise)
 
         # Extract `n_action_steps` steps worth of actions (from the current observation).
         start = self.config.action_execution_start_index
@@ -498,8 +564,16 @@ class DiffusionModel(nn.Module):
             trajectory = batch[ACTION]
             trajectory_is_pad = batch["action_is_pad"]
 
-        # Encode image features and concatenate them all together along with the state vector.
-        global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
+        # GRU_iid retains independent zero-initialized windows. GRU_epi carries
+        # only detached hidden between chronological chunks of the same episode.
+        if self.config.history_gru_training == "epi":
+            if not {"episode_index", "frame_index"}.issubset(batch):
+                raise ValueError("GRU_epi needs episode_index and frame_index metadata.")
+            global_cond = self.history_encoder.episode_training_condition(
+                batch[OBS_STATE], batch["episode_index"], batch["frame_index"]
+            )
+        else:
+            global_cond = self._prepare_global_conditioning(batch)  # (B, global_cond_dim)
 
         # Forward diffusion.
         # Sample noise to add to the trajectory.

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # FSQ/BSQ-only helper for staging the immutable RGB cache from shared Lustre to
 # node-local storage. Multiple jobs on one node share a fingerprinted copy.
 

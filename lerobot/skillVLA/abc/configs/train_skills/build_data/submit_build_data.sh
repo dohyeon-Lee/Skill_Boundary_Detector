@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # Build ABC DP curves, one global threshold, and cached skill segmentation.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_PATH="${ABC_BUILD_DATA_CONFIG:-${SCRIPT_DIR}/build_data_config.yaml}"
@@ -59,10 +66,19 @@ CURVES_ONLY=true
 export CURVES_ONLY
 if [ "${SKILLSET_SINGLE_GPU_WORKERS}" -gt 0 ]; then
   echo "  GPU mode   : one shared GPU, ${SKILLSET_SINGLE_GPU_WORKERS} workers; episodes split automatically"
-  CURVES_JOB="$(ABC_SINGLE_GPU_BUILD=true submit_job --parsable \
-    --output=logs/%x_%j.out --error=logs/%x_%j.err \
-    "${GPU_ARGS[@]}" "${SCRIPT_DIR}/src/build_skillset.sbatch")"
-  echo "  pipeline job    : ${CURVES_JOB} (curves -> threshold -> cached segment -> verify)"
+  if [ "$(submit_job_scheduler)" = slurm ] && [ "$(submit_job_slurm_mode)" != sbatch ]; then
+    # This is one process supervising every pipeline stage, so it needs no
+    # numeric batch job ID, array, or scheduler dependency. In particular,
+    # --JOB_ID must dispatch inside the existing allocation without --parsable.
+    ABC_SINGLE_GPU_BUILD=true submit_job \
+      --output=logs/%x_%j.out --error=logs/%x_%j.err \
+      "${GPU_ARGS[@]}" "${SCRIPT_DIR}/src/build_skillset.sbatch"
+  else
+    CURVES_JOB="$(ABC_SINGLE_GPU_BUILD=true submit_job --parsable \
+      --output=logs/%x_%j.out --error=logs/%x_%j.err \
+      "${GPU_ARGS[@]}" "${SCRIPT_DIR}/src/build_skillset.sbatch")"
+    echo "  pipeline job    : ${CURVES_JOB} (curves -> threshold -> cached segment -> verify)"
+  fi
   echo "The one allocation writes .complete only after all ${ABC_EXPECTED_EPISODES} episodes are verified."
   exit 0
 else

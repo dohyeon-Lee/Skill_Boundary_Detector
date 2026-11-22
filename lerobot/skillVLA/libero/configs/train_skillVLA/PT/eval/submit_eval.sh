@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Submit Stage-1 evaluation; distribute task x panel work over a Slurm array.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
@@ -149,10 +156,10 @@ elif [ "${SBD_SRUN_SESSION:-0}" = "1" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
     bash "${EVAL_EXEC_SCRIPT}"
 elif [ -n "${SLURM_JOB_ID:-}" ]; then
-  echo "  mode   : srun in allocation ${SLURM_JOB_ID}"
+  echo "  mode   : direct evaluation in allocation ${SLURM_JOB_ID}"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \
-    SBD_SRUN_SESSION=1 SBD_SRUN_EXISTING_STEP=1 \
-    srun --overlap --nodes=1 --ntasks=1 "${EVAL_EXEC_SCRIPT}"
+    SBD_SRUN_SESSION=1 \
+    bash "${EVAL_EXEC_SCRIPT}"
 elif [ "${EVAL_PHYSICAL_GPU_COUNT}" -le 1 ]; then
   echo "  mode   : one sbatch job"
   STAGE1_EVAL_DIR="${SCRIPT_DIR}" STAGE1_EVAL_CONFIG="${CONFIG_PATH}" \

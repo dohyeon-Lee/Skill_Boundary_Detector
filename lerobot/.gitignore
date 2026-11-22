@@ -166,6 +166,7 @@ wandb/
 # Data folders
 data/
 outputs/
+!skillVLA/abc/configs/train_skills/DP/eval/outputs/
 
 # Translations
 *.mo

@@ -74,13 +74,14 @@ bash submit_eval.sh
 스킬 경계 비교 평가도 같은 흐름으로 실행한다.
 
 ```bash
-cd lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection
-bash submit.sh --prepare-runpod   # 서버: HF 입력 준비
-bash submit.sh                    # RunPod: 다운로드·검증 후 평가
+cd lerobot/skillVLA/libero/configs/train_skills/DP/eval
+./submit_eval.sh --dry-run       # 체크포인트·평가 에피소드·캐시 확인
+./submit_eval.sh                 # 캐시가 있으면 CPU 보고서, 없으면 부분빌드
 ```
 
-조건별 threshold는 전체 3,921개 에피소드에서 따로 계산하고, 보고서는 선택한 200개를 담는다.
-실행 설정은 HF에 보관하며, 코드 변경은 별도로 RunPod에 반영해야 한다.
+부분빌드는 선택한 에피소드에서 PCA와 threshold를 계산한다. 중간 결과는
+`DP/eval/partial_build`, 영상 HTML과 나머지 보고서는 `DP/eval/outputs`에 저장한다.
+RunPod 입력 전송은 `tools/runpod/prepare_eval.py --config <eval_config.yaml>`을 사용한다.
 
 ## 4. 학습·기타 작업
 
@@ -99,6 +100,12 @@ bash hf_sync.sh pull \
 
 각 작업 폴더의 기존 `submit_*.sh`를 실행한다. Slurm 제출 / RunPod 백그라운드 실행은 자동 선택한다.
 RunPod 감지가 안 되면 `export SBD_SERVER=runpod`로 지정한다.
+
+연세 서버에서 실행하려면 각 `skillVLA` 실행 스크립트에 `--yonsei`를 붙인다.
+현재 코드·설정과 필요한 입력을 준비해 원격 실행하며, GPU·partition·QoS는
+`lerobot/skillVLA/servers/yonsei.yaml`을 따른다. `--yonsei-plan`은 전송 계획만,
+`--yonsei-check`는 원격 연결·입력 존재 여부까지 확인하며 잡을 제출하지 않는다.
+[연세 원격 실행 안내](tools/remote/README.md).
 
 ```bash
 # 예: VSA PT 학습 (프로젝트 루트에서)

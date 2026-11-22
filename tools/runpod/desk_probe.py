@@ -373,11 +373,12 @@ def snapshot(root, known=None):
                         except ValueError:
                             continue
     results, transfer_bytes = [], 0
-    boundary_outputs = configs / "train_skills/skill_eval/skill_boundary_detection/outputs"
+    boundary_outputs = configs / "train_skills/DP/eval/outputs"
     if boundary_outputs.is_dir():
         for marker in boundary_outputs.rglob("evaluation_complete.json"):
             try:
-                outputs.setdefault(allowed(marker.parent), [])
+                folder = marker.parent.parent if marker.parent.name == "src" else marker.parent
+                outputs.setdefault(allowed(folder), [])
             except ValueError:
                 continue
     for out, associated in sorted(outputs.items(), key=lambda item: str(item[0])):
@@ -389,6 +390,8 @@ def snapshot(root, known=None):
             metric = out / "metrics/eval_info.json"
         if not metric.is_file():
             metric = out / "evaluation_complete.json"
+            if not metric.is_file():
+                metric = out / "src/evaluation_complete.json"
             if not metric.is_file():
                 continue
         try:

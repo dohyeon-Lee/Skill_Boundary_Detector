@@ -199,6 +199,8 @@ print('123')
 ''')
     submit_helper = src.parents[2] / "src/submit_job.sh"
     submit_helper.parent.mkdir(parents=True)
+    (submit_helper.parent / "submit_args.sh").write_text(
+        (SRC.parents[2] / "src/submit_args.sh").read_text())
     submit_helper.write_text(
         '_SUBMIT_JOB_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
         'submit_job_scheduler() { echo slurm; }\n'

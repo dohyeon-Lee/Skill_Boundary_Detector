@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Submit ABC SkillVLA Stage-1 VSA training using the shared LIBERO trainer.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
@@ -43,7 +50,13 @@ echo "  jitter  : pmax=${TRANSITION_JITTER_PMAX} ${TRANSITION_JITTER_DISTRIBUTIO
 echo "  cameras : ${SKILL_IMAGE_KEYS}"
 echo "  output  : ${PT_OUTPUT_DIR}"
 
+# Existing allocations read this shell directly. Keep a private copy so later
+# edits cannot change the script while Bash waits for the training process.
+STAGE1_JOB_SCRIPT="$(dirname "${CONFIG_PATH}")/train.sbatch"
+cp "${SHARED_PT}/src/train.sbatch" "${STAGE1_JOB_SCRIPT}"
+bash -n "${STAGE1_JOB_SCRIPT}"
+
 STAGE1_TRAIN_CONFIG="${CONFIG_PATH}" \
 STAGE1_SRC_DIR="${SHARED_PT}/src" \
-  submit_job "${SBATCH_ARGS[@]}" "${SHARED_PT}/src/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${STAGE1_JOB_SCRIPT}"
 

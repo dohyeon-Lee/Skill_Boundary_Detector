@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Build the FILTERED LIBERO datasets end-to-end. 최종 레이아웃:
 #   {filtered_root}/{name}        ← 변환·remap·stats 끝난, 바로 쓰는 v3.0 데이터셋
 #   {filtered_root}/_v21/{name}   ← 다운로드한 v2.1 원본 (보존; CLEAN_V21=1이면 삭제)

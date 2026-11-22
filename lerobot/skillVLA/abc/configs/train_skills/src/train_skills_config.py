@@ -31,7 +31,7 @@ SBD_PROFILES = {
         "skillset_output_suffix": "",
     },
     "abc_standard": {
-        "skillset_smooth_window": 8,
+        "skillset_smooth_window": 7,
         "skillset_savgol_polyorder": 4,
         "skillset_score_power": 1.0,
         "skillset_terminal_mask_frames": 0,
@@ -176,7 +176,11 @@ def load_settings(config_path: Path, dataset: str | None = None) -> dict[str, An
     # A profile owns the complete post-processing recipe so one YAML choice is
     # enough and stale individual knobs cannot silently create a hybrid build.
     cfg.update(SBD_PROFILES[profile])
+    gaussian_center = str(cfg.get("skillset_gaussian_center", "current_gt")).strip().lower()
+    if gaussian_center not in {"current_gt", "previous_action"}:
+        raise ValueError("skillset_gaussian_center must be current_gt|previous_action.")
     settings = shared.build_data_settings(cfg, dataset=dataset)
+    settings["skillset_gaussian_center"] = gaussian_center
     source_tasks = _as_list(cfg.get("abc_source_tasks", ["grab_clutter"]))
     if not source_tasks:
         raise ValueError("abc_source_tasks must contain at least one official ABC Sim task.")
@@ -229,7 +233,20 @@ def load_fsq_settings(config_path: Path, dataset: str | None = None) -> dict[str
     """Resolve the shared FSQ trainer with ABC's native/action contracts."""
     shared = _shared_config_module()
     cfg = shared.load_config(config_path)
+    action_space = str(cfg.get("fsq_action_space", "absolute_joint")).strip().lower()
+    if action_space not in {"absolute_joint", "delta_joint"}:
+        raise ValueError("fsq_action_space must be absolute_joint or delta_joint.")
+    if action_space == "delta_joint":
+        cfg = dict(cfg)
+        experiment = str(cfg.get("fsq_exp", "") or "")
+        if experiment.endswith("_absolute"):
+            experiment = experiment[:-len("_absolute")]
+        if not experiment.endswith("_delta_joint"):
+            experiment += "_delta_joint"
+        cfg["fsq_exp"] = experiment.lstrip("_")
     settings = shared.train_settings(cfg, dataset=dataset)
+    if action_space == "delta_joint" and settings["fsq_autoencoder_mode"] not in {"action", "norm_action"}:
+        raise ValueError("delta_joint FSQ requires fsq_autoencoder.mode: action or norm_action.")
     manifest_path = Path(settings["skillset_manifest_path"])
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest_tasks = [str(task) for task in manifest.get("source_tasks", [])]
@@ -279,9 +296,7 @@ def load_fsq_settings(config_path: Path, dataset: str | None = None) -> dict[str
             "fsq_action_gripper_indices_str": " ".join(
                 str(index) for index in gripper_indices
             ),
-            # SBD provenance may be delta-joint, but build_skillset stores the
-            # untouched native action as the FSQ encoder/reconstructor target.
-            "fsq_action_space": "absolute_joint",
+            "fsq_action_space": action_space,
             "fsq_action_dim": 14,
         }
     )

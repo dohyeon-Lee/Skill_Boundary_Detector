@@ -1,4 +1,4 @@
-"""Opt-in VSA retention: recent resumable saves plus explicitly protected steps."""
+"""Opt-in SkillVLA retention: recent resumable saves plus protected steps."""
 from __future__ import annotations
 
 import json
@@ -21,10 +21,11 @@ def validate_checkpoint_retention(keep, protected) -> list[int]:
 
 def validate_retention_mode(keep, protected, archive, policy_type) -> list[int]:
     protected = validate_checkpoint_retention(keep, protected)
-    if protected and (archive or policy_type != "skill_expert"):
-        raise ValueError("protect_checkpoints is supported by local VSA retention without checkpoint_archive.")
-    if keep != -1 and not archive and policy_type != "skill_expert":
-        raise ValueError("Local checkpoint pruning requires checkpoint_archive outside VSA training.")
+    supported = policy_type in {"skill_expert", "skill_aux"}
+    if protected and (archive or not supported):
+        raise ValueError("protect_checkpoints is supported by local SkillVLA retention without checkpoint_archive.")
+    if keep != -1 and not archive and not supported:
+        raise ValueError("Local checkpoint pruning requires checkpoint_archive outside SkillVLA training.")
     return protected
 
 
@@ -92,11 +93,11 @@ def prune_local_checkpoints(cfg, completed_checkpoint: Path) -> list[Path]:
     if current.parent.resolve() != root.resolve():
         raise ValueError(f"Unexpected VSA checkpoint directory: {current}")
     last = root / "last"
-    if not _is_training_checkpoint(current) or not last.is_symlink() or last.resolve() != current.resolve():
+    if not _is_training_checkpoint(current, policy_type=cfg.policy.type) or not last.is_symlink() or last.resolve() != current.resolve():
         logging.warning("Skipping VSA retention: new checkpoint or last link is incomplete: %s", current)
         return []
     paths = sorted(
-        (path for path in root.iterdir() if path.is_dir() and _is_training_checkpoint(path)),
+        (path for path in root.iterdir() if path.is_dir() and _is_training_checkpoint(path, policy_type=cfg.policy.type)),
         key=lambda path: int(path.name),
     )
     retained = set(paths[-keep:]) | {current}

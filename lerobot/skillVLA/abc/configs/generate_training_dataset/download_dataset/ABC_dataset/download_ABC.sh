@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Download ABC-130k mcap SUBSETs (per ABC_dataset_config.yaml abc_subsets) into the
 # staging area: {project_root}/{abc_dataset_root}/_mcap/{name}/data/{split}/...
 # 엔진 = 이 폴더의 src/download_abc.py (그룹/태스크/에피소드 선택형 다운로더;

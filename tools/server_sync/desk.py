@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import errno
 import json
+import html
+import mimetypes
 import os
 import secrets
 import shutil
@@ -15,7 +17,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote, quote
 from urllib.request import Request, urlopen
 
 from hf_server import HFBackend, HFHandler, HFTransfers, SYNC
@@ -28,6 +30,7 @@ if str(REPO) not in sys.path:
 from tools.slurm_monitor.server import Handler as SlurmHandler
 from tools.slurm_monitor.monitor import Monitor
 from tools.runpod.desk import Monitor as RunPodMonitor
+from tools.remote.desk import Monitor as YonseiMonitor
 import re
 
 
@@ -38,6 +41,7 @@ class DeskHandler(HFHandler):
             hf = getattr(self, "_hf_request", False)
             slurm = getattr(self, "_slurm_request", False)
             runpod = getattr(self, "_runpod_request", False)
+            yonsei = getattr(self, "_yonsei_request", False)
             if hf:
                 html = html.replace('src="/app.js"', 'src="/hf/app.js"')
                 html = html.replace('href="/hf.css"', 'href="/hf/hf.css"')
@@ -46,9 +50,9 @@ class DeskHandler(HFHandler):
                 html = html.replace('href="/style.css"', 'href="/slurm/style.css"')
                 html = html.replace('<body>', '<body class="slurm-desk">')
             tabs = '<nav class="desk-tabs" aria-label="관리 기능">'
-            for path, label, selected in (("/", "서버 간 전송", not hf and not slurm and not runpod),
+            for path, label, selected in (("/", "서버 간 전송", not hf and not slurm and not runpod and not yonsei),
                     ("/hf/", "Hugging Face", hf), ("/slurm/", "Slurm Desk", slurm),
-                    ("/runpod/", "RunPod Desk", runpod)):
+                    ("/runpod/", "RunPod Desk", runpod), ("/yonsei/", "Yonsei Desk", yonsei)):
                 current = ' aria-current="page"' if selected else ""
                 tabs += f'<a href="{path}"{current}>{label}</a>'
             tabs += '</nav>'
@@ -60,7 +64,7 @@ class DeskHandler(HFHandler):
                                 '<script src="/storage.js" defer></script></head>')
             body = html.replace('</header>', '</header>' + tabs + storage, 1).encode("utf-8")
         if isinstance(body, dict) and not getattr(self, "_hf_request", False) and "endpoints" in body and "token" in body:
-            body = {**body, "ui": "unified", "hf_url": "/hf/", "slurm_url": "/slurm/", "runpod_url": "/runpod/"}
+            body = {**body, "ui": "unified", "hf_url": "/hf/", "slurm_url": "/slurm/", "runpod_url": "/runpod/", "yonsei_url": "/yonsei/"}
         super()._reply(status, body, content_type)
 
     def _hf(self, method):
@@ -214,10 +218,94 @@ class DeskHandler(HFHandler):
         finally:
             self._runpod_request = False
 
+    def _yonsei_result(self, identifier, relative):
+        monitor = self.server.yonsei_monitor()
+        jobs = {job['id']: job for job in monitor.snapshot().get('jobs', [])}
+        collected = jobs.get(identifier, {}).get('collection', {})
+        if collected.get('state') != 'COLLECTED':
+            return self._reply(404, {'error': 'Result not collected'})
+        root = Path(collected['path']).resolve()
+        root.relative_to(REPO.resolve())
+        target = (root / unquote(relative)).resolve()
+        target.relative_to(root)
+        if target.is_dir():
+            if (target / 'index.html').is_file():
+                target = target / 'index.html'
+            else:
+                prefix = '/yonsei/results/' + identifier + '/'
+                links = []
+                if target != root:
+                    parent = target.parent.relative_to(root).as_posix()
+                    links.append('<li><a href="' + prefix + ('' if parent == '.' else quote(parent) + '/') + '">../</a></li>')
+                for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name))[:1000]:
+                    rel = child.relative_to(root).as_posix() + ('/' if child.is_dir() else '')
+                    links.append('<li><a href="' + prefix + quote(rel) + '">' + html.escape(child.name) + ('/' if child.is_dir() else '') + '</a></li>')
+                page = '<!doctype html><meta charset="utf-8"><title>Yonsei results</title><h1>' + html.escape(target.name) + '</h1><ul>' + ''.join(links) + '</ul>'
+                return self._reply(200, page.encode(), 'text/html; charset=utf-8')
+        if not target.is_file():
+            return self._reply(404, {'error': 'Not found'})
+        # Range requests let report videos seek/play without loading them into RAM.
+        size = target.stat().st_size
+        start, end, code = 0, size - 1, 200
+        requested = self.headers.get('Range')
+        if requested:
+            match = re.fullmatch(r'bytes=(\d*)-(\d*)', requested)
+            if not match or not any(match.groups()):
+                return self._reply(416, {'error': 'Invalid range'})
+            if match[1]:
+                start = int(match[1])
+                end = min(end, int(match[2])) if match[2] else end
+            else:
+                start = max(0, size - int(match[2]))
+            if start > end or start >= size:
+                return self._reply(416, {'error': 'Invalid range'})
+            code = 206
+        self.send_response(code)
+        self.send_header('Content-Type', mimetypes.guess_type(target.name)[0] or 'application/octet-stream')
+        self.send_header('Content-Length', str(max(0, end - start + 1)))
+        self.send_header('Accept-Ranges', 'bytes')
+        if code == 206:
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        self.end_headers()
+        with target.open('rb') as stream:
+            stream.seek(start)
+            left = end - start + 1
+            while left > 0:
+                chunk = stream.read(min(left, 256 * 1024))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                left -= len(chunk)
+
+    def _yonsei(self, method):
+        self._yonsei_request = True
+        try:
+            path = urlsplit(self.path).path.removeprefix('/yonsei') or '/'
+            if method == 'do_GET' and path in {'/', '/app.js', '/style.css'}:
+                filename, mime = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'text/javascript'),
+                                  '/style.css': ('style.css', 'text/css')}[path]
+                return self._reply(200, (REPO / 'tools/remote/static' / filename).read_bytes(), mime + '; charset=utf-8')
+            monitor = self.server.yonsei_monitor()
+            if monitor is None:
+                return self._reply(503, {'error': self.server.yonsei_error})
+            if method == 'do_GET' and path == '/api/state':
+                return self._reply(200, {**monitor.snapshot(), 'token': self.server.token})
+            match = re.fullmatch(r'/results/([A-Za-z0-9_-]{1,100})/(.*)', path)
+            if method == 'do_GET' and match:
+                return self._yonsei_result(match[1], match[2])
+            if method == 'do_POST' and path == '/api/refresh':
+                monitor.refresh.set()
+                return self._reply(200, {'ok': True})
+            return self._reply(404, {'error': 'Not found'})
+        finally:
+            self._yonsei_request = False
+
     def do_GET(self):
         try:
             self._guard()
             path = urlsplit(self.path).path
+            if path == "/yonsei" or path.startswith("/yonsei/"):
+                return self._yonsei("do_GET")
             if path == "/runpod" or path.startswith("/runpod/"):
                 return self._runpod("do_GET")
             if path == "/slurm" or path.startswith("/slurm/"):
@@ -248,6 +336,8 @@ class DeskHandler(HFHandler):
             if path.startswith("/slurm/"):
                 return self._slurm("do_POST")
             self._guard(mutation=True)
+            if path.startswith("/yonsei/"):
+                return self._yonsei("do_POST")
             if path.startswith("/runpod/"):
                 return self._runpod("do_POST")
             if path.startswith("/hf/"):
@@ -263,7 +353,8 @@ class DeskHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, backend, manager, mode, *, hf_factory, concurrency=2, reuse_server_port=None,
-                 monitor_factory=None, reuse_slurm_port=None, runpod_factory=None, reuse_desk_port=None):
+                 monitor_factory=None, reuse_slurm_port=None, runpod_factory=None, reuse_desk_port=None,
+                 yonsei_factory=None):
         self.backend, self.manager, self.mode = backend, manager, mode
         self.token = secrets.token_urlsafe(32)
         self.reuse_desk_port = reuse_desk_port
@@ -276,6 +367,8 @@ class DeskHTTPServer(ThreadingHTTPServer):
         self.reuse_slurm_port = reuse_desk_port or reuse_slurm_port
         self._runpod_factory, self._runpod, self._runpod_lock = runpod_factory, None, threading.Lock()
         self.runpod_error = "RunPod 모니터가 설정되지 않았습니다."
+        self._yonsei_factory, self._yonsei, self._yonsei_lock = yonsei_factory, None, threading.Lock()
+        self.yonsei_error = "Yonsei 모니터가 설정되지 않았습니다."
         super().__init__(address, DeskHandler)
 
     def start_monitor(self):
@@ -320,7 +413,21 @@ class DeskHTTPServer(ThreadingHTTPServer):
                 self._hf_service.manager.restore_history(self.restored_hf_history)
             return self._hf_service
 
+    def yonsei_monitor(self):
+        with self._yonsei_lock:
+            if self._yonsei is None and self._yonsei_factory is not None:
+                try:
+                    self._yonsei = self._yonsei_factory()
+                    self._yonsei.start()
+                    self.yonsei_error = ''
+                except (ValueError, OSError) as error:
+                    self._yonsei = None
+                    self.yonsei_error = str(error)
+        return self._yonsei
+
     def close_managers(self):
+        if self._yonsei is not None:
+            self._yonsei.close()
         if self._runpod is not None:
             self._runpod.close()
         if self._monitor is not None:
@@ -376,7 +483,8 @@ def main():
         server = DeskHTTPServer(("127.0.0.1", args.port), backend, manager, mode,
             hf_factory=factory, concurrency=args.concurrency, reuse_server_port=args.reuse_server_port,
             monitor_factory=monitor_factory, reuse_slurm_port=args.reuse_slurm_port,
-            runpod_factory=lambda: RunPodMonitor(REPO, args.runpod_state_dir), reuse_desk_port=args.reuse_desk_port)
+            runpod_factory=lambda: RunPodMonitor(REPO, args.runpod_state_dir), reuse_desk_port=args.reuse_desk_port,
+            yonsei_factory=lambda: YonseiMonitor(REPO))
     except OSError as error:
         if manager is not None:
             manager.close()
@@ -391,11 +499,13 @@ def main():
         server.restored_hf_history = history.get("hf", [])
     server.start_monitor()
     server.runpod_monitor()
+    server.yonsei_monitor()
     print(f"SBD Desk · 서버 전송 + Hugging Face + Slurm + RunPod · {mode}", flush=True)
     print(f"서버 전송: http://127.0.0.1:{args.port}/", flush=True)
     print(f"Hugging Face: http://127.0.0.1:{args.port}/hf/", flush=True)
     print(f"Slurm Desk: http://127.0.0.1:{args.port}/slurm/", flush=True)
     print(f"RunPod Desk: http://127.0.0.1:{args.port}/runpod/", flush=True)
+    print(f"Yonsei Desk: http://127.0.0.1:{args.port}/yonsei/", flush=True)
     if args.reuse_server_port:
         print(f"기존 전송 서비스 {args.reuse_server_port}의 작업을 유지합니다.", flush=True)
     print("VSCode Ports에서 위 포트 하나를 전달하세요. Ctrl+C: 이 UI의 실행/대기 작업도 취소됩니다.", flush=True)

@@ -1,5 +1,16 @@
 slurm_profile: base  # base | big | pro6000 | 48gb (change ONLY this selector)
 
+# ./submit_*.sh --yonsei: SSH destination and existing workspace/environment.
+remote_host: mdorazi@165.132.142.208
+remote_project_root: /scratch2/mdorazi/Skill_Boundary_Detector
+train_gres: gpu:1  # GPU type is selected by slurm_profile partitions above.
+
+# SkillVLA PT/FT rollout eval: override the eval YAML's local GPU packing.
+# Separate one-GPU jobs; each GPU runs one model worker. Existing allocations
+# still use only their assigned GPU. These values do not affect training.
+server_eval_num_gpus: 4
+server_eval_max_workers_per_gpu: 1
+
 # Yonsei AI cluster (Slurm). Selected automatically when the checkout lives under a detect: prefix
 # (see ../libero/configs/src/global_config_loader.py); override with SBD_SERVER=yonsei. project_root = the checkout.
 # Keep this file flat (key: value / - item); pyyaml may be absent.

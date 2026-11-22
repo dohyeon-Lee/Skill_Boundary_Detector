@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Requeue a job that never starts making progress on its node.
 #
 # gpu_guard.sh catches a node whose CUDA is broken, but a GPU-free job never

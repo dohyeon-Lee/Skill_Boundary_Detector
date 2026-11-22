@@ -1,0 +1,61 @@
+# Dataset and transition randomization: ../stage1_common_config.yaml
+stage1_common: true
+stage1_component: Predictor
+mode: pt
+run:
+  suffix: ''
+warm_start:
+  predictor_checkpoint: ''
+skill_predictor:
+  train: true
+  mode: mode2
+  all_layers: true
+  freeze_vlm: false
+  lora:
+    enabled: false
+    targets: q,k,v,o
+    rank: 8
+    alpha: 16.0
+    dropout: 0.0
+  reader:
+    tokens: 4
+    depth: 2
+    heads: 8
+    deadzone_frac: 0.8
+  token_access:
+    image: true
+    language: true
+  spatial_target: uv
+  spatial_loss_weight: 1.0
+training:
+  dataloader:
+    batch_size: 16
+    workers: 8
+    gpus: 1
+  optimizer:
+    base_lr: 2.5e-05
+    predictor_lr_scale: 1.0
+    predictor_lora_lr_scale: 10.0
+    predictor_vlm_lr_scale: 1.0
+    grad_clip_norm: 1.0
+  gradient_checkpointing: false
+  schedule:
+    steps: 100000
+    lr_mode: warmup_constant
+    warmup_steps: 2500
+    lr_decay_steps: 50000
+    log_every: 100
+    save_every: 10000
+  keep_checkpoints: 1
+  protect_checkpoints:
+  - 50000
+  - 100000
+logging:
+  wandb:
+    enable: true
+    project: VLA_auxiliary_ABC
+slurm:
+  gres: gpu:1
+  cpus: 24
+  memory: 96G
+  time: '72:00:00'

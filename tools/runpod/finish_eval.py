@@ -38,7 +38,7 @@ exit_path=base.with_suffix('.exit')
 result={'exit': exit_path.read_text().strip() if exit_path.exists() else None}
 out=Path(job['eval_output']).resolve()
 out.relative_to(root)
-boundary='/skill_boundary_detection/outputs/' in str(out)
+boundary='/DP/eval/outputs/' in str(out) or '/skill_boundary_detection/outputs/' in str(out)
 if '/eval/outputs/' not in str(out) and not boundary: raise ValueError('Unexpected eval output path')
 result['output']=str(out)
 active=[]
@@ -56,10 +56,11 @@ for record in (root/'.cache/local_jobs').glob('*.pid'):
 result['active_jobs']=active
 if args.get('hashes') and result['exit']=='0':
     if boundary:
-        marker=out/'evaluation_complete.json'
+        assets=out/'src' if (out/'src/evaluation_complete.json').is_file() else out
+        marker=assets/'evaluation_complete.json'
         if not marker.is_file() or json.loads(marker.read_text()).get('kind')!='skill_boundary_detection':
             raise ValueError('Boundary evaluation completion marker missing')
-        if not all((out/name).is_file() for name in ('index.html','summary.json','threshold_statistics.json')):
+        if not (out/'index.html').is_file() or not all((assets/name).is_file() for name in ('summary.json','threshold_statistics.json')):
             raise ValueError('Boundary reports incomplete')
     elif not (out/'metrics/eval_info_merged.json').is_file():
         raise ValueError('Final merged metrics missing')

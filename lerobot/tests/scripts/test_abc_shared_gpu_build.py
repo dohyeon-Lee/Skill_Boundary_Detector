@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
 
 import pytest
 
@@ -27,6 +28,39 @@ RUNNER = _load(ABC_BUILD_SRC / "run_single_gpu_workers.py", "abc_single_gpu_work
 CONFIG = _load(ABC_CONFIG_SRC, "abc_train_skills_config")
 
 
+@pytest.mark.parametrize('mode', ['srun_existing', 'srun', 'sbatch'])
+def test_single_gpu_pipeline_uses_numeric_batch_ids_only_for_sbatch(tmp_path, mode):
+    source = (ABC_BUILD_SRC.parent / 'submit_build_data.sh').read_text()
+    start = source.index('if [ "${SKILLSET_SINGLE_GPU_WORKERS}" -gt 0 ]; then')
+    branch = source[start:source.index('\nelse\n', start)] + '\nfi\n'
+    harness = '''
+set -euo pipefail
+submit_job_scheduler() { echo slurm; }
+submit_job_slurm_mode() { echo "$TEST_MODE"; }
+submit_job() {
+  [ "$ABC_SINGLE_GPU_BUILD" = true ]
+  printf '%s\\n' "$@" > "$TEST_CAPTURE"
+  if [ "$TEST_MODE" != sbatch ]; then
+    for arg in "$@"; do [ "$arg" != --parsable ] || return 2; done
+  fi
+  echo submitted-test-session
+}
+SKILLSET_SINGLE_GPU_WORKERS=24
+ABC_EXPECTED_EPISODES=2203
+SCRIPT_DIR=/example/build_data
+GPU_ARGS=(--cpus-per-task=24 --gres=gpu:1)
+'''
+    capture = tmp_path / 'argv'
+    result = subprocess.run(['bash', '-c', harness + branch],
+        env={**os.environ, 'TEST_MODE': mode, 'TEST_CAPTURE': str(capture)},
+        capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    args = capture.read_text().splitlines()
+    assert ('--parsable' in args) == (mode == 'sbatch')
+    assert '--cpus-per-task=24' in args
+    assert args[-1] == '/example/build_data/src/build_skillset.sbatch'
+
+
 def test_abc_libero_standard_keeps_abc_terminal_masking() -> None:
     profile = CONFIG.SBD_PROFILES["libero_standard"]
 
@@ -36,6 +70,13 @@ def test_abc_libero_standard_keeps_abc_terminal_masking() -> None:
     assert profile["skillset_terminal_mask_frames"] == 0
     assert profile["skillset_terminal_mask_mode"] == "abc_terminal_release"
     assert profile["skillset_terminal_release_pre_offset_frames"] == 8
+
+
+def test_abc_standard_uses_the_same_odd_smoothing_window() -> None:
+    profile = CONFIG.SBD_PROFILES["abc_standard"]
+    assert profile["skillset_smooth_window"] == 7
+    assert profile["skillset_savgol_polyorder"] == 4
+    assert profile["skillset_score_power"] == 1.0
 
 
 @pytest.mark.parametrize("workers", [0, 1, 6])

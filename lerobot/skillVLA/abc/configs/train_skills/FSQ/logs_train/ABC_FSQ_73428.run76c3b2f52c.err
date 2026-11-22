@@ -1,0 +1,45 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: Currently logged in as: dohyeonlee (dohyeonlee-postech) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run oiqepdak
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data1/dohyeon/Skill_Boundary_Detector/lerobot/wandb/run-20261118_221438-oiqepdak
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run FSQ3333_contrastiveON_routeON_loss_abc_grab_clutter_absolute
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train_ABC
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train_ABC/runs/oiqepdak
+/data1/dohyeon/Skill_Boundary_Detector/lerobot/skillVLA/libero/configs/train_skills/FSQ/src/FSQ.py:842: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+wandb: updating run metadata
+wandb: uploading output.log; uploading wandb-summary.json; uploading config.yaml
+wandb: uploading history steps 1997-2000, summary, console lines 248-250
+wandb: 
+wandb: Run history:
+wandb: codebook/axis_0_boundary_margin_mean_pct ▁▅▆▇▇▇▇▇▇▇██████████████████████████████
+wandb:  codebook/axis_0_boundary_margin_p10_pct ▁▃▄▄▄▅▅▆▆▅▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇█████████████
+wandb:               codebook/axis_0_change_pct █▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:        codebook/axis_0_near_boundary_pct █▄▃▃▃▂▃▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:            codebook/axis_0_retention_pct ▁▅▄▇▆▇▆▆▆▇▇▇██▇▇▆▇▇▇▇▇▇█▇██▇███▇████████
+wandb: codebook/axis_1_boundary_margin_mean_pct ▁▂▄▄▄▅▅▅▅▅▆▆▆▆▆▆▆▆▆▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇██████
+wandb:  codebook/axis_1_boundary_margin_p10_pct ▁▂▃▄▄▄▅▄▅▅▅▅▅▅▆▆▆▆▇▇▇▇▇▆▇▇▇▇▇▇▇▇█▇██████
+wandb:               codebook/axis_1_change_pct █▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁
+wandb:        codebook/axis_1_near_boundary_pct █▅▄▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁▂▁▂▂▂▂▂▁▁▁▁▁▁▁▁▁
+wandb:            codebook/axis_1_retention_pct ▁▆▇█████████████████████████████████████
+wandb:                                     +200 ...
+wandb: 
+wandb: Run summary:
+wandb: codebook/axis_0_boundary_margin_mean_pct 86.31062
+wandb:  codebook/axis_0_boundary_margin_p10_pct 55.50351
+wandb:               codebook/axis_0_change_pct 0.31224
+wandb:        codebook/axis_0_near_boundary_pct 1.10484
+wandb:            codebook/axis_0_retention_pct 99.68776
+wandb: codebook/axis_1_boundary_margin_mean_pct 87.92722
+wandb:  codebook/axis_1_boundary_margin_p10_pct 61.23873
+wandb:               codebook/axis_1_change_pct 0.03603
+wandb:        codebook/axis_1_near_boundary_pct 0.7926
+wandb:            codebook/axis_1_retention_pct 99.96397
+wandb:                                     +200 ...
+wandb: 
+wandb: 🚀 View run FSQ3333_contrastiveON_routeON_loss_abc_grab_clutter_absolute at: https://wandb.ai/dohyeonlee-postech/VAE_train_ABC/runs/oiqepdak
+wandb: ⭐️ View project at: https://wandb.ai/dohyeonlee-postech/VAE_train_ABC
+wandb: Synced 5 W&B file(s), 0 media file(s), 0 artifact file(s) and 0 other file(s)
+wandb: Find logs at: ./wandb/run-20261118_221438-oiqepdak/logs

@@ -1,0 +1,22 @@
+# outputs 바로 아래의 eval 폴더명 두 개 이상. 적은 순서대로 좌우에 표시.
+eval_folders:
+  # - abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1
+  # - trans_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1 
+  # - GRUiid_small_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1
+  # - GRUiid_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1 ## TOP
+  # - GRUiid_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_2
+
+  # - GRUiid_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_pca_dataset_36_15_5_45_7_4_1_0.5_previous_action ## TOP
+  # - GRUiid_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_pca_dataset_36_15_5_45_7_4_1_0.5_current_gt  
+  # - trans_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_pca_dataset_36_15_5_45_7_4_1_0.5_current_gt
+  - trans_small_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_pca_dataset_36_15_5_45_7_4_1_0.5_current_gt
+  - trans_small_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_pca_dataset_36_15_5_45_7_4_2_0_current_gt
+  # - GRUiid_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1_0.1
+  # - GRUiid_base_abc_easy1k_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1_0.05
+  # - GRUiid_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1_0.05
+  # - trans_base_abc_easy1k_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_1_0.05
+  # - GRUiid_base_abc_grab_clutter_obs60_future36_all_tasks_5ep_100k_36_15_5_45_7_4_2_0.05
+
+  # - GRUiid_base_abc_grab_clutter_obs60_future1_all_tasks_5ep_100k_1_15_5_45_7_4_1
+  # - trans_base_abc_grab_clutter_obs60_future1_all_tasks_5ep_100k_1_15_5_45_7_4_1
+output_name: compare

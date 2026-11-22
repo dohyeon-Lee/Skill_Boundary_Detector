@@ -1,16 +1,22 @@
-# SBD Desk — Server Sync / Hugging Face / Slurm
+# SBD Desk — Server Sync / Hugging Face / Slurm / RunPod / Yonsei
 
 외부 **rllab 서버에서 실행**하는 로컬 웹 앱입니다. 터미널 메뉴 대신 여러 폴더를
 선택하고, 마지막 확인 화면에서 한 번에 전송합니다. 서버 파일을 다루는 도구이므로
 공개 사이트에 배포하지 않고 `127.0.0.1`에만 바인딩합니다.
 
 실행 명령과 접속 포트는 하나입니다. **서버 간 전송**(`/`),
-**Hugging Face**(`/hf/`), **Slurm Desk**(`/slurm/`) 탭을 제공합니다.
+**Hugging Face**(`/hf/`), **Slurm Desk**(`/slurm/`), **RunPod Desk**(`/runpod/`),
+**Yonsei Desk**(`/yonsei/`) 탭을 제공합니다.
 실행 스크립트는 상속된 HTTP/HTTPS/ALL 프록시 설정을 UI 프로세스에서만 제외하고 직접 접속합니다.
 탭을 바꿔도 서버의 실행/대기 작업은 계속됩니다. HF 업로드·다운로드·삭제·자동
 업로드 기능은 [HF 사용법](HF_README.md)을 따릅니다. Slurm 잡·개별 학습 종료 알림은
 [Slurm 사용법](../slurm_monitor/README.md)을 따릅니다. Slurm이 없는 RunPod에서도
 서버 전송과 HF 기능은 계속 사용 가능합니다.
+
+Yonsei Desk는 `--yonsei`로 제출한 평가의 Slurm 상태, 완료 에피소드 수와
+현재/모델별/task별 성공률을 표시합니다. 성공적으로 끝난 평가 결과는 자동으로
+같은 로컬 eval 출력 경로에 `_yonsei` 접미사를 붙여 회수합니다. 브라우저를 닫아도
+감시·회수 프로세스는 계속됩니다. [Yonsei 실행·회수 설명](../remote/README.md)을 참고하세요.
 
 ## 실행 / 접속
 

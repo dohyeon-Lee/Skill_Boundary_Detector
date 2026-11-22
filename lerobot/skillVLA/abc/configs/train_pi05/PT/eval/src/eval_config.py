@@ -104,6 +104,11 @@ class EvalConfig:
     slurm_cpus: int
     slurm_memory: str
     slurm_time: str
+    skillvla: dict[str, Any] | None = None
+
+    @property
+    def artifact_dir(self) -> Path:
+        return self.output_dir / "src" if self.policy_type == "skillvla" else self.output_dir
 
     def json_dict(self) -> dict[str, Any]:
         return _jsonable(asdict(self))
@@ -155,15 +160,15 @@ def load_eval_config(path: Path | str = DEFAULT_CONFIG_PATH) -> EvalConfig:
     slurm = _mapping(local.get("slurm"), "slurm")
 
     policy_type = str(policy.get("type", "hold")).strip().lower()
-    if policy_type not in {"hold", "pi05"}:
-        raise ValueError(f"unsupported policy.type {policy_type!r}; available: hold, pi05")
+    if policy_type not in {"hold", "pi05", "skillvla"}:
+        raise ValueError(f"unsupported policy.type {policy_type!r}; available: hold, pi05, skillvla")
     action_chunk_size = _positive_int(
         policy.get("action_chunk_size", 15), "policy.action_chunk_size"
     )
     model_chunk_size = _positive_int(
         policy.get("model_chunk_size", 30), "policy.model_chunk_size"
     )
-    if action_chunk_size > model_chunk_size:
+    if policy_type != "skillvla" and action_chunk_size > model_chunk_size:
         raise ValueError("policy.action_chunk_size cannot exceed policy.model_chunk_size")
     policy_dtype = str(policy.get("dtype", "bfloat16")).strip().lower()
     if policy_dtype not in {"bfloat16", "float32"}:
@@ -183,11 +188,32 @@ def load_eval_config(path: Path | str = DEFAULT_CONFIG_PATH) -> EvalConfig:
     backend = str(rollout.get("backend", "mjwarp")).strip().lower()
     if backend not in {"mjwarp", "mujoco", "auto"}:
         raise ValueError("rollout.backend must be mjwarp, mujoco, or auto")
+    skillvla = None
+    if policy_type == "skillvla":
+        runtime_src = CONFIGS_DIR / "train_skillVLA/PT/eval/src"
+        if str(runtime_src) not in sys.path:
+            sys.path.insert(0, str(runtime_src))
+        from skillvla_config import resolve_skillvla
+        skillvla = resolve_skillvla(policy, global_config, project_root)
+        if skillvla["condition_source"] == "gt" and tasks != ("grab_clutter",):
+            raise ValueError("ABC GT scene restoration currently supports tasks: [grab_clutter]")
+        checkpoint = Path(skillvla["vsa"])
+        if backend != "mujoco":
+            raise ValueError("ABC SkillVLA evaluation requires rollout.backend: mujoco")
+        if action_chunk_size > skillvla["chunk_size"]:
+            raise ValueError("action_chunk_size exceeds the VSA checkpoint chunk_size")
+        model_chunk_size = skillvla["chunk_size"]
 
     num_worlds = _positive_int(rollout.get("num_worlds", 2), "rollout.num_worlds")
     parallel_worlds = _positive_int(
         rollout.get("parallel_worlds", num_worlds), "rollout.parallel_worlds"
     )
+    if skillvla and skillvla.get("condition_source") == "gt":
+        ids = skillvla.get("gt_episode_ids")
+        if ids is not None and len(ids) != num_worlds:
+            raise ValueError("gt_episode_ids must contain exactly rollout.num_worlds IDs")
+        if randomization := rollout.get("randomization"):
+            raise ValueError("GT evaluation restores recorded scenes; rollout.randomization must be null")
     if backend in {"mjwarp", "auto"} and num_worlds % parallel_worlds:
         raise ValueError("rollout.num_worlds must be divisible by rollout.parallel_worlds")
 
@@ -195,10 +221,20 @@ def load_eval_config(path: Path | str = DEFAULT_CONFIG_PATH) -> EvalConfig:
     if randomization is not None and not isinstance(randomization, dict):
         raise ValueError("rollout.randomization must be null or a mapping")
 
-    output_root = Path(str(output.get("root", "lerobot/skillVLA/abc/configs/train_pi05/PT/eval/outputs")))
+    default_output = ("lerobot/skillVLA/abc/configs/train_skillVLA/PT/eval/outputs" if policy_type == "skillvla"
+                      else "lerobot/skillVLA/abc/configs/train_pi05/PT/eval/outputs")
+    output_root = Path(str(output.get("root", default_output)))
     if not output_root.is_absolute():
         output_root = project_root / output_root
     run_name = str(output.get("run_name", "hold_smoke")).strip()
+    if policy_type == "skillvla" and run_name == "auto":
+        import hashlib
+        steps = {key: int(Path(skillvla[key]).parent.name) for key in ("vsa", "predictor", "terminator") if key in skillvla}
+        contract = {"skillvla": skillvla, "policy": {k: v for k, v in policy.items() if k != "skillvla"},
+                    "rollout": rollout, "camera": camera, "video": video, "tasks": tasks, "dataset": dataset_name}
+        digest = hashlib.sha256(json.dumps(contract, sort_keys=True).encode()).hexdigest()[:8]
+        condition = "GT" if skillvla["condition_source"] == "gt" else f"pred{steps['predictor']//1000}k"
+        run_name = f"skillvla_vsa{steps['vsa']//1000}k_{condition}_term{steps['terminator']//1000}k_{num_worlds}ep_{digest}"
     if not run_name or run_name in {".", ".."} or "/" in run_name:
         raise ValueError("output.run_name must be one nonempty folder name")
 
@@ -247,6 +283,7 @@ def load_eval_config(path: Path | str = DEFAULT_CONFIG_PATH) -> EvalConfig:
         slurm_cpus=_positive_int(slurm.get("cpus", 8), "slurm.cpus"),
         slurm_memory=str(slurm.get("memory", "32G")),
         slurm_time=str(slurm.get("time", "00:15:00")),
+        skillvla=skillvla,
     )
 
 

@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # Submit DP (Diffusion Policy) training as a Slurm job — SBD 파이프라인의 Stage 0.
 # (구명 submit_train_dp_dino.sh — DINO 인코더/precompute 은퇴로 rename. dp_vision: resnet|state.)
 #
@@ -18,6 +22,9 @@
 #   TRAIN_DATA=abc_toy ./submit_train_dp.sh      # dataset 오버라이드
 
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMON_SRC_DIR="${SCRIPT_DIR}/../src"
@@ -71,6 +78,9 @@ echo "  UNet    : ${DP_UNET_SIZE} ${DP_DOWN_DIMS_ARG}"
 echo "  AMP     : ${DP_AMP} (bf16 when enabled)"
 echo "  proprio : ${DP_PROPRIO_GROUNDING}"
 echo "  history : ${DP_HISTORY_ENCODER} (dim=${DP_HISTORY_ENCODER_DIM})"
+if [ "${DP_HISTORY_ENCODER}" = gru ]; then
+  echo "  GRU     : ${DP_HISTORY_GRU_TRAINING}, layers=${DP_HISTORY_GRU_LAYERS}, stateful=${DP_HISTORY_GRU_STATEFUL}"
+fi
 echo "  slurm   : partition=${DP_PARTITION} qos=${DP_QOS} gres=${DP_GRES}"
 
 if [ "${TRAIN_DP}" != "true" ]; then

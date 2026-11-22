@@ -1,0 +1,55 @@
+dataset: abc_sim_all
+tasks: [grab_clutter]
+
+policy:
+  type: skillvla
+  skillvla:
+    condition_source: gt         # gt=데모 스킬·양팔 종료 목표 / predictor=학습된 Predictor
+    gt_dataset: dataset_ABC/skillvla/abc_sim_all/FSQ3332_contrastive_1000_pt/skillvla
+    gt_episode_ids: null          # null: seed로 num_worlds개 선택. 목록 지정 시 num_worlds개 ID 필요.
+    vsa:
+      run_name: bs16_abc_sim_all_FSQ3332_contrastive_1000_pt_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_plan30_w1_base
+      checkpoint: 30000
+    predictor:                   # condition_source: gt 에서는 로딩하지 않음.
+      run_name: bs16_FSQ3332_contrastive_1000_pt_abc_sim_all_predictor_uv_fullvlm_mode2
+      checkpoint: last
+    terminator:
+      run_name: bs32_FSQ3332_contrastive_1000_pt_abc_sim_all_terminator_Term_Token_1_dinoS_freeze_k15
+      checkpoint: 100000
+    termination_threshold: 0.5
+    min_skill_steps: 0
+    max_skill_steps: 300          # 10 s at 30 Hz; timeout also advances the skill.
+    fullskill_overlay: true      # 체크포인트의 joint plan -> FK -> Top-view 양팔 궤적.
+  action_chunk_size: 15          # At most 15 steps; termination interrupts immediately.
+  num_inference_steps: 10
+  device: cuda
+  dtype: bfloat16
+
+rollout:
+  backend: mujoco
+  num_worlds: 50
+  parallel_worlds: 4
+  seed: 20261113
+  max_steps: 3540
+  stop_on_success: true
+  randomization: null
+
+camera:
+  names: [top, left, right]
+  height: 168
+  width: 224
+
+video:
+  enable: true
+  fps: 30
+  every_n_steps: 1
+
+output:
+  root: lerobot/skillVLA/abc/configs/train_skillVLA/PT/eval/outputs
+  run_name: auto                # Checkpoint steps + setting hash; reuse completed episodes only for the same config.
+
+slurm:
+  gres: "gpu:1"
+  cpus: 16
+  memory: 96G
+  time: "12:00:00"

@@ -156,6 +156,20 @@ function renderEvaluation(card,job) {
     container.querySelector(".evaluation-summary").textContent="평가 진행 상황 · 확인 중";
     add(body,"p",job.evaluation_error,"muted");return;
   }
+  if(progress.kind==="sbd") {
+    const final=progress.phase==="final";
+    container.querySelector(".evaluation-summary").textContent=`DP eval · ${progress.phase_label}${final?"":` · ${pct(progress.percent)}`}`;
+    add(body,"p",`평가 ${progress.episodes}개 에피소드 · 캐시 재사용 포함 · 단계별 진행률`,"muted");
+    if(progress.cache_conflict)add(body,"p","기존 캐시의 모델·에피소드 설정이 달라 재사용할 수 없습니다.","eval-warning");
+    for(const stage of progress.stages) {
+      const status=stage.state==="done"?"완료":stage.state==="running"?"진행 중":"대기";
+      add(body,"p",`${stage.label} · ${stage.completed}/${stage.total} · ${status}`,"eval-count");
+      const meter=document.createElement("progress");meter.max=100;
+      if(stage.state!=="running"||stage.completed>0)meter.value=stage.percent??0;
+      meter.setAttribute("aria-label",stage.label);body.append(meter);
+    }
+    return;
+  }
   const final=progress.phase==="final";
   container.querySelector(".evaluation-summary").textContent=`${final?"평가 결과":progress.at_least?"확인된 평가 진행":"평가 진행"} · ${progress.completed_episodes} / ${progress.total_episodes}회 · ${pct(progress.percent)} · ${final?"성공률":"중간 성공률"} ${pct(progress.success_pct)}`;
   const bar=(parent,item)=>{

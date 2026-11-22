@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Submit SkillVLA Stage-1 VSA training (policy.type=skill_expert).
 # Usage: ./submit_train.sh [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk|arch5|arch5_skill|arch5_skill_chunk|arch6|arch6_skill|arch6_skill_chunk]
 # Also accepts fullskill_1/2, fullskill_vis_{1,2}_{firstlayer,lastlayer},
@@ -10,13 +14,37 @@
 #   (login) resolve config + check the skillvla dataset → sbatch train.sbatch
 # The skillvla dataset comes from configs/train_skillVLA/build_data (run that first if missing).
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # PT/VSA
 STAGE1_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"                  # shared Stage-1 code: PT/src
 SRC_DIR="${STAGE1_DIR}/src"
 CONFIG_PATH="${STAGE1_TRAIN_CONFIG:-${SCRIPT_DIR}/vsa_train_config.yaml}"
+VSA_POSITIONAL_ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --config)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "--config requires a YAML path." >&2
+        exit 2
+      fi
+      CONFIG_PATH="$2"
+      shift 2
+      ;;
+    --config=*) CONFIG_PATH="${1#--config=}"; shift ;;
+    *) VSA_POSITIONAL_ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${VSA_POSITIONAL_ARGS[@]}"
+CONFIG_PATH="$(realpath -- "${CONFIG_PATH}")"
+if [ ! -f "${CONFIG_PATH}" ]; then
+  echo "VSA YAML not found: ${CONFIG_PATH}" >&2
+  exit 2
+fi
 if [ "$#" -gt 1 ]; then
-  echo "Usage: $0 [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk|arch5|arch5_skill|arch5_skill_chunk|arch6|arch6_skill|arch6_skill_chunk]" >&2
+  echo "Usage: $0 [--JOB_ID] [--config YAML] [architecture]" >&2
   exit 2
 fi
 ARCHITECTURE_OVERRIDE="${1:-${STAGE1_ARCHITECTURE_OVERRIDE:-}}"
@@ -115,13 +143,18 @@ echo "  expert   : full fine-tuning from ${PI_BASE}"
 echo "  output   : ${PT_OUTPUT_DIR}"
 echo "  slurm    : partition=${TRAIN_PARTITION} qos=${TRAIN_QOS} gres=${TRAIN_GRES} mem=${TRAIN_MEM}"
 
+# Freeze the shell too: existing allocations execute it directly, so later
+# in-place repository edits could otherwise corrupt a running Bash reader.
+STAGE1_JOB_SCRIPT="$(dirname "${CONFIG_PATH}")/train.sbatch"
+cp "${SRC_DIR}/train.sbatch" "${STAGE1_JOB_SCRIPT}"
+bash -n "${STAGE1_JOB_SCRIPT}"
+
 STAGE1_GROUP_WORKER_SCRIPT=""
 STAGE1_GROUP_RUNNER=""
 if [ "${STAGE1_GROUP_RUNS_JSON}" != "[]" ]; then
   # Freeze worker launchers as well as YAML while this allocation waits in queue.
-  STAGE1_GROUP_WORKER_SCRIPT="$(dirname "${CONFIG_PATH}")/train_worker.sbatch"
+  STAGE1_GROUP_WORKER_SCRIPT="${STAGE1_JOB_SCRIPT}"
   STAGE1_GROUP_RUNNER="$(dirname "${CONFIG_PATH}")/run_vsa_group.py"
-  cp "${SRC_DIR}/train.sbatch" "${STAGE1_GROUP_WORKER_SCRIPT}"
   cp "${STAGE1_DIR}/Terminator/src/run_predictor_group.py" "${STAGE1_GROUP_RUNNER}"
   echo "  parallel : one allocation; all architecture.name entries share its GPU"
   echo "  runs     : ${STAGE1_GROUP_RUNS_JSON}"
@@ -133,4 +166,4 @@ STAGE1_ARCHITECTURE_OVERRIDE="${ARCHITECTURE_OVERRIDE}" \
 STAGE1_SRC_DIR="${SRC_DIR}" \
 STAGE1_GROUP_WORKER_SCRIPT="${STAGE1_GROUP_WORKER_SCRIPT}" \
 STAGE1_GROUP_RUNNER="${STAGE1_GROUP_RUNNER}" \
-  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${STAGE1_JOB_SCRIPT}"

@@ -267,13 +267,13 @@ def _model_entries(config: dict) -> list[dict[str, str]]:
     for index, raw_entry in enumerate(raw_entries):
         if not isinstance(raw_entry, dict):
             raise ValueError(
-                f"fsq_eval_models[{index}] must be a mapping with run_name and model_name."
+                f"fsq_eval_models[{index}] must be a mapping with run_name."
             )
         run_name = str(raw_entry.get("run_name") or "").strip()
-        model_name = str(raw_entry.get("model_name") or "").strip()
-        if not run_name or not model_name:
+        model_name = str(raw_entry.get("model_name") or "").strip() or run_name
+        if not run_name:
             raise ValueError(
-                f"fsq_eval_models[{index}] requires non-empty run_name and model_name."
+                f"fsq_eval_models[{index}] requires non-empty run_name."
             )
         entries.append({"run_name": run_name, "model_name": model_name})
     run_names = [entry["run_name"] for entry in entries]

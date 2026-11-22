@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Submit the FSQ-only, GT-action skill replay evaluator (one job array per run).
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="${FSQ_GT_REPLAY_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 source "${SCRIPT_DIR}/../../../src/submit_job.sh"
@@ -74,6 +81,12 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
   # inherits a GPU QOS, although its computation remains CPU-only.
   DEPENDENCY_ARGS=()
   if [ -n "${FSQ_MISSING_LATENTS}" ]; then
+    if [ -n "${SLURM_JOB_ID:-}" ]; then
+      echo "  latents  : encoding inside allocation ${SLURM_JOB_ID} before CPU replay"
+      FSQ_GT_REPLAY_CONFIG="${CONFIG_PATH}" \
+        FSQ_LATENTS_CHECKPOINTS="${FSQ_MISSING_LATENTS}" \
+        bash "${SRC_DIR}/encode_latents.sbatch"
+    else
     PREPASS_ID="$(
       FSQ_GT_REPLAY_DIR="${SCRIPT_DIR}" FSQ_GT_REPLAY_CONFIG="${CONFIG_PATH}" \
         FSQ_GT_REPLAY_RUN="${RUN_NAME}" \
@@ -93,6 +106,7 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
     )"
     echo "  latents  : ${FSQ_MISSING_LATENTS_COUNT} checkpoint(s) to encode -> GPU job ${PREPASS_ID}"
     DEPENDENCY_ARGS=(--dependency="afterok:${PREPASS_ID}")
+    fi
   else
     echo "  latents  : all present, no GPU needed"
   fi
@@ -132,9 +146,8 @@ for RUN_NAME in "${RUN_NAMES[@]}"; do
     for ((INDEX=0; INDEX<TOTAL_JOBS; INDEX++)); do
       FSQ_GT_REPLAY_ARRAY_INDEX="${INDEX}" \
         FSQ_GT_REPLAY_DIR="${SCRIPT_DIR}" FSQ_GT_REPLAY_CONFIG="${CONFIG_PATH}" \
-        srun --exclusive --nodes=1 --ntasks=1 \
-          ${EVAL_REPLAY_GRES:+--gres="${EVAL_REPLAY_GRES}"} \
-          "${SRC_DIR}/run.sbatch" &
+        SBD_SRUN_SESSION=1 \
+        bash "${SRC_DIR}/run.sbatch" &
       PIDS+=("$!")
       if [ "${#PIDS[@]}" -eq "${EVAL_MAX_CONCURRENT}" ] || [ "${INDEX}" -eq "$((TOTAL_JOBS - 1))" ]; then
         for PID in "${PIDS[@]}"; do wait "${PID}" || STATUS=1; done

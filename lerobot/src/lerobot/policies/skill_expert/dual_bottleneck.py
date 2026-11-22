@@ -1,7 +1,7 @@
 """Two current-observation bottlenecks over a single pretrained VLM forward.
 
-The shared Action Expert prefix also learns one independent 30-token fullskill
-flow point. Action inference never constructs that auxiliary denoising chain.
+The shared Action Expert learns an independent fullskill flow point, read out
+after L9 by default or L18 on opt-in. Action inference skips that denoising chain.
 """
 from __future__ import annotations
 
@@ -86,7 +86,9 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
 
     def _on_final_bottleneck_latent(self, packed):
         lower, upper = packed.chunk(2, dim=1)
-        self._last_lower_latent = lower
+        # Keep the historical cache/API for visualization. The final readout
+        # needs both towers, while the default prefix only needs the lower one.
+        self._last_lower_latent = packed if self.config.dual_fullskill_readout == "final" else lower
         self._final_lower_aux_query = (
             lower[:, :self._alignment_token_count] if self.training else None
         )
@@ -193,6 +195,14 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
     def _run_expert_with_layerwise_latents(self, noisy_actions, expert_condition,
                                          expert_skill, layer_latents, *, return_all_layers=False):
         lower, upper = layer_latents[-1].chunk(2, dim=1)
+        if self.config.dual_bottleneck_layerwise:
+            # Keep all depths for the auxiliary flow as well as the deployed
+            # action route. The final visual heads
+            # continue to supervise only the final bottleneck queries.
+            self._last_lower_latent = torch.stack(
+                [packed if self.config.dual_fullskill_readout == "final" else packed.chunk(2, dim=1)[0]
+                 for packed in layer_latents], dim=1,
+            )
         hidden = self._action_tokens(noisy_actions)
         mask, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
         late_condition = self._action_layer_condition(self.split_layer, expert_condition)
@@ -200,6 +210,8 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         depth = len(self.gemma_expert.model.layers)
         for index in range(depth):
             early = index < self.split_layer
+            if self.config.dual_bottleneck_layerwise:
+                lower, upper = layer_latents[index].chunk(2, dim=1)
             condition = expert_condition if early else late_condition
             args = (index, hidden, mask, positions, condition,
                     expert_skill if early else None, lower if early else upper, rotary)
@@ -219,14 +231,23 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
         previous_time = self._split_time_condition
         try:
             condition = self._expert_condition(time, skill_code=skill_code, end_pose=end_pose)
+            late_condition = self._action_layer_condition(self.split_layer, condition)
         finally:
             self._split_time_condition = previous_time
         _, skill = self._skill_broadcasts(skill_code)
         hidden = inputs.to(self.working_dtype)
         mask, positions, rotary = self._sequence_geometry(hidden, self.gemma_expert.model)
-        for index in range(self.split_layer):
-            args = (index, hidden, mask, positions, condition, skill, lower_latent, rotary)
-            if self._checkpoint_layer("skill_planner", index, self.split_layer):
+        final_readout = self.config.dual_fullskill_readout == "final"
+        depth = len(self.gemma_expert.model.layers) if final_readout else self.split_layer
+        for index in range(depth):
+            early = index < self.split_layer
+            latent = lower_latent[:, index] if lower_latent.ndim == 4 else lower_latent
+            if final_readout:
+                lower, upper = latent.chunk(2, dim=1)
+                latent = lower if early else upper
+            args = (index, hidden, mask, positions, condition if early else late_condition,
+                    skill if early else None, latent, rotary)
+            if self._checkpoint_layer("skill_planner", index, depth):
                 hidden = torch.utils.checkpoint.checkpoint(
                     self._expert_layer_with_latent_bridge, *args,
                     use_reentrant=False, preserve_rng_state=True,

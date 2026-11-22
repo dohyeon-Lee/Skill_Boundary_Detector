@@ -460,6 +460,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
     """Return whether a target tensor is intentionally new relative to pi0.5."""
     if config.uses_pi05_vlm_vision and key.startswith("model.cond_encoder.vlm."):
         return False
+    if config.vlm_termination_enabled and key.startswith("model.vlm_termination_head."):
+        return True
     if config.uses_dual_bottleneck and key.startswith("model.lower_"):
         return True
     if config.dual_uses_start_proprio and key.startswith("model.start_proprio_condition."):
@@ -649,6 +651,7 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
 
 
 _PREDICTOR_CHECKPOINT_CONTRACT_FIELDS = (
+    "bimanual_spatial_auxiliary",
     "skill_vocab_size",
     "skill_fsq_levels",
     "skill_predictor_vlm_variant",
@@ -692,6 +695,7 @@ _PREDICTOR_VLM_ADAPTATION_FIELDS = (
     "skill_predictor_lora_dropout",
 )
 _PREDICTOR_CHECKPOINT_DEFAULTS = {
+    "bimanual_spatial_auxiliary": False,
     # Backward compatibility for predictor checkpoints created before the
     # full-VLM and focus-UV probes existed.
     "skill_predictor_freeze_vlm": True,
@@ -5129,6 +5133,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )[..., :real_dim]
             if self.config.uses_dual_bottleneck:
                 independent_flow_loss = self.model.take_fullskill_flow_loss()
+        vlm_term_per_sample, vlm_term_metrics = None, {}
+        if self.config.vlm_termination_enabled:
+            if not action_only:
+                from .vlm_termination import vlm_termination_loss
+                vlm_term_per_sample, vlm_term_metrics = vlm_termination_loss(
+                    self.model, self.config, batch, base_state,
+                )
+            else:
+                self.model.take_vlm_termination_outputs()
         chunk_end_state_loss = None
         chunk_end_state_per_sample = None
         chunk_end_state_mae = None
@@ -5483,6 +5496,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             termination_weight = float(self.config.bottleneck_termination_loss_weight)
             action_objective = action_objective + termination_weight * termination_loss
             objective_per_sample = objective_per_sample + termination_weight * termination_per_sample
+        if vlm_term_per_sample is not None:
+            weighted = self.config.vlm_termination_loss_weight * vlm_term_per_sample
+            action_objective = action_objective + weighted.mean()
+            objective_per_sample = objective_per_sample + weighted
+            vlm_term_metrics["vlm_termination/weighted"] = weighted.detach().mean().item()
+            vlm_term_metrics["vlm_termination/weight"] = self.config.vlm_termination_loss_weight
         if not action_only and patch_align_loss is not None:
             action_objective = action_objective + (
                 float(getattr(self.config, "patch_alignment_objective_weight", self.config.wrist_patch_align_loss_weight)) * patch_align_loss
@@ -5503,6 +5522,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
                    for k, v in xyz_metrics.items()},
             }
         loss_dict = {
+            **vlm_term_metrics,
             **bspline_metrics,
             **vision_xyz_metrics,
             "action_loss": action_loss.detach().item(),
@@ -5922,6 +5942,18 @@ class SkillExpertPolicy(PreTrainedPolicy):
             skill_code, end_pose, start_latent=start_latent,
             **({"batch_indices": batch_indices} if self.config.uses_dual_bottleneck else {}),
         )
+
+    @torch.no_grad()
+    def predict_termination_probability(self, batch: dict) -> Tensor:
+        """Evaluate the integrated head on current observations, without action denoising."""
+        if not self.config.vlm_termination_enabled:
+            raise RuntimeError("This checkpoint has no integrated VLM termination head.")
+        self.eval()
+        state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
+        code = self._skill_code(batch)
+        goal = self._skill_delta_goal(batch)
+        memory = self.model._condition_tokens(self._collect_images(batch))
+        return self.model.vlm_termination_from_image_tokens(memory, state, code, goal).sigmoid()
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:

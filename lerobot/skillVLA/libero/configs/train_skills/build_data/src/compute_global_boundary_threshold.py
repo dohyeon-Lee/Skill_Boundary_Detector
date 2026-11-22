@@ -67,6 +67,7 @@ def main() -> None:
         )
 
     total, count = 0.0, 0
+    initial_masks: set[int] = set()
     episode_ids: set[int] = set()
     skipped_episode_ids: set[int] = set()
     for marker_path in too_short_paths:
@@ -86,17 +87,23 @@ def main() -> None:
                 validate_curve(curve, contract, curve_path)
             ep_id = int(curve["episode_id"])
             values = np.asarray(curve["sg_vals"], dtype=np.float64)
+            valid_start = int(np.asarray(curve["threshold_valid_start"]).item()) if "threshold_valid_start" in curve else 0
+            initial_mask = int(np.asarray(curve["initial_mask_frames"]).item()) if "initial_mask_frames" in curve else 0
+            initial_masks.add(initial_mask)
             valid_count = (
                 int(np.asarray(curve["threshold_valid_count"]).item())
                 if "threshold_valid_count" in curve
                 else len(values)
             )
-            if not 1 <= valid_count <= len(values):
+            if not 0 <= valid_start < valid_count <= len(values):
                 raise RuntimeError(
                     f"Invalid threshold_valid_count={valid_count} for "
                     f"{len(values)} points: {curve_path}"
                 )
-            values = values[:valid_count]
+            if initial_mask > 0:
+                if "replan_ts" not in curve or valid_start != int(np.searchsorted(curve["replan_ts"], initial_mask, side="left")):
+                    raise RuntimeError(f"Missing/inconsistent initial mask indices: {curve_path}")
+            values = values[valid_start:valid_count]
         if ep_id in episode_ids:
             raise RuntimeError(f"Duplicate episode curve for ep{ep_id:05d}: {curve_path}")
         if ep_id in skipped_episode_ids:
@@ -111,6 +118,8 @@ def main() -> None:
 
     if count == 0:
         raise RuntimeError(f"No replanning values found under {curves_dir}")
+    if len(initial_masks) != 1:
+        raise RuntimeError("Cannot mix curves with different initial history masks.")
     global_mean = total / count
     if args.threshold_scale <= 0.0:
         raise ValueError("threshold_scale must be positive.")
@@ -143,6 +152,7 @@ def main() -> None:
             "denoise_output": args.denoise_output,
             "score_metric": args.score_metric,
             "score_power": args.score_power,
+            "initial_mask_frames": next(iter(initial_masks)),
             "terminal_mask_frames": args.terminal_mask_frames,
             "terminal_mask_mode": args.terminal_mask_mode,
             "terminal_release_pre_offset_frames": (

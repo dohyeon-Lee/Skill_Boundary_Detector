@@ -250,6 +250,31 @@ def _query_vf_chunks(
         return selected.cpu().numpy()
 
 
+def _sample_pure_noise_trajectory(policy, global_cond, initial_noise, eval_at_step=7):
+    """One full DDIM trajectory: intermediate x0-hat and final generated actions.
+
+    The supplied fixed N(0,I) draws are independent of demonstration actions.
+    Index 7 denotes the eighth UNet call in the ten-step inference schedule.
+    """
+    import torch
+
+    scheduler = policy.diffusion.noise_scheduler
+    if len(scheduler.timesteps) != 10 or int(eval_at_step) != 7:
+        raise ValueError("pure_noise requires a 10-step schedule and eval_at_step=7")
+    with torch.no_grad():
+        sample = initial_noise.clone()
+        condition = global_cond.expand(sample.shape[0], -1)
+        snapshot = None
+        for index, timestep in enumerate(scheduler.timesteps):
+            batch_t = torch.full((len(sample),), timestep, dtype=torch.long, device=sample.device)
+            prediction = policy.diffusion.unet(sample, batch_t, global_cond=condition)
+            update = scheduler.step(prediction, timestep, sample)
+            if index == int(eval_at_step):
+                snapshot = update.pred_original_sample.detach().clone()
+            sample = update.prev_sample
+        return snapshot.cpu().numpy(), sample.cpu().numpy()
+
+
 def _make_scheduler_gaussian_probes(
     policy,
     normalized_demo_chunk: np.ndarray,
@@ -325,6 +350,18 @@ def _aligned_action_chunk(
         raise ValueError("Cannot build an action chunk from an empty episode.")
     indices = anchor + np.asarray(action_delta_indices, dtype=np.int64)
     return actions[np.clip(indices, 0, len(actions) - 1)].copy()
+
+
+def _previous_action_probe_center(
+    normalized_chunk: np.ndarray,
+    previous_normalized_chunk: np.ndarray,
+    future_start: int,
+    future_horizon: int,
+) -> np.ndarray:
+    """Hold the last observed action across every predicted future slot."""
+    center = normalized_chunk.copy()
+    center[future_start:future_start + future_horizon] = previous_normalized_chunk[future_start]
+    return center
 
 
 class EpisodeTooShortError(ValueError):
@@ -492,20 +529,15 @@ def run_vf_analysis(
             f"[1, {future_horizon}], got {descriptor_horizon}."
         )
     scheduler_gaussian_center = str(scheduler_gaussian_center).strip().lower()
-    if scheduler_gaussian_center not in {"current_gt", "previous_action"}:
+    if scheduler_gaussian_center not in {"current_gt", "previous_action", "pure_noise"}:
         raise ValueError(
-            "scheduler_gaussian_center must be current_gt|previous_action, got "
+            "scheduler_gaussian_center must be current_gt|previous_action|pure_noise, got "
             f"{scheduler_gaussian_center!r}."
         )
-    if scheduler_gaussian_center == "previous_action":
+    if scheduler_gaussian_center in {"previous_action", "pure_noise"}:
         if probe_generation != "scheduler_gaussian":
             raise ValueError(
-                "previous_action probe centering is defined only for scheduler_gaussian probes."
-            )
-        if descriptor_horizon != 1:
-            raise ValueError(
-                "The initial previous-action experiment requires descriptor_temporal_length=1; "
-                f"got {descriptor_horizon}."
+                "previous_action/pure_noise are defined only for scheduler_gaussian probes."
             )
     if len(target_action_delta_indices) != horizon:
         raise ValueError(
@@ -565,6 +597,7 @@ def run_vf_analysis(
     pred_mse_list = [] if compute_pred_mse else None
     denoising_gain_list, delta_bic_list = [], []
     input_descriptor_clouds = []
+    final_descriptor_clouds = []
     previous_action_descriptors = []
     bic_k1_list, bic_best_multi_list, bic_best_k_list = [], [], []
     action_dim = gt_actions.shape[1]
@@ -602,7 +635,7 @@ def run_vf_analysis(
     elif probe_type != PROBE_SPHERICAL_XYZ:
         raise ValueError(f"Unsupported probe type: {probe_type}")
 
-    def _build_obs_batch(t: int) -> dict:
+    def _build_obs_batch(t: int, *, single_step: bool = False) -> dict:
         """replan step t에서 쓸 (1, n_obs_steps, ...) 배치 구성.
         populate_queues와 동일하게: 히스토리 부족 시 첫 프레임으로 패딩.
         """
@@ -616,8 +649,8 @@ def run_vf_analysis(
                 history[-len(valid) :] = valid
             return {OBS_ACTION_HISTORY: torch.from_numpy(history).unsqueeze(0).to(device)}
 
-        indices = list(range(max(0, t - n_obs_steps + 1), t + 1))
-        pad = n_obs_steps - len(indices)
+        indices = [t] if single_step else list(range(max(0, t - n_obs_steps + 1), t + 1))
+        pad = 0 if single_step else n_obs_steps - len(indices)
         indices = [indices[0]] * pad + indices  # 앞쪽 패딩
 
         obs_states = []
@@ -644,11 +677,22 @@ def run_vf_analysis(
         # state_only: batch holds OBS_STATE only (vision pathway absent in the policy).
         return batch
 
-    # replan step에서만 순회 (T회 → T/eff_interval회)
+    stateful_gru = bool(getattr(policy.config, "history_gru_stateful", False))
+    if stateful_gru:
+        from lerobot.policies.diffusion.recurrent import EpisodeGRUContext
+        gru_context = EpisodeGRUContext(
+            policy.diffusion,
+            lambda frame: _build_obs_batch(frame, single_step=True)[OBS_STATE][:, 0],
+        )
+    # Replanning can skip frames; recurrent conditioning must consume ALL of
+    # them, starting at episode frame zero, independently of probe spacing.
     for t in valid_replan_ts:
         with torch.no_grad():
-            batch = _build_obs_batch(t)
-            global_cond = policy.diffusion._prepare_global_conditioning(batch)
+            if stateful_gru:
+                global_cond = gru_context.at(t)
+            else:
+                batch = _build_obs_batch(t)
+                global_cond = policy.diffusion._prepare_global_conditioning(batch)
 
             end = min(t + future_horizon, T)
             chunk = _aligned_action_chunk(gt_actions, t, target_action_delta_indices)
@@ -701,33 +745,31 @@ def run_vf_analysis(
                     previous_normalized_chunk = action_normalizer.normalize(
                         previous_model_chunk
                     )
-                    # The legacy checkpoint still predicts a 36-step plan.
-                    # Change only the H=1 descriptor's clean center and leave
-                    # all later slots identical to the existing GT-centered
-                    # ablation.  A genuinely horizon-1 checkpoint can remove
-                    # this approximation in the follow-up experiment.
-                    probe_center_chunk = normalized_chunk.copy()
-                    probe_center_chunk[future_start] = previous_normalized_chunk[
-                        future_start
-                    ]
+                    probe_center_chunk = _previous_action_probe_center(
+                        normalized_chunk, previous_normalized_chunk,
+                        future_start, future_horizon,
+                    )
                     previous_action_descriptor = action_plan_descriptors(
                         probe_center_chunk[None],
                         output_pca,
                         action_indices=output_indices,
                         temporal_start=future_start,
-                        temporal_length=1,
+                        temporal_length=descriptor_horizon,
                         temporal_bins=descriptor_temporal_bins,
                         pca_components=descriptor_pca_components,
                         include_endpoint=descriptor_include_endpoint,
                     )[0]
                 if probe_generation == "scheduler_gaussian":
-                    chunks_t = _make_scheduler_gaussian_probes(
-                        policy,
-                        probe_center_chunk,
-                        probe_directions,
-                        eval_at_step,
-                        include_conditional_mean=scheduler_gaussian_include_mean,
-                    )
+                    if scheduler_gaussian_center == "pure_noise":
+                        chunks_t = torch.as_tensor(probe_directions, dtype=torch.float32, device=device)
+                    else:
+                        chunks_t = _make_scheduler_gaussian_probes(
+                            policy,
+                            probe_center_chunk,
+                            probe_directions,
+                            eval_at_step,
+                            include_conditional_mean=scheduler_gaussian_include_mean,
+                        )
                     chunks_np = chunks_t.detach().cpu().numpy()
                 else:
                     chunks_np = make_pca_action_probes(
@@ -745,14 +787,26 @@ def run_vf_analysis(
                         directions_are_offsets=probe_directions_are_offsets,
                     )
                     chunks_t = torch.from_numpy(chunks_np).float().to(device)
-                denoised_chunks = _query_vf_chunks(
-                    policy,
-                    global_cond,
-                    chunks_t,
-                    eval_at_step,
-                    denoise_steps=denoise_steps,
-                    denoise_output=denoise_output,
-                )
+                if scheduler_gaussian_center == "pure_noise":
+                    denoised_chunks, final_chunks = _sample_pure_noise_trajectory(
+                        policy, global_cond, chunks_t, eval_at_step
+                    )
+                    final_descriptor_clouds.append(action_plan_descriptors(
+                        final_chunks, output_pca, action_indices=output_indices,
+                        temporal_start=future_start, temporal_length=descriptor_horizon,
+                        temporal_bins=descriptor_temporal_bins,
+                        pca_components=descriptor_pca_components,
+                        include_endpoint=descriptor_include_endpoint,
+                    ))
+                else:
+                    denoised_chunks = _query_vf_chunks(
+                        policy,
+                        global_cond,
+                        chunks_t,
+                        eval_at_step,
+                        denoise_steps=denoise_steps,
+                        denoise_output=denoise_output,
+                    )
                 vf_batch = action_plan_descriptors(
                     denoised_chunks,
                     output_pca,
@@ -800,16 +854,18 @@ def run_vf_analysis(
                 input_descriptor_clouds.append(
                     np.asarray(input_descriptors, dtype=np.float32)
                 )
-                denoising_gain_list.append(
-                    compute_denoising_gain(input_descriptors, metric_output_descriptors)
-                )
-                delta_bic, bic_k1, bic_best_multi, bic_best_k = compute_delta_bic(
-                    metric_output_descriptors, max_components=4
-                )
-                delta_bic_list.append(delta_bic)
-                bic_k1_list.append(bic_k1)
-                bic_best_multi_list.append(bic_best_multi)
-                bic_best_k_list.append(bic_best_k)
+                if scheduler_gaussian_center != "pure_noise":
+                    # Pure-noise comparison only needs the two descriptor caches.
+                    denoising_gain_list.append(
+                        compute_denoising_gain(input_descriptors, metric_output_descriptors)
+                    )
+                    delta_bic, bic_k1, bic_best_multi, bic_best_k = compute_delta_bic(
+                        metric_output_descriptors, max_components=4
+                    )
+                    delta_bic_list.append(delta_bic)
+                    bic_k1_list.append(bic_k1)
+                    bic_best_multi_list.append(bic_best_multi)
+                    bic_best_k_list.append(bic_best_k)
 
             # Full denoising for pred-demo MSE (global_cond already computed — no extra CNN call)
             if compute_pred_mse:
@@ -827,6 +883,8 @@ def run_vf_analysis(
                 pred_mse_list.append(mse)
 
     if metric_diagnostics is not None:
+        if scheduler_gaussian_center == "pure_noise":
+            metric_diagnostics["final_descriptors"] = np.stack(final_descriptor_clouds).astype(np.float32)
         metric_diagnostics.update(
             input_descriptors=np.stack(input_descriptor_clouds).astype(np.float32),
             denoising_gain=np.asarray(denoising_gain_list, dtype=np.float32),
@@ -1101,8 +1159,11 @@ def load_policy(policy_path: str, device: str,
                 noise_scheduler_type: str, num_inference_steps: int):
     from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy, _make_noise_scheduler
     from lerobot.policies.factory import make_pre_post_processors
+    from lerobot.configs.policies import PreTrainedConfig
 
-    policy = DiffusionPolicy.from_pretrained(policy_path)
+    cfg = PreTrainedConfig.from_pretrained(policy_path)
+    cfg.device = device
+    policy = DiffusionPolicy.from_pretrained(policy_path, config=cfg)
     policy = policy.to(device).eval()
 
     cfg = policy.config

@@ -49,6 +49,21 @@ from lerobot.types import TransitionKey
 from lerobot.utils.constants import OBS_STATE
 
 
+def test_integrated_vlm_terminator_passes_normalized_state_and_current_uv_without_start():
+    seen = {}
+    def predict(batch):
+        seen.update(batch)
+        return torch.tensor([.8])
+    adapter = run_eval.VLMCheckpointTerminator(SimpleNamespace(predict_termination_probability=predict))
+    normalized, raw = torch.zeros(1, 8), torch.ones(1, 8) * 10
+    image, uv = torch.rand(1, 3, 4, 4), torch.tensor([[.2, -.3]])
+    progress, probability = adapter.terminate(torch.tensor([2]), raw, image, image,
+                                             normalized_state=normalized, goal_uv=uv)
+    assert seen[OBS_STATE] is normalized and seen["skill_focus_uv"] is uv
+    assert "skill_start_state" not in seen and not adapter.requires_start_proprio
+    assert probability.item() == pytest.approx(.8) and progress.item() == 0
+
+
 def test_motion_plan_capture_toggle_validates_window_and_clears_pending():
     model = SimpleNamespace()
     wrapper = SimpleNamespace(policy=SimpleNamespace(config=SimpleNamespace(uses_motion_window=True), model=model))

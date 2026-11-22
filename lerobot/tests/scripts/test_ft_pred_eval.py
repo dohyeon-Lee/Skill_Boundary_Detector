@@ -1121,7 +1121,7 @@ def test_launcher_submits_correct_resources_without_real_slurm(tmp_path, device,
     (target / "src").mkdir(parents=True)
     (configs / "src").mkdir()
     shutil.copy2(EVAL / "submit_pred_eval.sh", target)
-    for name in ("submit_job.sh", "snapshot_config.sh"):
+    for name in ("submit_job.sh", "snapshot_config.sh", "submit_args.sh"):
         shutil.copy2(CONFIGS / "src" / name, configs / "src" / name)
     if scheduler == "local":
         # Exercise the multi-job loop without creating any real local jobs.

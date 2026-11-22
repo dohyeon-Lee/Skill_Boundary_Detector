@@ -1699,3 +1699,17 @@ def test_gt_xyz_checkpoint_inference_requires_uv_but_no_external_endpoint(tmp_pa
     contract = _checkpoint_contract(path, project)
     assert contract["needs_focus_uv"]
     assert not contract["needs_end_pose"]
+
+
+@pytest.mark.parametrize("server_packing,expected", [
+    ({}, (1, 2)),
+    ({"server_eval_num_gpus": 4, "server_eval_max_workers_per_gpu": 1}, (4, 1)),
+])
+def test_server_eval_packing_overrides_experiment_defaults(tmp_path, server_packing, expected):
+    module, config = _goal_terminator_eval_config(
+        tmp_path, "uv_fullskill_bspline_3_lastlayer_lastvis_current", advance_mode="gt"
+    )
+    config.update(eval_num_gpus=1, eval_max_workers_per_gpu=2, **server_packing)
+    settings = module.build_settings(config)
+    assert (settings["eval_num_gpus"], settings["eval_max_workers_per_gpu"]) == expected
+    assert config["eval_num_gpus"] == 1 and config["eval_max_workers_per_gpu"] == 2

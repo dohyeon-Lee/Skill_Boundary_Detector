@@ -3,7 +3,7 @@ tasks: [grab_clutter]
 
 policy:
   type: pi05             # pi05 | hold
-  checkpoint: outputs_ABC/pi05_PT/bs16_abc_sim_grab_clutter_abc_chunk30_task-grab_clutter/checkpoints/050000/pretrained_model
+  checkpoint: outputs_ABC/pi05_PT/bs16_abc_sim_grab_clutter_abc_chunk30_task-grab_clutter/checkpoints/100000/pretrained_model
   tokenizer_path: models/paligemma-3b-pt-224-tokenizer
   device: cuda
   dtype: bfloat16
@@ -33,7 +33,7 @@ video:
 
 output:
   root: lerobot/skillVLA/abc/configs/train_pi05/PT/eval/outputs
-  run_name: pi05_grab_clutter_50k_50episodes
+  run_name: pi05_grab_clutter_100k_50episodes
 
 slurm:
   gres: "gpu:1"

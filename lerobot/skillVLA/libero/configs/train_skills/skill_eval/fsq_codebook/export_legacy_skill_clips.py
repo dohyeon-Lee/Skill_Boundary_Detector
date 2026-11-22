@@ -20,7 +20,7 @@ import pandas as pd
 WORKSPACE = Path(__file__).resolve().parent
 EXAMPLES = WORKSPACE.parents[4]
 REPO = EXAMPLES.parents[1]
-ABC_EXPORTS = EXAMPLES/'abc/configs/train_skills/skill_eval/fsq_codebook'
+ABC_EXPORTS = EXAMPLES/'abc/configs/train_skills/FSQ/eval/src'
 DEFAULT_GROUP = WORKSPACE/'outputs/new_SBD_mode'
 
 

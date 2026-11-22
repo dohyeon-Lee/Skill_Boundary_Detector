@@ -30,7 +30,7 @@ class Tokenizer:
         }
 
 
-def tiny_vlm_model(monkeypatch, label, checkpoint=False, dtype=torch.float32, freeze=False, bridge_layers=9):
+def tiny_vlm_model(monkeypatch, label, checkpoint=False, dtype=torch.float32, freeze=False, bridge_layers=9, **config_overrides):
     def dimensions(variant):
         width = 64 if variant == "gemma_2b" else 32
         return SimpleNamespace(width=width, depth=18, mlp_dim=width * 2,
@@ -64,7 +64,8 @@ def tiny_vlm_model(monkeypatch, label, checkpoint=False, dtype=torch.float32, fr
         config_factory, model_class = _skill_config, vlm.Pi05VLMIndependentSkillPlannerExpert
     config = config_factory(label, tokenizer_path="unused", tokenizer_max_length=300,
                            visual_bridge_last_n_layers=bridge_layers, dino_image_size=4,
-                           attention_backend="sdpa", freeze_vision_encoder=freeze)
+                           attention_backend="sdpa", freeze_vision_encoder=freeze,
+                           **config_overrides)
     config.visual_bottleneck_width, config.visual_bridge_heads = 16, 4
     model = model_class(config).to(dtype=dtype)
     if checkpoint:

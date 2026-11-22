@@ -205,6 +205,22 @@ def test_fresh_output_is_archived_only_with_matching_ownership_marker(tmp_path):
     assert len(archives) == 1 and (archives[0]/'keep_me').read_text() == 'preserved'
 
 
+@pytest.mark.parametrize('name', ['m' * 230, '가' * 80])
+def test_fresh_retry_preserves_long_run_names_within_filesystem_limit(tmp_path, name):
+    output = tmp_path / name
+    output.mkdir()
+    (output / 'keep_me').write_text('preserved')
+    run = tmp_path / ('a' * 32)
+    (output / '.gpu_guard_owner').write_text(str(run))
+    metadata = {'output': str(output), 'owns_fresh_output': True}
+    assert M.retry_command(['fresh'], metadata, run, validator=lambda _: False) == ['fresh']
+    assert not output.exists()
+    preserved = list(tmp_path.iterdir())
+    assert len(preserved) == 1
+    assert len(preserved[0].name.encode()) <= os.pathconf(tmp_path, 'PC_NAME_MAX')
+    assert (preserved[0] / 'keep_me').read_text() == 'preserved'
+
+
 def test_budget_preserves_a_stricter_existing_allocator_limit(tmp_path, monkeypatch):
     calls = []
     cuda = SimpleNamespace(current_device=lambda: 0, get_device_properties=lambda _: SimpleNamespace(total_memory=1000),

@@ -17,6 +17,7 @@ from lerobot.configs.skill_predictor_modes import (  # noqa: E402
     migrate_predictor_config, normalize_predictor_mode, predictor_uses_top_crop, validate_predictor_mode,
 )
 from lerobot.configs.transition_oversampling import TransitionOversamplingConfig  # noqa: E402
+from lerobot.utils.checkpoint_retention import validate_checkpoint_retention  # noqa: E402
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
     as_bool,
@@ -138,12 +139,14 @@ def _dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         )
     return {
         "levels": levels,
+        "bimanual": info.get("storage_format") == "sbd_abc_sim_native/v1",
+        "image_keys": [key for key in features if key.startswith("observation.images.")],
         "skill_code_space_id": str(
             info.get("skill_code_space_id", run_tag) or run_tag
         ).strip(),
         "state_dim": int(features["observation.state"]["shape"][0]),
         "action_dim": int(features["action"]["shape"][0]),
-        "focus_uv_path": str(info.get("skill_focus_uv_path", "") or "").strip(),
+        "focus_uv_path": str(info.get("skill_focus_uv_path", "") or info.get("skill_spatial_targets_path", "") or "").strip(),
         "focus_uv_camera": str(info.get("skill_focus_uv_camera", "") or "").strip(),
         "jitter_pmax": jitter_pmax,
         "jitter_max_percent": float(info.get("skill_jitter_max_percent", 0.0)),
@@ -1174,6 +1177,13 @@ def build_settings(
         / "skillvla"
     )
     dataset = _dataset_contract(dataset_dir, run_tag)
+    bimanual = dataset["bimanual"]
+    if bimanual:
+        if initialization_mode != "pt":
+            raise ValueError("ABC auxiliary training currently supports PT; FT requires its own ABC configuration.")
+        expected_cameras = ["observation.images.top", "observation.images.left_wrist", "observation.images.right_wrist"]
+        if dataset["state_dim"] != 14 or dataset["action_dim"] != 14 or dataset["image_keys"] != expected_cameras:
+            raise ValueError("ABC auxiliary training requires 14D state/action and ordered Top/LeftWrist/RightWrist cameras.")
     pi_base = _local_path(
         project_root, str(_at(config, "warm_start", "pi_base", default="models/pi05_base"))
     )
@@ -1477,7 +1487,7 @@ def build_settings(
                 "Predictor UV supervision requires a SkillVLA run "
                 "built with focus_uv.enabled=true (missing skill_focus_uv_path in info.json)."
             )
-        if predictor_uses_top_crop(predictor_contract["skill_predictor_mode"]) and dataset["focus_uv_camera"] not in {
+        if not bimanual and predictor_uses_top_crop(predictor_contract["skill_predictor_mode"]) and dataset["focus_uv_camera"] not in {
             "", "agentview",
         }:
             raise ValueError("Mode3 UV uses the Top image; build focus_uv.camera: agentview, not a wrist camera.")
@@ -1510,7 +1520,10 @@ def build_settings(
         raise ValueError("training.keep_checkpoints must be -1 or a positive integer.")
     if checkpoint_archive not in ("", "scratch", "scratch2"):
         raise ValueError("training.checkpoint_archive must be empty, scratch, or scratch2.")
-    if keep_checkpoints != -1 and not checkpoint_archive:
+    protect_checkpoints = validate_checkpoint_retention(
+        keep_checkpoints, _at(config, "training", "protect_checkpoints", default=[]),
+    ) if bimanual else []
+    if keep_checkpoints != -1 and not checkpoint_archive and not bimanual:
         raise ValueError("training.keep_checkpoints requires checkpoint_archive; no unverified deletion is allowed.")
     decay_steps = int(
         _at(config, "training", "schedule", "lr_decay_steps", default=30000)
@@ -1673,6 +1686,9 @@ def build_settings(
 
     base_lr = float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5))
     settings = {
+        "bimanual_spatial_auxiliary": bimanual,
+        "skill_image_keys": json.dumps(dataset["image_keys"] if bimanual else []),
+        "skip_dataset_staging": bimanual,
         "project_root": project_root,
         "runpod_watchdog_enabled": as_bool(_at(config, "runpod_watchdog", "enabled", default=False)),
         "lerobot_root": project_root / "lerobot",
@@ -1766,6 +1782,7 @@ def build_settings(
         "save_freq": int(_at(config, "training", "schedule", "save_every", default=5000)),
         "save_steps": save_steps,
         "keep_checkpoints": keep_checkpoints,
+        "protect_checkpoints": json.dumps(protect_checkpoints),
         "checkpoint_archive": checkpoint_archive,
         "run_name": run_name,
         "output_dir": (

@@ -1079,7 +1079,23 @@ def train(
     predictor_transition_sampling = bool(
         getattr(cfg.policy, "predictor_transition_sampling", False)
     )
-    if cfg.transition_oversampling.enabled:
+    if getattr(cfg.policy, "history_gru_training", "iid") == "epi":
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+        from lerobot.datasets.recurrent_sampler import RecurrentEpisodeBatchSampler, recurrent_episode_ranges
+
+        if cfg.dataset.streaming or not isinstance(dataset, (ABCNativeDataset, LeRobotDataset)):
+            raise ValueError("GRU_epi training requires an offline ABC native or LeRobot dataset.")
+        if accelerator.num_processes != 1:
+            raise ValueError("GRU_epi currently requires single-process training to preserve episode streams.")
+        grouped_batch_sampler = RecurrentEpisodeBatchSampler(
+            recurrent_episode_ranges(dataset, cfg.policy.drop_n_last_frames),
+            cfg.batch_size, cfg.policy.n_obs_steps, cfg.seed,
+        )
+        sampler, shuffle = None, False
+        if is_main_process:
+            logging.info("GRU_epi: %d continuous streams (full batches), chunks=%d, layers=%d; random boundary phases and episode resets.",
+                         cfg.batch_size, cfg.policy.n_obs_steps, cfg.policy.history_gru_layers)
+    elif cfg.transition_oversampling.enabled:
         from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
         from lerobot.policies.skillVLA.transition_boundary_sampler import TransitionBoundarySampler
 
@@ -1117,10 +1133,14 @@ def train(
             SkillOccurrenceBatchSampler,
         )
 
-        if not isinstance(dataset, SkillVLADataset):
+        from lerobot.policies.skillVLA.abc_native_skillvla_dataset import ABCNativeSkillVLADataset
+        if not isinstance(dataset, (SkillVLADataset, ABCNativeSkillVLADataset)):
             raise ValueError(
                 "Predictor transition sampling requires a frame-level SkillVLADataset."
             )
+        if isinstance(dataset, ABCNativeSkillVLADataset):
+            from lerobot.policies.skillVLA.abc_occurrence_sampler import ABCSkillOccurrenceBatchSampler
+            SkillOccurrenceBatchSampler = ABCSkillOccurrenceBatchSampler
         grouped_batch_sampler = SkillOccurrenceBatchSampler(
             dataset,
             batch_size=cfg.batch_size,

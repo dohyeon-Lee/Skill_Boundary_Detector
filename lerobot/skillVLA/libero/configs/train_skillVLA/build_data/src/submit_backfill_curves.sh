@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Backfill the per-episode multimodality (VF cos-divergence) curves for an ALREADY-BUILT
 # skillset, so the eval HTML (run_skillset) can overlay the boundary-criteria graph.
 #
@@ -22,6 +26,9 @@
 #   TRAIN_SKILLVLA_CONFIG=/path/to/train_skillVLA_config.yaml .../submit_backfill_curves.sh
 
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../../src/submit_job.sh"

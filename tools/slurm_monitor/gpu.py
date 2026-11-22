@@ -200,6 +200,7 @@ class GPUs:
     def read_node(self, node, job_ids):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", node):
             raise ValueError("노드 이름이 올바르지 않습니다.")
+        devices = {}
         for identifier in job_ids:
             try:
                 path = self.telemetry / identifier / (node + ".json")
@@ -207,9 +208,17 @@ class GPUs:
                 if (path.stat().st_uid == os.getuid() and data["uid"] == os.getuid()
                         and data["job_id"] == identifier and data["node"] == node
                         and 0 <= time.time() - data["sampled_at"] < 45):
-                    return [{**row, "sampled_at": data["sampled_at"]} for row in data["devices"]]
+                    # Each allocation's collector sees only its own GPU(s).
+                    # Merge all allocations on this node, preferring the newest
+                    # sample if a device appears in more than one record.
+                    for row in data["devices"]:
+                        previous = devices.get(row["index"])
+                        if previous is None or data["sampled_at"] > previous["sampled_at"]:
+                            devices[row["index"]] = {**row, "sampled_at": data["sampled_at"]}
             except (OSError, ValueError, KeyError, TypeError):
                 continue
+        if devices:
+            return list(devices.values())
         # A local UI can run outside the job's device cgroup. Its GPU index 0
         # need not be the allocation's index 0, so prefer the allocation's
         # UUID/process sample even when both processes run on this hostname.
@@ -245,7 +254,10 @@ class GPUs:
                     selected_rows = []
                     for index, job_ids in targets[node].items():
                         if index not in rows:
-                            raise ValueError(f"할당된 GPU {index}를 조회할 수 없습니다.")
+                            errors.append(f"{node}: 할당된 GPU {index}를 조회할 수 없습니다.")
+                            if (node, index) in previous:
+                                selected_rows.append({**previous[node, index], "job_ids": job_ids, "stale": True})
+                            continue
                         selected_rows.append({**rows[index], "node": node, "job_ids": job_ids,
                             "updated_at": datetime.fromtimestamp(rows[index].get("sampled_at", time.time()), timezone.utc).isoformat(), "stale": False})
                     devices.extend(selected_rows)

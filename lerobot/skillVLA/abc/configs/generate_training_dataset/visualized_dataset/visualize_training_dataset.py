@@ -870,8 +870,21 @@ def main() -> None:
             print(f"task{task_index:02d} | episodes={counts[task_index]:4d} | {language}")
         return
     ffmpeg = shutil.which(settings.ffmpeg)
+    if ffmpeg is None and settings.ffmpeg == "ffmpeg":
+        # imageio's bundled executable is usable without a system-wide install
+        # or a PATH entry. Explicit custom executable paths remain authoritative.
+        try:
+            import imageio_ffmpeg
+
+            ffmpeg = shutil.which(imageio_ffmpeg.get_ffmpeg_exe())
+        except (ImportError, RuntimeError, OSError):
+            pass
     if ffmpeg is None:
-        raise FileNotFoundError(f"ffmpeg executable not found: {settings.ffmpeg}")
+        raise FileNotFoundError(
+            f"ffmpeg executable not found: {settings.ffmpeg}; "
+            "set visualize.ffmpeg to an executable path or install imageio-ffmpeg "
+            "in the Python environment running this script"
+        )
 
     if settings.task.casefold() in {"all", "*"}:
         selected_task_indexes = sorted(tasks)

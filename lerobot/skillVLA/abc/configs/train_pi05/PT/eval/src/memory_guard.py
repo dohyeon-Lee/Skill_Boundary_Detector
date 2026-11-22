@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import threading
 import uuid
@@ -36,6 +37,7 @@ def supervise_evaluation(config):
     def protect_this_evaluation():
         # An older trainer's controller may renew the registry cooldown.
         # Enforce this evaluation's threshold without ever stopping its peer.
+        consecutive_failures = 0
         while not stop.wait(float(env["SBD_GPU_GUARD_INTERVAL"])):
             try:
                 _, _, free = probe.sample()
@@ -46,6 +48,17 @@ def supervise_evaluation(config):
                         newest = max(active, key=lambda pair: (pair[1]["submitted"], pair[1]["sequence"]))[0]
                         if newest == guard.key:
                             data["runs"][guard.key]["state"] = "stop_requested"
+                consecutive_failures = 0
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                # NVML can briefly stall under concurrent workloads. A single
+                # timed-out query is not evidence of lost GPU supervision; the
+                # main Guard also tolerates transient probe failures.
+                consecutive_failures += 1
+                print(f"ABC eval memory monitor retry {consecutive_failures}/3: {error}", file=sys.stderr, flush=True)
+                if consecutive_failures < 3:
+                    continue
+                guard.cancelled = True
+                return
             except Exception as error:
                 # Stop this attempt on loss of supervision; preserve all peers.
                 print(f"ABC eval memory monitor failed: {error}", file=sys.stderr, flush=True)

@@ -1,0 +1,8 @@
+/partial_build/
+/outputs/*
+!/outputs/together/
+/outputs/together/*
+!/outputs/together/together_config.yaml
+!/outputs/together/make_together.sh
+/logs/
+/.config_snapshots/

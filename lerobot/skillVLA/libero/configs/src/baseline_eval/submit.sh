@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # Shared launcher. Model-specific PT/eval/submit_eval.sh supplies family/config/workdir.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../submit_args.sh"
+
 REQUESTED_BASELINE="${1:?family}"; WORK_DIR="${2:?eval directory}"; CONFIG_PATH="${3:?yaml}"
 shift 3
 SHARED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

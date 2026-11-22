@@ -39,6 +39,7 @@ def _checkout(tmp_path, monkeypatch, *, gpus=10, workers=5):
     shutil.copy2(EVAL / "src/eval.sbatch", work / "src/eval.sbatch")
     shutil.copy2(CONFIGS / "src/eval_gpu_packing.py", shared / "eval_gpu_packing.py")
     shutil.copy2(CONFIGS / "src/submit_job.sh", shared / "submit_job.sh")
+    shutil.copy2(CONFIGS / "src/submit_args.sh", shared / "submit_args.sh")
     shutil.copy2(CONFIGS / "src/local_jobs.py", shared / "local_jobs.py")
     progress = repo / "lerobot/src/lerobot/utils/eval_progress.py"
     progress.parent.mkdir(parents=True)

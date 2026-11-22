@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/src/evaluate.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/DP/eval/src/evaluate.py"
 SPEC = importlib.util.spec_from_file_location("boundary_calibration", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
@@ -28,11 +28,128 @@ def boundary():
             "terminal_mask_frames": 5, "nms_frames": 0, "start_guard_frames": 0}
 
 
+@pytest.mark.parametrize("history", [20, 60])
+def test_initial_history_mask_excludes_spikes_from_smoothing_and_both_means(history, tmp_path, monkeypatch):
+    from build_skill_dataset import Args, _prepare_boundary_curve, _save_boundary_curve, _detect_boundaries
+    from compute_global_boundary_threshold import main as reduce_threshold
+
+    ts = np.arange(0, 301, 5)
+    clean = 1 + np.sin(ts / 25) ** 2
+    dirty = clean.copy()
+    dirty[ts < history] = 1e8
+    dirty[ts >= 260] = 1e9
+    cfg = {**boundary(), "initial_mask_frames": history, "terminal_mask_frames": 0,
+           "smooth_window": 7, "polyorder": 4, "nms_frames": 15}
+    rows = []
+    for score in (clean, dirty):
+        cuts, threshold, smooth = MODULE._boundaries(score, ts, cfg, terminal_mask_start_frame=260)
+        row = {"score": score, "smooth": smooth, "replan_ts": ts,
+               "terminal_mask_start_ts": np.array(260.)}
+        pool = MODULE._threshold_pool_values(row, cfg)
+        assert threshold == pytest.approx(pool.mean())
+        assert np.all(cuts >= history)
+        rows.append((smooth, threshold, cuts))
+    np.testing.assert_array_equal(rows[0][0], rows[1][0])
+    np.testing.assert_array_equal(rows[0][2], rows[1][2])
+    assert rows[0][1] == rows[1][1]
+
+    args = Args(initial_mask_frames=history, smooth_window=7, savgol_polyorder=4,
+                score_power=2, terminal_mask_frames=0, nms_dist=15, min_skill_len=1)
+    _, full_smooth, end = _prepare_boundary_curve(ts, dirty, args, 260)
+    np.testing.assert_allclose(full_smooth, rows[1][0], rtol=1e-7)
+    full_cuts = _detect_boundaries(ts, dirty, 320, args, terminal_mask_start_frame=260)
+    assert all(cut >= history for cut in full_cuts[1:-1])
+    curves = tmp_path / 'curves'
+    _save_boundary_curve(curves, 0, 0, ts, dirty, full_cuts, 320, args,
+                         terminal_mask_start_frame=260)
+    output = tmp_path / 'threshold.json'
+    monkeypatch.setattr('sys.argv', ['reduce', '--curves_dir', str(curves),
+                        '--output_path', str(output), '--expected_episodes', '1'])
+    reduce_threshold()
+    result = json.loads(output.read_text())
+    assert result['global_mean'] == pytest.approx(rows[1][1], rel=1e-6)
+    assert result['n_replan_points'] == int(((ts >= history) & (ts < 260)).sum())
+    assert result['provenance']['initial_mask_frames'] == history
+
+
 def derived(score, ts, cfg):
     cuts, threshold, smooth = MODULE._boundaries(score, ts, cfg)
     return {"score": score, "replan_ts": ts, "smooth": smooth,
             "threshold": threshold, "boundaries": cuts, "n_frames": np.array(60),
             "delta_bic": np.zeros(len(score)), "selected_k": np.ones(len(score))}
+
+
+@pytest.mark.parametrize("include_valid_episode", [False, True])
+def test_overlapping_masks_keep_episode_without_cuts_or_calibration_values(include_valid_episode):
+    cfg = {**boundary(), "initial_mask_frames": 20, "terminal_mask_frames": 24,
+           "peak_curvature_scale": 0.5}
+    rows = {}
+    for ep, last_ts in enumerate([40, 100] if include_valid_episode else [40]):
+        ts = np.arange(0, last_ts + 1, 5)
+        score = 1 + np.sin(ts / 7) ** 2
+        raw = {"replan_ts": ts, "n_frames": np.array(last_ts + 28)}
+        scores = {"cosine": score, "selected_k": np.ones(len(ts)),
+                  "delta_bic": np.zeros(len(ts))}
+        rows[ep] = [("test", MODULE._derive(raw, {}, "cosine", cfg,
+                                          min_skill_len=1, scores=scores))]
+    masked = rows[0][0][1]
+    assert bool(masked["no_valid_boundary_anchors"])
+    assert not len(masked["boundaries"])
+    assert not len(masked["peak_curvatures"])
+    assert not len(MODULE._threshold_pool_values(masked, cfg))
+    assert np.isnan(masked["smooth"]).all()
+    expected_pool = MODULE._threshold_pool_values(rows[1][0][1], cfg) if include_valid_episode else np.empty(0)
+    expected_peaks = len(rows[1][0][1]["peak_curvatures"]) if include_valid_episode else 0
+    stats = MODULE._apply_shared_threshold_scopes(
+        rows, [{"name": "test", "boundary": "b"}], {"b": cfg}, {}, min_skill_len=1
+    )["test"]
+    group = stats["groups"]["dataset"]
+    assert group["calibration_episodes"] == int(include_valid_episode)
+    assert group["excluded_episode_ids"] == [0]
+    assert group["points"] == len(expected_pool)
+    assert stats["peak_curvature"]["candidate_peaks"] == expected_peaks
+    assert not len(rows[0][0][1]["boundaries"])
+    if include_valid_episode:
+        assert group["threshold"] == pytest.approx(expected_pool.mean())
+    else:
+        assert np.isnan(group["threshold"])
+
+
+def test_curvature_uses_original_frames_and_nonuniform_neighbor_spacing():
+    ts = np.array([-3., -1., 0., 2., 4.])
+    y = 10 - ts**2
+    np.testing.assert_allclose(MODULE._peak_curvatures(y, ts, np.array([2])), [2.])
+    np.testing.assert_allclose(MODULE._peak_curvatures(y, ts * 10, np.array([2])), [.02])
+
+
+def test_global_curvature_mean_filter_runs_before_height_and_nms():
+    cfg = {**boundary(), "score_power": 1, "terminal_mask_frames": 0,
+           "nms_frames": 5, "start_guard_frames": 0, "peak_curvature_scale": 1}
+    values = [np.array([0., 0., 8., 10., 8., 0., 0., 7., 0., 0.]),
+              np.array([0., 9., 10., 9., 0.])]
+    def rows_for(recipe):
+        rows = {}
+        for ep, score in enumerate(values):
+            raw = {"replan_ts": np.arange(len(score)), "n_frames": np.array(20)}
+            scores = {"cosine": score, "selected_k": np.ones(len(score)), "delta_bic": np.zeros(len(score))}
+            rows[ep] = [('test', MODULE._derive(raw, {}, 'cosine', recipe, min_skill_len=1, scores=scores))]
+        return rows
+    off = rows_for({k: v for k, v in cfg.items() if k != 'peak_curvature_scale'})
+    off_stats = MODULE._apply_shared_threshold_scopes(off, [{'name': 'test', 'boundary': 'b'}], {'b': {**cfg, 'peak_curvature_scale': 0}}, {}, min_skill_len=1)
+    np.testing.assert_array_equal(off[0][0][1]['boundaries'], [3])
+    assert len(off[0][0][1]['curvature_rejected_ts']) == 0
+    rows = rows_for(cfg)
+    stats = MODULE._apply_shared_threshold_scopes(rows, [{'name': 'test', 'boundary': 'b'}], {'b': cfg}, {}, min_skill_len=1)
+    # One shared mean of curvatures 4, 14, 2. The taller rounded peak at t=3
+    # must be removed before it can suppress the sharper t=7 peak under NMS.
+    assert stats['test']['peak_curvature']['mean'] == pytest.approx(20 / 3)
+    assert stats['test']['peak_curvature']['candidate_peaks'] == 3
+    assert stats['test']['peak_curvature']['rejected_peaks'] == 2
+    assert stats['test']['groups']['dataset']['threshold'] == off_stats['test']['groups']['dataset']['threshold']
+    np.testing.assert_array_equal(rows[0][0][1]['boundaries'], [7])
+    np.testing.assert_array_equal(rows[0][0][1]['curvature_rejected_ts'], [3])
+    assert not len(rows[1][0][1]['boundaries'])
+    np.testing.assert_array_equal(rows[1][0][1]['curvature_rejected_ts'], [2])
 
 
 def test_calibration_uses_complete_skillset_and_rejects_partial_copy(tmp_path):
@@ -182,7 +299,7 @@ def test_report_only_recalibrates_all_episodes_but_renders_selected_subset(tmp_p
         scale = (int(kw["ep_df"].iloc[0].episode_index) + 1) * (10 if kw["variant"]["name"] == "no_gripper" else 1)
         return {"descriptors": np.ones((6, 4, 2)) * scale, "replan_ts": ts, "n_frames": np.array(60)}
     monkeypatch.setattr(MODULE, "_probe_episode", probe)
-    monkeypatch.setattr(MODULE, "_cluster_scores", lambda descriptors, cfg:
+    monkeypatch.setattr(MODULE, "_cluster_scores", lambda descriptors, cfg, **kwargs:
                         {"covariance_gated_cosine": np.array([0., 1., 0., 3., 2., 100.]) * descriptors[0, 0, 0]})
     rendered.clear()
     MODULE.run(settings)

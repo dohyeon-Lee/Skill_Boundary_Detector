@@ -89,7 +89,7 @@ def _checkout(tmp_path):
         shutil.copy2(PI05 / "PT/eval/src" / filename, eval_src / filename)
     shared = configs / "src"
     shared.mkdir()
-    for filename in ("global_config_loader.py", "eval_gpu_packing.py"):
+    for filename in ("global_config_loader.py", "eval_gpu_packing.py", "submit_args.sh"):
         shutil.copy2(CONFIGS / "src" / filename, shared / filename)
     (configs / "global_config.yaml").write_text(yaml.safe_dump({
         "project_root": str(repo), "outputs_root": "outputs", "dataset_root": "dataset",

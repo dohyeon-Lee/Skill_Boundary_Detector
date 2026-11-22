@@ -125,3 +125,31 @@ def test_capture_cleans_up_after_action_error():
         with capture_bottleneck(model):
             raise RuntimeError("action failed")
     assert not hasattr(model, "_video_aux_capture")
+
+
+def test_bimanual_capture_routes_three_cameras_and_uses_xyz6_world_bounds():
+    class PatchHead:
+        def __call__(self, query, memory):
+            # Each query and camera has a distinct marker; accidental camera
+            # sharing (especially right -> left wrist) fails this routing check.
+            index = int(query[0, 0, 0])
+            assert memory[0, 0, 0] == [10, 10, 20, 30][index]
+            return torch.eye(4)[index:index + 1]
+    model = SimpleNamespace(training=False, _alignment_token_count=5,
+        config=SimpleNamespace(bimanual_spatial_auxiliary=True),
+        agent_patch_align_head=PatchHead(), wrist_patch_align_head=PatchHead(),
+        agent_end_state_head=lambda query: torch.tensor([[-1., 0., 1., 1., 0., -1.]]))
+    with capture_bottleneck(model) as captured:
+        memory = torch.tensor([10.] * 4 + [20.] * 4 + [30.] * 4).reshape(1, 12, 1)
+        capture_condition(model, memory, cls_tokens=False)
+        capture_latent(model, torch.arange(5.).reshape(1, 5, 1))
+    config = SimpleNamespace(bimanual_spatial_auxiliary=True,
+        bimanual_goal_xyz_q01=[0., 10., 20., 30., 40., 50.],
+        bimanual_goal_xyz_q99=[2., 12., 22., 32., 42., 52.],
+        chunk_end_state_q01=[-999.] * 14, chunk_end_state_q99=[999.] * 14)
+    decoded = decode_auxiliaries(captured['outputs'], config, origin=[[100., 100., 100.]])
+    np.testing.assert_allclose(decoded['upper']['xyz_world'], [[[0., 11., 22.], [32., 41., 50.]]])
+    for index, field in enumerate(['top_left', 'top_right', 'left', 'right']):
+        row, col = divmod(index, 2)
+        np.testing.assert_allclose(decoded['upper'][field + '_patch_box_uv'],
+                                   [[col - 1, row - 1, col, row]])

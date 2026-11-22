@@ -230,51 +230,60 @@ def test_existing_mode_rejects_unusable_targets_without_submitting(tmp_path, sta
     assert not (tmp_path/'sessions').exists()
 
 
-@pytest.mark.skipif(not shutil.which('tmux'), reason='tmux not installed')
-def test_existing_mode_shares_only_target_allocation_and_keeps_logs_separate(tmp_path):
-    socket = 'sbd-existing-test-' + uuid.uuid4().hex
+def test_existing_mode_runs_three_children_in_original_step_without_srun(tmp_path):
+    import signal
     sessions = tmp_path/'sessions'
-    home = tmp_path/'home'
-    home.mkdir()
     env = _env(tmp_path, 'slurm', SBD_SLURM_SUBMIT_MODE='srun_existing', SBD_SRUN_JOB_ID='8801',
-               SBD_TMUX_SOCKET=socket, SBD_SRUN_SESSIONS_DIR=str(sessions), HOME=str(home),
-               SRUN_TEST_ROOT=str(tmp_path))
+               SBD_SRUN_SESSIONS_DIR=str(sessions), CUDA_VISIBLE_DEVICES='wrong-submit-gpu')
     fake_allocation_bin(tmp_path)
     binary = tmp_path/'bin/srun'
-    binary.write_text('#!'+sys.executable+'''
-import json,os,sys
-from pathlib import Path
-Path(os.environ['SRUN_TEST_ROOT'],'step_args.json').write_text(json.dumps(sys.argv[1:]))
-assert '--jobid=8801' in sys.argv and '--overlap' in sys.argv
-env=os.environ.copy()
-env.update(SLURM_JOB_ID='8801',SLURM_STEP_ID='7',CUDA_VISIBLE_DEVICES='original-allocation-gpu')
-rc=sys.argv[sys.argv.index('--rcfile')+1]
-os.execvpe('bash',['bash','--noprofile','--rcfile',rc,'-i'],env)
-''')
+    binary.write_text('#!/bin/bash\necho unexpected-srun >> "$SRUN_TEST_ROOT/srun_calls"; exit 99\n')
     binary.chmod(0o755)
-    script = _job_script(tmp_path, 'echo "gpu=$CUDA_VISIBLE_DEVICES"; exit 0')
+    env['SRUN_TEST_ROOT'] = str(tmp_path)
+    held_env = {**env, 'SLURM_JOB_ID': '8801', 'SLURM_STEP_ID': '0',
+                'SLURMD_NODENAME': os.uname().nodename.split('.')[0],
+                'CUDA_VISIBLE_DEVICES': 'original-allocation-gpu'}
+    start = subprocess.run([sys.executable, str(SCRIPT.with_name('allocation_worker.py')),
+                            'start-current', str(sessions), str(SCRIPT)], env=held_env,
+                           capture_output=True, text=True, timeout=10)
+    assert start.returncode == 0, start.stderr
+    worker_status = next(sessions.glob('.workers/*/worker_status.json'))
+    worker = json.loads(worker_status.read_text())
+    script = _job_script(tmp_path, 'echo "job=$SLURM_JOB_ID step=$SLURM_STEP_ID gpu=$CUDA_VISIBLE_DEVICES cpus=$SLURM_CPUS_PER_TASK frozen=$FROZEN_VALUE"; sleep .3')
     (tmp_path/'logs').mkdir()
     original = tmp_path/'logs/demo_8801.out'
     original.write_text('original training log\n')
-    tmux = ['tmux','-L',socket]
     try:
-        result = _submit(tmp_path, env, '--partition=debug', '--qos=base_qos', '--nodelist=node200', str(script))
-        assert result.returncode == 0, result.stderr
-        wait_for(lambda: bool(list(sessions.glob('*/training_status.json'))))
-        path = next(sessions.glob('*/training_status.json'))
-        wait_for(lambda: json.loads(path.read_text()).get('state') == 'COMPLETED')
-        status = json.loads(path.read_text())
-        assert status['job_id']=='8801'
-        assert Path(status['output']).name == 'demo_8801.step7.out'
-        assert 'original-allocation-gpu' in Path(status['output']).read_text()
+        for _ in range(3):
+            result = _submit(tmp_path, env, '--cpus-per-task=8', '--export=ALL,FROZEN_VALUE=per-launch', str(script))
+            assert result.returncode == 0, result.stderr
+            assert 'no new step or GPU' in result.stdout
+        wait_for(lambda: len(list(sessions.glob('*/training_status.json'))) == 3)
+        wait_for(lambda: all(json.loads(path.read_text()).get('state') == 'COMPLETED'
+                             for path in sessions.glob('*/training_status.json')))
+        statuses = [json.loads(path.read_text()) for path in sessions.glob('*/training_status.json')]
+        assert len({status['output'] for status in statuses}) == 3
+        for status in statuses:
+            assert status['job_id'] == '8801'
+            assert '.run' in Path(status['output']).name
+            output = Path(status['output']).read_text()
+            assert 'step=0 gpu=original-allocation-gpu cpus=8' in output
+            assert 'frozen=per-launch' in output
         assert original.read_text() == 'original training log\n'
-        args=json.loads((tmp_path/'step_args.json').read_text())
-        assert '--jobid=8801' in args and '--overlap' in args
-        assert not any(arg.startswith(('--partition=','--qos=','--nodelist=','--time=')) for arg in args)
-        launch=json.loads((path.parent/'launch.json').read_text())
-        subprocess.run([*tmux,'has-session','-t',launch['session']],check=True)
+        assert not (tmp_path/'srun_calls').exists()
     finally:
-        subprocess.run([*tmux,'kill-server'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        os.kill(worker['pid'], signal.SIGTERM)
+        wait_for(lambda: json.loads(worker_status.read_text()).get('state') == 'STOPPED')
+
+
+def test_missing_allocation_worker_fails_without_starting_another_gpu_step(tmp_path):
+    env = _env(tmp_path, 'slurm', SBD_SLURM_SUBMIT_MODE='srun_existing', SBD_SRUN_JOB_ID='8801',
+               SBD_SRUN_SESSIONS_DIR=str(tmp_path/'sessions'))
+    fake_allocation_bin(tmp_path)
+    result = _submit(tmp_path, env, str(_job_script(tmp_path, 'exit 0')))
+    assert result.returncode != 0
+    assert 'No new job or GPU step was requested' in result.stderr
+    assert not list((tmp_path/'sessions').glob('*/training_status.json'))
 
 
 def test_existing_mode_never_falls_back_to_sbatch_for_batch_only_options(tmp_path):

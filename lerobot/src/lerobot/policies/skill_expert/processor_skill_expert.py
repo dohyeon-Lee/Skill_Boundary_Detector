@@ -96,8 +96,13 @@ from lerobot.utils.constants import (
 )
 
 from lerobot.policies.skillVLA import preskill_plan
+from lerobot.policies.skillVLA.vlm_termination_supervision import KEYS as VLM_TERMINATION_KEYS
 
-SKILL_BATCH_KEYS = preskill_plan.KEYS + (
+SKILL_BATCH_KEYS = preskill_plan.KEYS + VLM_TERMINATION_KEYS + (
+    "skill_start_right_wrist_image",
+    "terminator_post_end_goal_uv",
+    "terminator_post_end_goal_uv_valid",
+    "terminator_post_end_bimanual_xyz",
     "terminator_top_camera_projection",
     PREDICTOR_START_XYZ,
     "terminator_previous_skill_code",

@@ -204,10 +204,21 @@ class _EpisodeFrameReader:
         return video_path, int(layout["row_start"]), int(layout["row_end"])
 
     def browser_video_asset(self, episode_id: int, output_dir: Path) -> dict:
-        """Expose one ABC source video to HTML without copying or transcoding it."""
-        if not self.native_abc:
-            return {}
-        video_path, row_start, row_end = self._abc_video(episode_id)
+        """Link the source video, retaining any episode offset within an MP4."""
+        timestamps = {}
+        if self.native_abc:
+            video_path, row_start, row_end = self._abc_video(episode_id)
+        else:
+            row = self.index.loc[int(episode_id)]
+            video_path = self.dataset_dir / self.path_template.format(
+                video_key=self.video_key,
+                chunk_index=int(row[f"videos/{self.video_key}/chunk_index"]),
+                file_index=int(row[f"videos/{self.video_key}/file_index"]),
+            )
+            row_start, row_end = 0, 0
+            timestamps["video_from_timestamp"] = float(
+                row[f"videos/{self.video_key}/from_timestamp"]
+            )
         relative_path = Path("videos") / f"episode_{int(episode_id):05d}{video_path.suffix}"
         link_path = output_dir / relative_path
         link_path.parent.mkdir(parents=True, exist_ok=True)
@@ -226,6 +237,7 @@ class _EpisodeFrameReader:
             "video_fps": self.fps,
             "video_crop_row_start": row_start,
             "video_crop_row_end": row_end,
+            **timestamps,
         }
 
     def frames(self, episode_id: int, frame_indices) -> dict[int, np.ndarray]:

@@ -25,7 +25,7 @@ def test_skillvla_pipeline_keeps_array_dependencies_and_frozen_env(tmp_path, sch
     shared = configs / "src"
     shared.mkdir()
     shutil.copy2(CONFIGS / "train_skillVLA/build_data/submit_build_all.sh", build)
-    for name in ("submit_job.sh", "local_jobs.py"):
+    for name in ("submit_job.sh", "local_jobs.py", "submit_args.sh"):
         shutil.copy2(CONFIGS / "src" / name, shared)
     (root / ".venv").symlink_to(sys.prefix, target_is_directory=True)
     raw = root / "dataset"

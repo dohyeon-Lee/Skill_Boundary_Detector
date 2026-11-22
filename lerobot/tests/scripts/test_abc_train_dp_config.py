@@ -342,7 +342,7 @@ def test_shipped_abc_dp_config_targets_reproducible_singletask_group() -> None:
     assert config["dp_tasks"] == "group_singletask_1k_eps"
     assert config["dp_n_obs_steps"] == 30
     assert config["dp_future_action_horizon"] == 36
-    assert config["dp_action_mode"] == "delta_joint"
+    assert config["dp_action_mode"] == "delta_pose"
     assert config["dp_relative_exclude_joints"] == ["gripper"]
     assert config["dp_steps"] == 100000
     assert config["dp_save_freq"] == 10000

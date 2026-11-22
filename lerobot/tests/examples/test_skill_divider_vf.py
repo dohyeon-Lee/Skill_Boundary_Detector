@@ -107,3 +107,23 @@ def test_scheduler_gaussian_iid_mode_contains_only_noisy_draws() -> None:
     assert probes.shape == (2, 4, 2)
     np.testing.assert_allclose(probes[0], 0.5 * demo + 2.0)
     np.testing.assert_allclose(probes[1], 0.5 * demo + 6.0)
+
+
+def test_pure_noise_snapshots_share_one_full_reverse_trajectory():
+    policy = _policy()
+    policy.diffusion.noise_scheduler.timesteps = torch.arange(9, -1, -1)
+    calls = []
+    def predict(sample, timestep, *, global_cond):
+        calls.append(sample.clone())
+        assert global_cond.shape == (3, 5)
+        return torch.zeros_like(sample)
+    policy.diffusion.unet = predict
+    initial = torch.randn(3, 24, 2)
+    original = initial.clone()
+    step7, final10 = MODULE._sample_pure_noise_trajectory(policy, torch.zeros(1, 5), initial)
+    assert len(calls) == 10
+    torch.testing.assert_close(calls[0], original)
+    torch.testing.assert_close(initial, original)
+    # Before index 7 there have been seven updates; x0-hat adds 10.
+    np.testing.assert_allclose(step7, original.numpy() + 17, atol=2e-6)
+    np.testing.assert_allclose(final10, original.numpy() + 10, atol=2e-6)

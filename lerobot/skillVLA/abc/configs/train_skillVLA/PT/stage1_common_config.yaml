@@ -1,7 +1,7 @@
 dataset:
   skillvla_root: skillvla
   source: abc_sim_all
-  run: FSQ333_contrastive_2000_pt
+  run: FSQ3332_contrastive_1000_pt
 
 # The build stores the maximum +/-30 state window. Training selects the
 # LIBERO-equivalent ABC runtime range without rebuilding the dataset.

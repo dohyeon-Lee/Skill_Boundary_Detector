@@ -59,6 +59,8 @@ class Args:
     """Output directory. Defaults to parent of skills_dir."""
     stats_path: str = ""
     """Optional task-selection stats JSON; defaults to raw_dataset_dir/meta/stats.json."""
+    action_space: str = "dataset"
+    """dataset/absolute_joint keep raw targets; delta_joint follows DP's joint deltas."""
 
     # ── model
     hidden_dim: int = 256
@@ -321,6 +323,14 @@ def main(args: Args) -> None:
     np.random.seed(args.seed)
 
     segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir)
+    from action_representation import prepare_fsq_actions
+
+    if args.action_space not in {"dataset", "absolute_joint", "delta_joint"}:
+        raise ValueError("--action_space must be dataset|absolute_joint|delta_joint.")
+    transformed_targets = [
+        prepare_fsq_actions(a, s, args.action_space, args.action_gripper_indices)
+        for a, s in zip(dec_targets, dec_states, strict=True)
+    ]
 
     if not args.raw_dataset_dir:
         raise ValueError("--raw_dataset_dir is required for dataset normalization metadata.")
@@ -575,8 +585,12 @@ def main(args: Args) -> None:
             f"Dataset stats dimensionality mismatch: state {len(state_q01)}!={state_dim}, "
             f"action {len(action_q01)}!={action_dim}."
         )
-    raw_action_min = np.concatenate(dec_targets).min(axis=0).astype(np.float32)
-    raw_action_max = np.concatenate(dec_targets).max(axis=0).astype(np.float32)
+    target_actions = np.concatenate(transformed_targets)
+    if args.action_space == "delta_joint":
+        action_q01, action_q99 = np.quantile(target_actions, [.01, .99], axis=0).astype(np.float32)
+        print("[FSQ] delta-joint q01/q99 fitted to transformed skills; grippers stay absolute")
+    raw_action_min = target_actions.min(axis=0).astype(np.float32)
+    raw_action_max = target_actions.max(axis=0).astype(np.float32)
     if args.autoencoder_mode == "action":
         max_abs_action = max(
             float(np.abs(raw_action_min).max()),
@@ -589,6 +603,7 @@ def main(args: Args) -> None:
                 f"observed min/max={raw_action_min}/{raw_action_max}."
             )
     stats = dict(
+        action_space=np.asarray(args.action_space),
         encoder_min=encoder_min, encoder_max=encoder_max,
         encoder_input_mode=np.asarray(args.encoder_input_mode),
         encoder_grounding_convention=np.asarray(grounding_convention),
@@ -680,6 +695,7 @@ def main(args: Args) -> None:
 
     cfg = SplineFSQAEConfig(
         action_dim=action_dim,
+        action_space=args.action_space,
         enc_dim=enc_dim,
         state_dim=state_dim,
         n_control=args.n_control,

@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any
 
 
+from lerobot.utils.sbd_smoothing import validate_savgol
+
+
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "train_skills_config.yaml"
 
 
@@ -928,6 +931,8 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
     supported_history_encoders = {
         "flat",
         "gru",
+        "gru_iid",
+        "gru_epi",
         "transformer",
         "transformer_cls",
     }
@@ -936,6 +941,10 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
             "dp_history_encoder must be one of "
             f"{sorted(supported_history_encoders)}, got {dp_history_encoder!r}."
         )
+    dp_history_encoder_variant = "gru_iid" if dp_history_encoder == "gru" else dp_history_encoder
+    dp_history_gru_training = "epi" if dp_history_encoder_variant == "gru_epi" else "iid"
+    if dp_history_encoder_variant in {"gru_iid", "gru_epi"}:
+        dp_history_encoder = "gru"
     dp_history_encoder_dim = int(get_value(cfg, "dp_history_encoder_dim", 128))
     if dp_history_encoder_dim < 1:
         raise ValueError(
@@ -943,7 +952,8 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
             f"got {dp_history_encoder_dim}."
         )
     # The compact temporal encoders use fixed, checkpointed internal defaults:
-    # GRU=1 layer; Transformer=2 layers/4 heads. Keep the external experiment
+    # GRU=2 layers, with streaming inference; Transformer=2 layers/4 heads.
+    # Keep the external experiment
     # surface to the encoder choice and shared feature width.
     if (
         dp_history_encoder in {"transformer", "transformer_cls"}
@@ -954,7 +964,7 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
             f"got {dp_history_encoder_dim}."
         )
     dp_history_encoder_suffix = (
-        "" if dp_history_encoder == "flat" else f"_{dp_history_encoder}"
+        "" if dp_history_encoder_variant == "flat" else f"_{dp_history_encoder_variant}"
     )
     dp_action_sequence_mode = str(
         get_value(cfg, "dp_action_sequence_mode", "future_only")
@@ -1011,6 +1021,8 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         raise ValueError(
             f"dp_vision must be state|action|resnet|dino, got {dp_vision!r}."
         )
+    if dp_history_encoder == "gru" and dp_vision != "state":
+        raise ValueError("GRU_iid/GRU_epi require dp_vision: state for streaming state + hidden inference.")
     dp_proprio_grounding = str(
         get_value(cfg, "dp_proprio_grounding", "none") or "none"
     ).strip().lower().replace("-", "_")
@@ -1128,8 +1140,12 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         "dp_lr_scheduler": dp_lr_scheduler,
         "dp_lr_scheduler_suffix": dp_lr_scheduler_suffix,
         "dp_history_encoder": dp_history_encoder,
+        "dp_history_encoder_variant": dp_history_encoder_variant,
         "dp_history_encoder_dim": dp_history_encoder_dim,
         "dp_history_encoder_suffix": dp_history_encoder_suffix,
+        "dp_history_gru_stateful": dp_history_encoder == "gru",
+        "dp_history_gru_layers": 2,
+        "dp_history_gru_training": dp_history_gru_training,
         "train_DP": train_dp,
         "dp_n_obs_steps": dp_n_obs_steps,
         "dp_n_action_steps": dp_n_action_steps,
@@ -1141,6 +1157,9 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         "dp_relative": dp_relative,
         "dp_steps": int(get_value(cfg, "dp_steps", 100000)),
         "dp_num_workers": int(get_value(cfg, "dp_num_workers", 4)),
+        "dp_dataloader_persistent_workers": (
+            dp_history_gru_training == "epi" and int(get_value(cfg, "dp_num_workers", 4)) > 0
+        ),
         "dp_save_freq": int(get_value(cfg, "dp_save_freq", 50000)),
         "dp_log_freq": int(get_value(cfg, "dp_log_freq", 200)),
         "dp_eval_freq": int(get_value(cfg, "dp_eval_freq", 0)),
@@ -1254,7 +1273,11 @@ def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict
         ),
         "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
         "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
-        "skillset_smooth_window": int(get_value(cfg, "skillset_smooth_window", 7)),
+        "skillset_smooth_window": validate_savgol(
+            get_value(cfg, "skillset_smooth_window", 7),
+            get_value(cfg, "skillset_savgol_polyorder", 4),
+            window_name="skillset_smooth_window", order_name="skillset_savgol_polyorder",
+        )[0],
         "skillset_savgol_polyorder": int(
             get_value(cfg, "skillset_savgol_polyorder", 4)
         ),
@@ -2500,7 +2523,11 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "skillset_wandb_project": str(get_value(cfg, "skillset_wandb_project", "Skill_dataset")),
         "skillset_dn_step": int(get_value(cfg, "skillset_dn_step", 7)),
         "skillset_n_gmm": int(get_value(cfg, "skillset_n_gmm", 5)),
-        "skillset_smooth_window": int(get_value(cfg, "skillset_smooth_window", 7)),
+        "skillset_smooth_window": validate_savgol(
+            get_value(cfg, "skillset_smooth_window", 7),
+            get_value(cfg, "skillset_savgol_polyorder", 4),
+            window_name="skillset_smooth_window", order_name="skillset_savgol_polyorder",
+        )[0],
         "skillset_savgol_polyorder": int(get_value(cfg, "skillset_savgol_polyorder", 4)),
         "skillset_replan_interval": int(
             get_value(

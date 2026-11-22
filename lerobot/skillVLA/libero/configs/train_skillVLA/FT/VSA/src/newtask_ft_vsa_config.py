@@ -18,6 +18,7 @@ from pathlib import Path
 
 from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_LABELS, UV_BSPLINE_SKILL_WOVIS_LABELS
 from lerobot.utils.checkpoint_retention import validate_retention_mode
+from lerobot.utils.gradient_checkpointing import parse_checkpointing
 from lerobot.configs.transition_oversampling import TransitionOversamplingConfig
 
 _HERE = Path(__file__).resolve()
@@ -352,6 +353,9 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         raise ValueError("training.vsa_debug values must be non-negative/positive.")
     periodic = range(debug_every, steps + 1, debug_every) if debug_every > 0 else ()
     debug_schedule = sorted(set(debug_initial).union(periodic))
+    checkpoint_global, checkpoint_streams = parse_checkpointing(
+        _at(config, "training", "gradient_checkpointing", default=False)
+    )
 
     source_run, source_step = _checkpoint_run_and_step(checkpoint)
     run_name = f"{source_run}_{source_step}_{dataset_source}_ft_bs{batch_size}"
@@ -436,9 +440,9 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "transition_jitter_early_end_pmax": transition_jitter["jitter_early_end_pmax"],
         "transition_jitter_late_end_pmax": transition_jitter["jitter_late_end_pmax"],
         "transition_jitter_distribution": transition_jitter["jitter_distribution"],
-        "gradient_checkpointing": as_bool(
-            _at(config, "training", "gradient_checkpointing", default=False)
-        ),
+        "gradient_checkpointing": checkpoint_global,
+        **{name + "_checkpointing": json.dumps(checkpoint_global if value is None else value)
+           for name, value in checkpoint_streams.items()},
         "vsa_debug_schedule": "[" + ",".join(str(v) for v in debug_schedule) + "]",
         "lr": float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5)) * num_gpus,
         "batch_size": batch_size,

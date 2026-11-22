@@ -170,13 +170,27 @@ def test_invalid_protection_rejected(protected):
         validate_checkpoint_retention(2, protected)
 
 
-def test_local_retention_is_explicit_vsa_only_and_archive_mode_stays_separate():
+def test_local_retention_supports_skill_aux_and_archive_mode_stays_separate():
     assert validate_retention_mode(2, [100000, 50000, 50000], "", "skill_expert") == [50000, 100000]
     assert validate_retention_mode(2, [], "scratch2", "skill_aux") == []
+    assert validate_retention_mode(1, [50000, 100000], "", "skill_aux") == [50000, 100000]
     with pytest.raises(ValueError, match="checkpoint_archive"):
-        validate_retention_mode(2, [], "", "skill_aux")
+        validate_retention_mode(2, [], "", "pi05")
     with pytest.raises(ValueError, match="without checkpoint_archive"):
         validate_retention_mode(2, [50000], "scratch2", "skill_expert")
+
+
+def test_aux_retention_keeps_protected_and_never_deletes_foreign_models(tmp_path):
+    cfg = config(tmp_path, keep=1)
+    cfg.policy.type = "skill_aux"
+    foreign = checkpoint(tmp_path, 10000)
+    for step in (20000, 50000, 60000, 70000, 100000):
+        current = checkpoint(tmp_path, step)
+        (current / "pretrained_model/config.json").write_text('{"type":"skill_aux"}')
+        update_last_checkpoint(current)
+        prune_local_checkpoints(cfg, current)
+    assert steps(tmp_path) == {10000, 50000, 100000}
+    assert foreign.is_dir()
 
 
 def test_native_config_validates_serializes_and_resumes_retention(tmp_path):

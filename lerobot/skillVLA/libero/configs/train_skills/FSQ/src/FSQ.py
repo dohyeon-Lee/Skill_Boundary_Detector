@@ -3169,6 +3169,8 @@ def different_code_shuffle_sources(indices: Tensor) -> tuple[Tensor, Tensor]:
 class SplineFSQAEConfig:
     format_version: int = FORMAT_VERSION
     action_dim: int = 7
+    action_space: str = "dataset"
+    """Raw dataset/absolute_joint targets or DP-style delta_joint action sequences."""
     enc_dim: int = 8
     state_dim: int = 8
     n_control: int = 30
@@ -3423,6 +3425,11 @@ class SplineFSQAE(nn.Module):
         elif cfg.state_rnn_terminator:
             cfg.terminator_input_space = "state"
             cfg.terminator_model = "rnn"
+        if getattr(cfg, "action_space", "dataset") == "delta_joint" and (
+            cfg.action_dim != 14 or cfg.state_dim < 14 or cfg.encoder_arch != "action_seq"
+            or not cfg.reconstructor_only or cfg.autoencoder_mode not in {"action", "norm_action"}
+        ):
+            raise ValueError("delta_joint FSQ requires the ABC 14D action-sequence reconstructor-only preset.")
         if cfg.terminator_termination_only and not cfg.reconstructor_only:
             cfg.terminator_progress = False
             cfg.terminator_termination = True
@@ -6093,7 +6100,13 @@ class FSQTrajectoryDataset(Dataset):
         )
         self.lengths: list[int] = []
         self.states = [np.asarray(x, dtype=np.float32) for x in states]
-        self.actions = [np.asarray(x, dtype=np.float32) for x in actions]
+        from action_representation import prepare_fsq_actions
+
+        self.actions = [
+            prepare_fsq_actions(action, state, getattr(cfg, "action_space", "dataset"),
+                                cfg.action_gripper_indices)
+            for action, state in zip(actions, self.states, strict=True)
+        ]
         self.metadata = metadata
         self.raw_dataset_dir = str(raw_dataset_dir)
         self._raw_dataset = None
@@ -6737,6 +6750,12 @@ class FSQTrajectoryDataset(Dataset):
                 preserve_gripper=self.cfg.boundary_aug_preserve_gripper,
             )
             if self.cfg.encoder_arch == "action_seq":
+                if getattr(self.cfg, "action_space", "dataset") == "delta_joint":
+                    from action_representation import unpack_delta_joint_context
+
+                    augmented = unpack_delta_joint_context(
+                        augmented, self.cfg.action_dim, self.cfg.action_gripper_indices
+                    )
                 augmented_length = len(augmented)
                 item["augmented_action_seq"] = self._padded_encoder_action_sequence(
                     augmented
@@ -7915,6 +7934,13 @@ def train_spline_fsqae(
             boundary_source = (
                 selected_actions if cfg.encoder_arch == "action_seq" else selected_segments
             )
+            if getattr(cfg, "action_space", "dataset") == "delta_joint":
+                from action_representation import pack_action_state_context
+
+                boundary_source = [
+                    pack_action_state_context(action, state)
+                    for action, state in zip(selected_actions, take(decoder_states, ids), strict=True)
+                ]
             boundary_contexts = build_boundary_augmentation_contexts(
                 boundary_source,
                 selected_metadata,
@@ -8128,6 +8154,9 @@ def train_spline_fsqae(
                 f"checkpoint={resume_cfg.reconstructor_output_mode!r}, "
                 f"current={cfg.reconstructor_output_mode!r}."
             )
+        old_space = getattr(resume_cfg, "action_space", "dataset")
+        if (old_space == "delta_joint") != (getattr(cfg, "action_space", "dataset") == "delta_joint"):
+            raise ValueError("Cannot resume FSQ across absolute and delta action spaces; use a new run.")
         for probe, default in (
             ("encoder_arch", "spline"),
             ("encoder_length_token", True),

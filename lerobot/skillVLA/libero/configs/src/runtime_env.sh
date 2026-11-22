@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Shared per-job runtime storage. Source this after PROJECT_ROOT has been
 # resolved from the module config, before importing Hugging Face/LeRobot.
 

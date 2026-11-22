@@ -567,6 +567,16 @@ class SkillExpertConfig(PreTrainedConfig):
     bottleneck_termination_loss_weight: float = 1.0
     bottleneck_termination_target_sigma: float = 2.0
     bottleneck_termination_positive_weight: float = 2.0
+    # Optional shared-VLM termination readout. No skill-start proprio input.
+    vlm_termination_enabled: bool = False
+    vlm_termination_loss_weight: float = 1.0
+    vlm_termination_target_sigma: float = 1.0
+    vlm_termination_positive_weight: float = 2.0
+    vlm_termination_post_end_steps: int = 10
+    dual_bottleneck_layerwise: bool = False
+    # Auxiliary full-skill flow shares L1..9 (middle) or L1..18 (final).
+    # The action route, 9+9 conditions and two bottleneck bridges stay fixed.
+    dual_fullskill_readout: str = "middle"
     # Arch9--Arch12 take the canonical skill-end EEF state (never gripper) as
     # a Cond and/or Action-Expert AdaRMS input: XYZ or XYZ + axis-angle.
     skill_end_pose_mode: str = "xyz"
@@ -2458,6 +2468,30 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.train_terminator:
             if not str(self.fsq_path or "").strip():
                 raise ValueError("Historical own terminator requires fsq_path.")
+        if self.vlm_termination_enabled:
+            if not self.uses_dual_bottleneck or self.dual_uses_start_proprio:
+                raise ValueError("VLM termination requires a dual bottleneck without skill-start proprio.")
+            if self.bimanual_spatial_auxiliary or self.newtask_joint_enabled:
+                raise ValueError("Shared-VLM termination currently supports standalone LIBERO VSA training.")
+            if self.training_skill_source != "gt" or self.skill_flow_latent_best_of_n_enabled:
+                raise ValueError("VLM termination requires GT transition-selected skills and one action-flow candidate.")
+            for name in ("loss_weight", "target_sigma", "positive_weight"):
+                value = getattr(self, "vlm_termination_" + name)
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError(f"vlm_termination_{name} must be finite and non-negative.")
+            if self.vlm_termination_post_end_steps < 0:
+                raise ValueError("vlm_termination_post_end_steps must be non-negative.")
+        if self.dual_fullskill_readout not in {"middle", "final"}:
+            raise ValueError("dual_fullskill_readout must be middle|final.")
+        if self.dual_fullskill_readout == "final" and (
+            not self.uses_dual_bottleneck or self.dual_uses_start_proprio
+        ):
+            raise ValueError("Final full-skill readout requires a dual bottleneck without start proprio.")
+        if self.dual_bottleneck_layerwise and (
+            not self.uses_dual_bottleneck or self.dual_uses_start_proprio
+            or self.architecture_label.endswith("_last")
+        ):
+            raise ValueError("Layerwise dual bottlenecks require the full 9+9 bridge without start proprio.")
 
     def validate_features(self) -> None:
         if self.input_features is None:

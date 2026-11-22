@@ -19,6 +19,7 @@ if str(EVAL_SRC) not in sys.path:
 from eval_config import load_eval_config, load_global_config, _global_path  # noqa: E402
 from pi05_adapter import Pi05PolicyAdapter, format_pi05_prompts, quantile_transform, _load_quantiles  # noqa: E402
 from run_eval import HoldPolicy, resolve_dataset_tasks, rollout_over, video_frame, run_sequential_task, run  # noqa: E402
+import run_eval  # noqa: E402
 
 
 CONFIG_PATH = ROOT / "lerobot/skillVLA/abc/configs/train_pi05/PT/eval/abc_sim_eval_config.yaml"
@@ -149,7 +150,8 @@ def test_checkpoint_quantiles_override_dataset_and_partial_files_fail(tmp_path):
     np.testing.assert_array_equal(result["action"]["q99"], np.full(14, 3))
 
 
-def test_random_scenes_batch_inference_and_resume_completed_worlds(tmp_path, monkeypatch):
+@pytest.mark.parametrize('save_video', [False, True])
+def test_random_scenes_batch_inference_and_resume_completed_worlds(tmp_path, monkeypatch, save_video):
     created = []
 
     class FakeResult:
@@ -189,9 +191,21 @@ def test_random_scenes_batch_inference_and_resume_completed_worlds(tmp_path, mon
         def infer(self, observation):
             batches.append(len(observation["state"]))
             return super().infer(observation)
+        def video_frame(self, world, env, images, cameras):
+            return np.full((8, 30, 3), 77, np.uint8)
+
+    recordings = {}
+    class Writer:
+        def __init__(self, path): self.frames = recordings.setdefault(str(path), [])
+        def append_data(self, frame): self.frames.append(frame.copy())
+        def close(self): pass
+    monkeypatch.setattr(run_eval, '_video_writer', lambda path, config: Writer(path))
+    def finish(raw, target, world, fps):
+        world.update(raw_video_path=str(raw), video_path=str(target))
+    monkeypatch.setattr(run_eval, 'finish_video', finish)
 
     config = replace(load_eval_config(CONFIG_PATH), num_worlds=3, parallel_worlds=2,
-                     seed=1000, max_steps=3, save_video=False)
+                     seed=1000, max_steps=3, save_video=save_video, output_dir=tmp_path/'output')
     spec = SimpleNamespace(name="grab_clutter", prompt="grab", evaluator_name="target_in_box")
     result = run_sequential_task(config, "grab_clutter", spec, Policy(2), tmp_path)
     assert [world["steps"] for world in result["worlds"]] == [1, 3, 1]
@@ -202,6 +216,13 @@ def test_random_scenes_batch_inference_and_resume_completed_worlds(tmp_path, mon
     resumed = run_sequential_task(config, "grab_clutter", spec, Policy(2), tmp_path)
     assert resumed == result
     assert len(created) == 3
+    if save_video:
+        assert len(recordings) == 6
+        for world in result['worlds']:
+            raw, marked = recordings[world['raw_video_path']], recordings[world['camera_overlay_path']]
+            assert len(raw) == len(marked) == world['steps'] + 1
+            assert not any(frame.any() for frame in raw)
+            assert all((frame == 77).all() for frame in marked[1:])
 
 
 def test_output_contract_mismatch_prevents_loading_policy(tmp_path):

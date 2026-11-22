@@ -94,14 +94,14 @@ class DeskTest(unittest.TestCase):
         return status, data
 
     def test_tabs_assets_and_one_token_for_both_namespaces(self):
-        for page, active in (("/", "/"), ("/hf/", "/hf/"), ("/slurm/", "/slurm/"), ("/runpod/", "/runpod/")):
+        for page, active in (("/", "/"), ("/hf/", "/hf/"), ("/slurm/", "/slurm/"), ("/runpod/", "/runpod/"), ("/yonsei/", "/yonsei/")):
             status, data = self.request("GET", page)
             self.assertEqual(status, 200)
             self.assertIn(b'aria-label="', data)
             self.assertIn(f'href="{active}" aria-current="page"'.encode(), data)
             self.assertIn(b'href="/desk.css"', data)
         for asset in ("/app.js", "/style.css", "/desk.css", "/storage.js", "/hf/app.js", "/hf/hf.css",
-                      "/slurm/app.js", "/slurm/style.css", "/runpod/app.js", "/runpod/style.css"):
+                      "/slurm/app.js", "/slurm/style.css", "/runpod/app.js", "/runpod/style.css", "/yonsei/app.js", "/yonsei/style.css"):
             self.assertEqual(self.request("GET", asset)[0], 200, asset)
         self.assertIn(b'src="/hf/app.js"', self.request("GET", "/hf/")[1])
         self.assertIn(b'src="/slurm/app.js"', self.request("GET", "/slurm/")[1])
@@ -111,6 +111,33 @@ class DeskTest(unittest.TestCase):
         self.assertEqual(config["token"], hf["token"])
         self.assertEqual(config["ui"], "unified")
         self.assertEqual(self.factory_calls, 1)
+
+    def test_yonsei_progress_refresh_and_collected_video_range(self):
+        from unittest.mock import patch
+        import desk as service
+        root = Path(self.temp.name)
+        output = root / 'result_yonsei'
+        output.mkdir()
+        (output / 'clip.mp4').write_bytes(b'0123456789')
+        class YonseiFake(FakeMonitor):
+            def snapshot(self):
+                return {'jobs': [{'id': 'run-one', 'state': 'COMPLETED',
+                        'collection': {'state': 'COLLECTED', 'path': str(output)}}]}
+        monitor = YonseiFake()
+        self.server._yonsei_factory = lambda: monitor
+        status, body = self.request('GET', '/yonsei/api/state')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['token'], self.server.token)
+        self.assertTrue(monitor.started)
+        self.assertEqual(self.request('POST', '/yonsei/api/refresh')[0], 403)
+        self.assertEqual(self.request('POST', '/yonsei/api/refresh', headers={
+            'X-Sync-Token': self.server.token})[0], 200)
+        self.assertTrue(monitor.refresh.is_set())
+        with patch.object(service, 'REPO', root):
+            self.assertEqual(self.request('GET', '/yonsei/results/run-one/clip.mp4',
+                                         headers={'Range': 'bytes=2-5'}), (206, b'2345'))
+            self.assertIn(b'clip.mp4', self.request('GET', '/yonsei/results/run-one/')[1])
+            self.assertEqual(self.request('GET', '/yonsei/results/run-one/%2e%2e/outside')[0], 400)
 
     def test_runpod_routes_require_confirmation_csrf_and_keep_other_queues_isolated(self):
         class RunPodFake(FakeMonitor):

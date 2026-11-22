@@ -159,7 +159,12 @@ def retry_command(command, metadata, run_dir, validator=None):
         marker = output / '.gpu_guard_owner'
         if marker.is_symlink() or not marker.is_file() or marker.read_text() != str(run_dir):
             raise ValueError('Output ownership marker changed; refusing to move it')
-        target = output.with_name(output.name + '.gpu-paused-' + Path(run_dir).name + '-' + uuid.uuid4().hex[:8])
+        suffix = '.gpu-paused-' + Path(run_dir).name[:32] + '-' + uuid.uuid4().hex[:8]
+        name_max = os.pathconf(output.parent, 'PC_NAME_MAX')
+        # Run names can already approach NAME_MAX; keep the unique recovery
+        # suffix intact and truncate the descriptive prefix on UTF-8 boundaries.
+        prefix = output.name.encode()[:name_max - len(suffix.encode())].decode('utf-8', errors='ignore')
+        target = output.with_name(prefix + suffix)
         output.rename(target)  # Never delete artifacts or checkpoints.
         print('GPU memory guard: preserved incomplete fresh output at ' + str(target), flush=True)
     return command

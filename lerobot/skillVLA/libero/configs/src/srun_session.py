@@ -20,6 +20,21 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[5]
 SELF = Path(__file__).resolve()
+
+
+def allocation_worker():
+    return runpy.run_path(str(SELF.with_name('allocation_worker.py')))
+
+
+def dispatch_existing(path, allocation):
+    worker = allocation_worker()
+    root = path.parent.parent
+    directory = worker['ensure'](root, allocation, SELF, tmux_command())
+    worker['enqueue'](directory, path)
+    print(f"Queued inside existing Slurm allocation {allocation['JobId']}; no new step or GPU requested.")
+    print(f"Record: {path}")
+    print(f"Console: {path.parent / 'srun_console.log'}")
+    return 0
 BATCH_ONLY = {"--array", "--dependency", "--parsable", "--wrap", "--wait", "--hold"}
 ALIASES = {"-J": "--job-name", "-p": "--partition", "-q": "--qos", "-w": "--nodelist",
            "-x": "--exclude", "-c": "--cpus-per-task", "-t": "--time", "-o": "--output",
@@ -34,7 +49,8 @@ SELECTORS = ("STAGE1_TRAIN_CONFIG", "STAGE1_ARCHITECTURE_OVERRIDE", "STAGE1_GROU
 def existing_allocation(identifier):
     if not isinstance(identifier, str) or re.fullmatch(r"[1-9][0-9]*", identifier) is None:
         raise ValueError("srun_existing requires a positive numeric srun_job_id.")
-    text = subprocess.check_output(["scontrol", "show", "job", "-o", identifier], text=True, timeout=15)
+    text = subprocess.check_output(["scontrol", "show", "job", "-o", identifier], text=True, timeout=15,
+                                   env={**os.environ, "TZ": "UTC"})
     info = dict(part.split("=", 1) for part in text.split() if "=" in part)
     if info.get("JobId") != identifier or not info.get("UserId", "").endswith(f"({os.getuid()})"):
         raise ValueError("The requested allocation does not belong to the current user.")
@@ -88,6 +104,23 @@ def private_json(path, data):
     with os.fdopen(fd, "w") as stream:
         json.dump(data, stream, ensure_ascii=False, indent=2)
     temporary.replace(path)
+
+
+def exported_environment(environment, spec):
+    parts = spec.split(',')
+    result = dict(environment) if 'ALL' in parts else {
+        key: environment[key] for key in ('PATH', 'HOME', 'USER') if key in environment}
+    for item in parts:
+        if item in {'ALL', 'NONE', 'NIL'}:
+            continue
+        key, separator, value = item.partition('=')
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+            raise ValueError('Invalid --export variable name')
+        if separator:
+            result[key] = value
+        elif key in environment:
+            result[key] = environment[key]
+    return result
 
 
 def tmux_command():
@@ -145,12 +178,12 @@ def submit(arguments, existing_job_id=None, reserve_only=False):
     allocation = existing_allocation(existing_job_id) if existing_job_id is not None else None
     if allocation:
         if str(options.get("--gres", "gpu:1")).rsplit(":", 1)[-1] != "1":
-            raise ValueError("An additional step must request one shared GPU.")
+            raise ValueError("Existing-allocation execution requires one shared GPU.")
         if int(options.get("--cpus-per-task", "1")) > int(allocation["NumCPUs"]):
             raise ValueError(f"Requested CPUs exceed allocation {existing_job_id}'s {allocation['NumCPUs']} CPUs.")
     reuse = (existing_job_id is None and os.environ.get("SBD_SRUN_SESSION") == "1"
              and bool(os.environ.get("SLURM_JOB_ID")))
-    if not reuse:
+    if not reuse and not allocation:
         for tool in ("tmux", "srun"):
             if not shutil.which(tool):
                 raise ValueError(f"srun mode requires {tool}.")
@@ -172,21 +205,27 @@ def submit(arguments, existing_job_id=None, reserve_only=False):
     if reserve_only:
         data["reserve_only"] = True
     if allocation:
-        data.update(existing_job_id=existing_job_id, allocation_submit_time=allocation["SubmitTime"])
+        data.update(existing_job_id=existing_job_id, allocation_submit_time=allocation["SubmitTime"],
+                    execution_mode="allocation_worker")
     private_json(path, data)
+    if allocation:
+        return dispatch_existing(path, allocation)
     if reuse:
         print(f"Reusing Slurm allocation {os.environ['SLURM_JOB_ID']}; no new job requested.", flush=True)
         return run_training(path)
 
     rc = directory / "allocated.bashrc"
     retry = shlex.join([sys.executable, str(SELF), "run", str(path)])
-    release = "Close this extra step: exit (main allocation stays)" if allocation else "Release GPU: exit"
+    release = "Release GPU: exit"
+    worker_start = shlex.join([sys.executable, str(SELF.with_name('allocation_worker.py')),
+                               'start-current', str(root), str(SELF)])
     rc.write_text(
         'if [ -f "$HOME/.bashrc" ]; then source "$HOME/.bashrc"; fi\n'
         'export SBD_SRUN_SESSION=1\n'
-        f'export SBD_SRUN_EXISTING_STEP={1 if allocation else 0}\n'
+        'export SBD_SRUN_EXISTING_STEP=0\n'
         f'export SLURM_SUBMIT_DIR={shlex.quote(data["cwd"])}\n'
         f'cd -- {shlex.quote(data["cwd"])}\n'
+        f'{worker_start}\n'
         f'sbd_retry() {{ {retry}; }}\n'
         'if sbd_retry; then sbd_status=0; else sbd_status=$?; fi\n' +
         ('echo "GPU allocation is ready. No training was started."\n' if reserve_only else
@@ -200,7 +239,7 @@ def submit(arguments, existing_job_id=None, reserve_only=False):
     try:
         # The tmux pane owns connect/srun itself, not an outer interactive shell.
         # Training may exit while allocated.bashrc keeps the GPU for retries;
-        # only the end of the allocation/extra step closes this tmux session.
+        # only the end of the allocation closes this tmux session.
         subprocess.run([*tmux, "new-session", "-d", "-s", session, "-c", data["cwd"],
                         "exec " + launch, ";", "set-option", "-w", "-t", session,
                         "remain-on-exit", "off", ";", "pipe-pane", "-o", "-t", session,
@@ -217,6 +256,11 @@ def submit(arguments, existing_job_id=None, reserve_only=False):
 
 def connect(path):
     data = json.loads(path.read_text())
+    if data.get("existing_job_id"):
+        allocation = existing_allocation(data["existing_job_id"])
+        if allocation.get("SubmitTime") != data["allocation_submit_time"]:
+            raise ValueError("Allocation identity changed since submission; no task was started.")
+        return dispatch_existing(path, allocation)
     environment = os.environ.copy()
     environment.update(data["environment"])
     for key in list(environment):
@@ -225,24 +269,14 @@ def connect(path):
     options = {key: value for key, value in data["options"].items()
                if key not in {"--output", "--error", "--requeue", "--no-requeue", "--chdir"}}
     options.update({"--nodes": "1", "--ntasks": "1", "--kill-on-bad-exit": "0"})
-    if data.get("existing_job_id"):
-        allocation = existing_allocation(data["existing_job_id"])
-        if allocation.get("SubmitTime") != data["allocation_submit_time"]:
-            raise ValueError("Allocation identity changed since submission; no step was started.")
-        for key in ("--partition", "--qos", "--nodelist", "--exclude", "--account", "--reservation",
-                    "--constraint", "--time", "--exclusive", "--oversubscribe"):
-            options.pop(key, None)
-        options.update({"--jobid": data["existing_job_id"], "--overlap": None, "--gres": "gpu:1"})
     args = ["srun", *(key if value is None else f"{key}={value}" for key, value in options.items()),
             "--chdir=" + data["cwd"], "--pty", "bash", "--noprofile", "--rcfile",
             str(path.parent / "allocated.bashrc"), "-i"]
-    action = "Adding step to allocation " + data["existing_job_id"] if data.get("existing_job_id") else "Requesting Slurm allocation"
-    print(action + " in " + data["session"], flush=True)
+    print("Requesting Slurm allocation in " + data["session"], flush=True)
     code = subprocess.call(args, cwd=data["cwd"], env=environment)
     private_json(path.parent / "allocation_exit.json", {"exit_code": code,
         "ended_at": datetime.now(timezone.utc).isoformat(), "launcher_pid": os.getpid()})
-    message = "additional step closed; main allocation unchanged" if data.get("existing_job_id") else "this session no longer holds the allocation"
-    print(f"srun exited ({code}); {message}.", flush=True)
+    print(f"srun exited ({code}); this session no longer holds the allocation.", flush=True)
     return code
 
 
@@ -250,8 +284,15 @@ def run_training(path):
     if not os.environ.get("SLURM_JOB_ID"):
         raise ValueError("Training must run inside the allocated Slurm shell.")
     data = json.loads(path.read_text())
+    if data.get("existing_job_id"):
+        allocation = existing_allocation(data["existing_job_id"])
+        if (os.environ["SLURM_JOB_ID"] != data["existing_job_id"]
+                or allocation["SubmitTime"] != data["allocation_submit_time"]
+                or os.environ.get("SLURMD_NODENAME") != os.uname().nodename.split('.')[0]):
+            raise ValueError("Task is not running inside the requested original allocation.")
     environment = os.environ.copy()
     environment.update(data["environment"])
+    environment = exported_environment(environment, data['options'].get('--export', 'ALL'))
     # Slurm assigns visible devices on the compute node; never restore the submit host's mapping.
     for key, value in os.environ.items():
         if key.startswith("SLURM_") or key in {"CUDA_VISIBLE_DEVICES", "TMUX", "TMUX_PANE"}:
@@ -259,7 +300,9 @@ def run_training(path):
     environment.update(SBD_SRUN_SESSION="1", SLURM_SUBMIT_DIR=data["cwd"])
     environment = memory_guard_environment(environment)
     if data.get("existing_job_id"):
-        environment["SBD_SRUN_EXISTING_STEP"] = "1"
+        environment["SBD_SRUN_EXISTING_STEP"] = "0"
+        environment["SBD_SRUN_TASK_ID"] = path.parent.name
+        environment["SLURM_CPUS_PER_TASK"] = str(data["options"].get("--cpus-per-task", "1"))
     identifier = environment["SLURM_JOB_ID"]
     # Collect locally inside the held allocation. Repeated SSH logouts can
     # trigger systemd RemoveIPC cleanup of a live DataLoader's /dev/shm files.
@@ -284,7 +327,11 @@ def run_training(path):
         target.parent.mkdir(parents=True, exist_ok=True)
         return target
     output, error = log_path("--output", "out"), log_path("--error", "err")
-    if environment.get("SBD_SRUN_EXISTING_STEP") == "1":
+    if data.get("existing_job_id"):
+        task = path.parent.name.rsplit('-', 1)[-1]
+        output = output.with_name(output.stem + f".run{task}" + output.suffix)
+        error = error.with_name(error.stem + f".run{task}" + error.suffix)
+    elif environment.get("SBD_SRUN_EXISTING_STEP") == "1":
         step = environment.get("SLURM_STEP_ID", "unknown")
         if re.fullmatch(r"[0-9]+", step) is None:
             raise ValueError("An additional srun step requires a numeric SLURM_STEP_ID.")

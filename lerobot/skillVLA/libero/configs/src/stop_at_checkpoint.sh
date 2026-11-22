@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../remote.sh"
+fi
 # Cancel training jobs once they have finished writing a given checkpoint.
 #
 # Each job is resolved to its output directory from its own Slurm stdout log, so this works for

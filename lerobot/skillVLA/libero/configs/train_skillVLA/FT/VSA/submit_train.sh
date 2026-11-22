@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Submit NewTask FT for the VSA. Edit ../newtask_ft_common_config.yaml (dataset
 # and source checkpoints) and vsa_ft_config.yaml (schedule), then run this.
 set -euo pipefail
+# Optional --JOB_ID reuses that Slurm allocation.
+source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
+
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
@@ -72,7 +79,13 @@ if [ "${NEWTASK_FT_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
+# Existing allocations execute the shell directly; freeze its bytes as well
+# as YAML so later edits cannot move a running Bash reader's offsets.
+FT_EXEC_SCRIPT="$(dirname "${CONFIG_PATH}")/train.sbatch"
+cp -- "${SRC_DIR}/train.sbatch" "${FT_EXEC_SCRIPT}"
+bash -n "${FT_EXEC_SCRIPT}"
+
 NEWTASK_FT_VSA_CONFIG="${CONFIG_PATH}" \
 NEWTASK_FT_VSA_RESOLVER="${SRC_DIR}/newtask_ft_vsa_config.py" \
 NEWTASK_FT_BOOTSTRAP_PYTHON="${BOOTSTRAP_PYTHON}" \
-  submit_job "${SBATCH_ARGS[@]}" "${SRC_DIR}/train.sbatch"
+  submit_job "${SBATCH_ARGS[@]}" "${FT_EXEC_SCRIPT}"

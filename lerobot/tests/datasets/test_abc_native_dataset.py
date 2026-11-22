@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import pickle
 from pathlib import Path
 import sys
 
@@ -303,6 +304,11 @@ def test_native_skillvla_annotations_select_and_annotate_episodes(
     assert item["skill_initial_frame"].tolist() == [0, 2, -1]
     assert item["skill_boundary"].item() == 0
     torch.testing.assert_close(item["skill_decoder_state"], item["observation.state"])
+
+    # Spawned DataLoader workers must receive arrays, not an open NPZ reader.
+    restored = pickle.loads(pickle.dumps(dataset))
+    assert restored[2]["skill_sequence"].tolist() == [3, 4, 27]
+    torch.testing.assert_close(restored[2]["skill_decoder_state"], item["skill_decoder_state"])
 
 
 def test_source_task_filter_selects_whole_episodes(

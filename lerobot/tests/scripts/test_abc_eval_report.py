@@ -18,6 +18,44 @@ from report import organize_existing, video_paths, panel_name  # noqa: E402
 import run_eval  # noqa: E402
 
 
+def test_skill_banner_and_termination_graph_share_frame_boundaries(tmp_path):
+    from report import annotate_video, build_result, render_report
+    from skill_trace_report import SKILL_OVERLAY_VERSION, active_skill, load_skill_trace, skill_color
+
+    raw, target = tmp_path / 'raw.mp4', tmp_path / 'src/video.mp4'
+    with imageio.get_writer(str(raw), fps=20, macro_block_size=1) as writer:
+        for _ in range(5):
+            writer.append_data(np.full((48, 256, 3), 100, dtype=np.uint8))
+    trace = tmp_path / 'src/trace.json'
+    trace.parent.mkdir()
+    trace.write_text(json.dumps({'skills': [
+        {'step': 0, 'end_step': 4, 'skill_order': 0, 'skill_code': 9, 'end_reason': 'terminator'},
+        {'step': 4, 'end_step': 8, 'skill_order': 1, 'skill_code': 53, 'end_reason': 'timeout'}],
+        'termination_trace': [[2, 0, .2], [4, 0, .8], [6, 1, .1], [8, 1, .3]]}))
+    world = {'world_index': 0, 'seed': 1, 'steps': 8, 'success': True, 'prompt': 'grab target',
+             'skill_trace_path': str(trace), 'video_every_n_steps': 2, 'video_path': str(target)}
+    skills = load_skill_trace(world)
+    assert active_skill(skills, 4)['code'] == 9
+    assert active_skill(skills, 6)['code'] == 53
+    world['video_overlay'] = annotate_video(raw, target, world)
+    assert world['video_overlay']['version'] == SKILL_OVERLAY_VERSION
+    assert world['video_overlay']['fps'] == 20
+    with imageio.get_reader(str(target)) as reader:
+        assert reader.count_frames() == 5
+        # The colored skill bar follows the final camera row, before language.
+        for frame, code in [(2, 9), (3, 53)]:
+            pixel = reader.get_data(frame)[26 + 48 + 2, 5].astype(float)
+            assert np.max(np.abs(pixel - skill_color(code))) < 15
+    result = build_result({'type': 'skillvla', 'skillvla': {'termination_threshold': .7}}, 'abc', [
+        {'task': 'grab_clutter', 'requested_task': 'grab_clutter', 'num_worlds': 1,
+         'successes': 1, 'worlds': [world]}], expected=1)
+    render_report(tmp_path, result)
+    page = (tmp_path / 'index.html').read_text()
+    assert 'class="termination-panel" hidden' in page
+    assert '"threshold":0.7' in page and '"fps":20.0,"stride":2' in page
+    assert 'video.currentTime * trace.fps * trace.stride' in page
+
+
 def test_organize_preserves_raw_metrics_frames_and_relative_report_links(tmp_path):
     task = tmp_path / 'grab_clutter'
     task.mkdir()
@@ -91,6 +129,23 @@ def test_annotation_failure_keeps_outcome_for_cpu_only_retry(tmp_path, monkeypat
     monkeypatch.setattr(run_eval, 'finish_video', finish)
     run_eval.commit_world(config, '00_pi05_50k', 'grab_clutter', metrics, saved)
     assert 'video_annotation_pending' not in json.loads((metrics / 'world_000.json').read_text())
+
+
+def test_finish_video_uses_diagnostic_source_and_preserves_clean_recording(tmp_path):
+    from report import finish_video
+    raw, marked, target = tmp_path/'raw.mp4', tmp_path/'marked.mp4', tmp_path/'final.mp4'
+    for path, value in [(raw, 40), (marked, 140)]:
+        with imageio.get_writer(str(path), fps=30, macro_block_size=1) as writer:
+            for _ in range(2):
+                writer.append_data(np.full((48, 96, 3), value, np.uint8))
+    original = hashlib.sha256(raw.read_bytes()).hexdigest()
+    world = {'world_index': 0, 'success': True, 'prompt': 'grab', 'camera_overlay_path': str(marked)}
+    finish_video(raw, target, world, 30)
+    assert hashlib.sha256(raw.read_bytes()).hexdigest() == original
+    assert world['raw_video_path'] == str(raw) and world['video_path'] == str(target)
+    with imageio.get_reader(str(target)) as reader:
+        assert reader.count_frames() == 2
+        assert abs(float(reader.get_data(0)[40, 40].mean()) - 140) < 5
 
 
 def test_evaluation_writes_metrics_and_refreshes_report(tmp_path, monkeypatch):

@@ -88,7 +88,7 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(warm["jobs"][0]["result_id"], result["id"])
 
     def test_boundary_result_keeps_thresholds_under_its_job(self):
-        self.out = self.root / "lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs/comparison"
+        self.out = self.root / "lerobot/skillVLA/libero/configs/train_skills/DP/eval/outputs/comparison"
         self.out.mkdir(parents=True)
         thresholds = {"without_gripper": {"groups": {"dataset": {"threshold": 0.2, "episodes": 3921, "points": 77782}},
                         "calibration": {"episodes": 3921, "evaluation_episodes": 200}}}

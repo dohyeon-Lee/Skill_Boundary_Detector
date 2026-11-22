@@ -362,6 +362,8 @@ class SkillVLADataset(LeRobotDataset):
 
     def __init__(self, *args, **kwargs):
         self._terminator_goal_uv = bool(kwargs.pop("terminator_goal_uv", False))
+        self._vlm_termination_enabled = bool(kwargs.pop("vlm_termination_enabled", False))
+        self._vlm_termination_post_end_steps = int(kwargs.pop("vlm_termination_post_end_steps", 10))
         self._goal_xyz_uv_noise = bool(kwargs.pop("goal_xyz_uv_noise", False))
         self._terminator_post_end_steps = int(kwargs.pop("terminator_post_end_steps", 0))
         if self._terminator_post_end_steps < 0:
@@ -1392,6 +1394,8 @@ class SkillVLADataset(LeRobotDataset):
             item[SKILL_EFFECTIVE_DE] = torch.tensor(
                 effective_de, dtype=torch.long
             )
+            if getattr(self, "_vlm_termination_enabled", False):
+                self._add_vlm_termination_targets(item, ep_idx, frame_index, kp, ifs, lens, ss, ep_len)
             progress = (current_frame - int(ifs[kp])) / max(int(lens[kp]) - 1, 1)
             item[SKILL_PROGRESS] = torch.tensor(
                 float(np.clip(progress, 0.0, 1.0)), dtype=torch.float32
@@ -1409,6 +1413,38 @@ class SkillVLADataset(LeRobotDataset):
                 item, item_index=item_index, frame_index=frame_index, episode_length=ep_len
             )
         return item
+
+    def _add_vlm_termination_targets(self, item, episode, frame, selected, starts, lengths, codes, episode_length):
+        from .vlm_termination_supervision import (
+            DISTANCE, TERMINAL, PAST_CODES, PAST_VALID, PAST_UV, PAST_TERMINAL,
+            PAST_DISTANCE, termination_conditions,
+        )
+        steps = self._vlm_termination_post_end_steps
+        distance, terminal, indices = termination_conditions(
+            frame, selected, starts, lengths, codes, steps, episode_length=episode_length,
+        )
+        if self._focus_uv is None:
+            raise ValueError("VLM termination requires the existing skill endpoint UV artifact.")
+        slots = len(indices)
+        past_codes = torch.zeros(slots, dtype=torch.long)
+        valid, past_terminal = torch.zeros(slots, dtype=torch.bool), torch.zeros(slots, dtype=torch.bool)
+        uv = torch.zeros(slots, 2)
+        past_distance = torch.zeros(slots, dtype=torch.long)
+        for slot, rank in enumerate(indices):
+            if rank < 0:
+                continue
+            point, _, _, _ = self._focus_uv.target(episode, int(rank), int(starts[rank]))
+            past_codes[slot] = int(codes[rank])
+            uv[slot] = torch.as_tensor(point).float()
+            valid[slot] = torch.isfinite(uv[slot]).all()
+            past_distance[slot] = int(starts[rank]) + int(lengths[rank]) - 1 - frame
+            past_terminal[slot] = frame == episode_length - 1 and int(starts[rank]) + int(lengths[rank]) == episode_length
+        item.update({
+            DISTANCE: torch.tensor(distance, dtype=torch.long),
+            TERMINAL: torch.tensor(terminal), PAST_CODES: past_codes, PAST_VALID: valid,
+            PAST_UV: torch.nan_to_num(uv).clamp(-1, 1), PAST_TERMINAL: past_terminal,
+            PAST_DISTANCE: past_distance,
+        })
 
     def _add_preskill_plan_inputs(self, item, episode_index, rank, start_frame, starts, codes):
         from . import preskill_plan as memory

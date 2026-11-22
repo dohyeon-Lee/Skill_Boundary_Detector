@@ -1,0 +1,29 @@
+# GPU 부분빌드가 필요한 설정
+sbd_prediction_horizon: all #all  # 첫 N개 action 또는 all. DP history/최대 길이는 체크포인트에서 읽음.
+replan_interval: 5           # SBD 계산 간격 (원본 프레임)
+gaussian_center: current_gt  # current_gt | previous_action | pure_noise (전체 역확산, SBD=step7 / HTML=7·10 비교)
+pca_scope: dataset          # dataset=전체 데이터 PCA(CPU), selected=평가 에피소드만. 호환되는 기존 전체 PCA는 재사용.
+
+# 캐시가 있으면 CPU만 사용하는 설정
+gmm_components: 5
+nms_frames: 15
+smooth_window: 7            # 양의 홀수. 1은 스무딩 끔.
+polyorder: 4
+score_power: 1              # LIBERO standard=2, ABC standard=1
+peak_curvature_scale: 0   # 0=끄기. 1=전체 후보 피크 평균 곡률 미만 제외, 0.5=평균의 50% 미만 제외. CPU only.
+
+# global outputs_root/DP/<모델명>/checkpoints/<번호>/pretrained_model
+# dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small
+dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_fresh_20261119
+# dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_gru_iid_constLR
+# dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_gru_iid_constLR_bs256
+dp_checkpoint: 100000
+target_dataset: libero_90_full_full
+target_task: libero_90
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]  # LIBERO suite ID. 장면별로 정확하게 선택.
+n_episodes: 20                          # task마다 선택할 에피소드 개수
+
+# 앞에 모델 특성, 뒤에 _prediction_replan_GMM_NMS_window_polyorder_power_curvature_center가 붙음.
+# 모델 또는 평가 에피소드 선택을 바꾸면 이 기본 이름도 변경.
+output_name: libero90_obs20_future24_tasks0_9_20ep_100k_diff
+# 숨긴 기본값은 src/defaults.py, 적용값은 outputs/<이름>/src/evaluation_settings.json.

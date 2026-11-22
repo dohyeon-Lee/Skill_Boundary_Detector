@@ -1,33 +1,28 @@
 # ABC whole-skill FSQ. SBD boundaries come from the selected 100k delta-joint
-# DP artifact, while each saved skill's untouched 14D native action is the FSQ
-# input/reconstruction target (absolute YAM joints, including both grippers).
+# DP artifact. Saved skills retain raw actions; the option below chooses the
+# FSQ encoder/reconstructor representation without rebuilding the skillset.
 
 # ── Data artifact ─────────────────────────────────────────────────────────────
 target_dataset: abc_sim_all
 abc_source_tasks: [grab_clutter]
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs30_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
+skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
+# skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_gru_iid_constLR_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
 skillset_name: skillset
 
-# The selected folder's manifest owns DP/SBD provenance. These values keep the
-# generic resolver's temporal contract explicit and are checked against it.
-dp_n_obs_steps: 30
-dp_future_action_horizon: 36
-dp_action_sequence_mode: future_only
-dp_history_encoder: transformer
-dp_history_encoder_dim: 128
-dp_unet_size: small
-dp_lr_scheduler: constant
-dp_vision: state
+# DP/SBD provenance is read from the selected folder's skillset_manifest.json.
 
 # ── Architecture / codebook ──────────────────────────────────────────────────
-fsq_exp: abc_grab_clutter_absolute
-fsq_quantizer: {type: fsq, levels: [3, 3, 3]}
+fsq_exp: abc_grab_clutter_delta_joint_jit30
+fsq_action_space: delta_joint  # absolute_joint | delta_joint (DP와 동일한 joint delta, gripper는 absolute)
+# delta_joint: 첫 action - 시작 state, 이후 action 간 차분. 기존 skillset 재사용.
+# delta를 선택하면 fsq_exp의 _absolute는 _delta_joint로 바뀌어 별도 폴더에 저장.
+fsq_quantizer: {type: fsq, levels: [3, 3, 3, 2]}
 fsq_hidden_dim: 256
 fsq_num_layers: 2
 
-# Absolute joint actions are normalized with grab_clutter-only q01/q99 stats.
+# Absolute uses grab_clutter q01/q99; delta uses transformed skill q01/q99.
 # Both gripper axes [6,13] receive this MSE weight; the indices are taken from
 # the immutable skillset manifest rather than repeated here.
 fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}
@@ -46,8 +41,8 @@ fsq_pair_warmup: {enabled: true, epochs: 50, ramp_epochs: 50}
 # Boundary augmentation: the historical SkillVLA FSQ recipe with one shared
 # ABC limit. Every start/end and early/late direction inherits 15 frames
 # (0.5 seconds at 30 Hz); offset magnitude uses a half-normal distribution.
-fsq_boundary_aug_pmax: 15
-
+# fsq_boundary_aug_pmax: 15
+fsq_boundary_aug_pmax: 30
 # ── Optimization ─────────────────────────────────────────────────────────────
 fsq_lr: 3.0e-6
 fsq_lr_schedule: constant
@@ -58,7 +53,7 @@ fsq_termination_stratified_sampling: false
 fsq_num_workers: 24
 fsq_val_num_workers: 0
 fsq_val_every: 25
-fsq_checkpoint_every: 50
+fsq_checkpoint_every: 500
 fsq_save_best_model: false
 fsq_gradient_checkpointing: false
 

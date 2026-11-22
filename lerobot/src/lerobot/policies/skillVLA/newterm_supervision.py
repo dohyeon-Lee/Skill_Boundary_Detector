@@ -70,11 +70,14 @@ class NewTermFrameSampler:
     def __init__(self, dataset, steps, *, shuffle=True):
         if steps <= 0:
             raise ValueError("Newterm sampling requires post_end_steps > 0.")
-        episodes = np.asarray(dataset.hf_dataset["episode_index"], dtype=np.int64)
-        if not len(episodes):
+        if hasattr(dataset, "native_episode_end_indices"):
+            endpoints = dataset.native_episode_end_indices
+        else:
+            episodes = np.asarray(dataset.hf_dataset["episode_index"], dtype=np.int64)
+            endpoints = np.flatnonzero(np.r_[episodes[1:] != episodes[:-1], True])
+        if not len(dataset):
             raise ValueError("Newterm dataset has no frames.")
-        endpoints = np.flatnonzero(np.r_[episodes[1:] != episodes[:-1], True])
-        self.indices = list(range(len(episodes)))
+        self.indices = list(range(len(dataset)))
         self.indices.extend((int(index), True) for index in endpoints for _ in range(steps))
         self.shuffle = shuffle
 

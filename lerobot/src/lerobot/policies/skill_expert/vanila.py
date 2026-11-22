@@ -23,11 +23,13 @@ class VanilaSkillExpert(BothLIT7SkillExpert):
 
     def __init__(self, config):
         super().__init__(config)
+        self._alignment_token_count = 5 if getattr(config, "bimanual_spatial_auxiliary", False) else 3
         for name in ("cond_end_pose_condition", "end_pose_condition"):
             if name == "end_pose_condition" and config.omits_skill_expert_uv_goal:
                 setattr(self, name, nn.Identity())
                 continue
-            adapter = nn.Sequential(nn.Linear(2, self.width), nn.SiLU(),
+            uv_dim = 4 if getattr(config, "bimanual_spatial_auxiliary", False) else 2
+            adapter = nn.Sequential(nn.Linear(uv_dim, self.width), nn.SiLU(),
                                     nn.Linear(self.width, self.width, bias=False))
             nn.init.zeros_(adapter[-1].weight)
             setattr(self, name, adapter)
@@ -43,7 +45,9 @@ class VanilaSkillExpert(BothLIT7SkillExpert):
             self.bridge_proprio_condition = nn.Identity()
             self.skill_proj = nn.Identity()
         self.agent_end_state_head = nn.Sequential(
-            nn.LayerNorm(config.visual_bottleneck_width), nn.Linear(config.visual_bottleneck_width, 3),
+            nn.LayerNorm(config.visual_bottleneck_width),
+            nn.Linear(config.visual_bottleneck_width,
+                      6 if getattr(config, "bimanual_spatial_auxiliary", False) else 3),
         )
         self._current_proprio_condition = None
 
@@ -111,18 +115,20 @@ class VanilaSkillExpert(BothLIT7SkillExpert):
                 setattr(self, name, value)
 
     def _alignment_memories(self, memory):
+        if getattr(self.config, "bimanual_spatial_auxiliary", False):
+            return FullskillBsplineSkillExpert._alignment_memories(self, memory)
         return (*super()._alignment_memories(memory), memory)
 
     def _update_layerwise_latent(self, layer_index, latent, memory):
         reader = self.layerwise_condition_readers[layer_index]
         aligned = [reader.read_condition(latent[:, i:i + 1], camera)
                    for i, camera in enumerate(self._alignment_memories(memory))]
-        action = reader.read_condition(latent[:, 3:], memory)
+        action = reader.read_condition(latent[:, self._alignment_token_count:], memory)
         return reader.mix_latents(torch.cat([*aligned, action], dim=1))
 
     def _on_final_bottleneck_latent(self, latent):
         super()._on_final_bottleneck_latent(latent)
-        self._final_dual_patch_query = latent[:, :3] if self.training else None
+        self._final_dual_patch_query = latent[:, :self._alignment_token_count] if self.training else None
 
     # This shared readout does not construct a Bspline module or any plan tensors.
     predict_training_top_wrist_patch_and_xyz = FullskillBsplineSkillExpert.predict_training_top_wrist_patch_and_xyz

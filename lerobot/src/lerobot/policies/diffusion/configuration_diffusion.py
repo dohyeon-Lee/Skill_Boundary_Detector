@@ -124,7 +124,15 @@ class DiffusionConfig(PreTrainedConfig):
     # final state token; ``transformer_cls`` reads a learned summary token.
     history_encoder: str = "flat"
     history_encoder_dim: int = 128
+    # Legacy checkpoints/launchers keep their original default; ABC's
+    # GRU_iid and GRU_epi launchers explicitly select two layers.
     history_gru_layers: int = 1
+    # Inference/SBD carry hidden across real environment frames; training
+    # chooses independent windows or episode chunks below.
+    # False preserves the inference contract of existing GRU checkpoints.
+    history_gru_stateful: bool = False
+    # iid: independent windows; epi: chronological episode chunks with TBPTT.
+    history_gru_training: str = "iid"
     history_transformer_layers: int = 2
     history_transformer_heads: int = 4
 
@@ -337,6 +345,15 @@ class DiffusionConfig(PreTrainedConfig):
                 "history_encoder must be one of "
                 f"{sorted(supported_history_encoders)}, got {self.history_encoder!r}."
             )
+        if self.history_gru_stateful and (
+            self.history_encoder != "gru" or not self.state_only
+            or self.history_conditioning != "state" or self.action_sequence_mode != "future_only"
+        ):
+            raise ValueError("Stateful GRU requires history_encoder=gru, state_only=true, state conditioning and future_only actions.")
+        if self.history_gru_training not in {"iid", "epi"}:
+            raise ValueError("history_gru_training must be iid|epi.")
+        if self.history_gru_training == "epi" and not self.history_gru_stateful:
+            raise ValueError("Episode GRU training requires history_gru_stateful=true.")
         if self.history_encoder_dim < 1:
             raise ValueError(
                 f"history_encoder_dim must be positive, got {self.history_encoder_dim}."

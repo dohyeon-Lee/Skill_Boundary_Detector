@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Build the original LIBERO LeRobot-v3 dataset from staged HDF5 demos:
 #   ② HDF5→canonical v3  ③ exact non-video quantile stats
 # Download is NOT done here — run ./download_original_libero.sh (or

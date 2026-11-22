@@ -47,7 +47,7 @@ CONFIGS = Path("lerobot/skillVLA/libero/configs")
 EVALS = {
     "ft": CONFIGS / "train_skillVLA/FT/eval/ft_eval_config.yaml",
     "pt": CONFIGS / "train_skillVLA/PT/eval/pt_eval_config.yaml",
-    "boundary": CONFIGS / "train_skills/skill_eval/skill_boundary_detection/config.yaml",
+    "boundary": CONFIGS / "train_skills/DP/eval/eval_config.yaml",
 }
 INPUT_FIELDS = (
     "policy_path", "external_skill_model", "external_predictor_model",
@@ -426,10 +426,10 @@ def prepare(root, config, slot, *, dry_run=False, desk_url=None):
             raise ValueError("HF 평가 목록 업로드 검증에 실패했습니다.")
     cache.save()
     boundary = config.is_relative_to(root / EVALS["boundary"].parent)
-    command = f"bash {config.parent.relative_to(root)}/{'submit.sh' if boundary else 'submit_eval.sh'}"
+    command = f"bash {config.parent.relative_to(root)}/submit_eval.sh"
     if config.name not in {"ft_eval_config.yaml", "pt_eval_config.yaml"}:
-        variable = "DP_BOUNDARY_ABLATION_CONFIG" if boundary else "STAGE1_EVAL_CONFIG"
-        if not boundary or config.name != "config.yaml":
+        variable = "LIBERO_DP_EVAL_CONFIG" if boundary else "STAGE1_EVAL_CONFIG"
+        if not boundary or config.name != "eval_config.yaml":
             command = f"{variable}={recipe['config']} " + command
     print(f"준비 완료 ({slot}). RunPod에서 {command} 를 실행하세요.", flush=True)
 
@@ -539,9 +539,9 @@ def consume(root, config, slot, *, download_only=False, dry_run=False, workers=8
         print(f"평가 설정: {snapshot}")
         return
     boundary = config.is_relative_to(root / EVALS["boundary"].parent)
-    launcher = root / EVALS["boundary" if boundary else "pt" if slot == "pt" or "/PT/" in str(config) else "ft"].parent / ("submit.sh" if boundary else "submit_eval.sh")
+    launcher = root / EVALS["boundary" if boundary else "pt" if slot == "pt" or "/PT/" in str(config) else "ft"].parent / "submit_eval.sh"
     env = os.environ.copy()
-    env["DP_BOUNDARY_ABLATION_CONFIG" if boundary else "STAGE1_EVAL_CONFIG"] = str(snapshot)
+    env["LIBERO_DP_EVAL_CONFIG" if boundary else "STAGE1_EVAL_CONFIG"] = str(snapshot)
     env["SBD_EVAL_HF_READY"] = "1"
     # Retain the existing scheduler/local runner and GPU packing behavior.
     subprocess.run(["bash", str(launcher)], cwd=root, env=env, check=True)

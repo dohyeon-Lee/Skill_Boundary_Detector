@@ -167,6 +167,24 @@ def _fit_gmm(cloud: np.ndarray, *, components: int, covariance: str, n_init: int
     return None
 
 
+def cosine_curve(
+    descriptor_clouds: np.ndarray,
+    *,
+    components: int = 5,
+    covariance: str = "diag",
+    n_init: int = 10,
+    max_iter: int = 300,
+    min_effective_samples: float = 0.0,
+    weighted: bool = True,
+) -> np.ndarray:
+    """Weighted RMS cosine divergence, matching eval's unanchored cosine."""
+    return covariance_gated_cosine_curve(
+        descriptor_clouds, components=components, covariance=covariance,
+        n_init=n_init, max_iter=max_iter, min_effective_samples=min_effective_samples,
+        weighted=weighted, reliability_pair_power=0.0,
+    )
+
+
 def covariance_gated_cosine_curve(
     descriptor_clouds: np.ndarray,
     *,

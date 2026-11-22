@@ -8,7 +8,7 @@ try:
 except ImportError:
     from eval_archive import ARCHIVE, MANIFEST, pack
 
-BOUNDARY_BASE = "lerobot/skillVLA/libero/configs/train_skills/skill_eval/skill_boundary_detection/outputs"
+BOUNDARY_BASE = "lerobot/skillVLA/libero/configs/train_skills/DP/eval/outputs"
 BASES = tuple(f"lerobot/skillVLA/libero/configs/train_skillVLA/{stage}/eval/outputs" for stage in ("PT", "FT")) + (BOUNDARY_BASE,)
 LEGACY_BASES = tuple(base.replace("lerobot/skillVLA/", "lerobot/examples/", 1) for base in BASES)
 SUPPORTED_BASES = BASES + LEGACY_BASES
@@ -49,9 +49,11 @@ def select_results(project, paths):
         folder = result_path(project, path)
         path = folder.relative_to(Path(project).resolve()).as_posix()
         if path.startswith(BOUNDARY_BASE + "/"):
-            marker = folder / "evaluation_complete.json"
+            assets = folder / "src" if (folder / "src/evaluation_complete.json").is_file() else folder
+            marker = assets / "evaluation_complete.json"
             complete = marker.is_file() and json.loads(marker.read_text()).get("kind") == "skill_boundary_detection"
-            complete = complete and all((folder / name).is_file() for name in ("index.html", "summary.json", "threshold_statistics.json"))
+            complete = complete and (folder / "index.html").is_file()
+            complete = complete and all((assets / name).is_file() for name in ("summary.json", "threshold_statistics.json"))
         else:
             complete = (folder / "metrics/eval_info_merged.json").is_file()
         if not folder.is_dir() or not complete:

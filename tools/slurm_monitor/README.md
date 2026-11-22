@@ -16,6 +16,14 @@ An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
 
 ## Jobs and completion instructions
 
+ABC/LIBERO `DP/eval` cards show separate counters for the DP partial build,
+GMM clustering, threshold/curvature calculation, plots, and video HTML.
+Counts include reusable caches and follow each attempt's frozen probe and
+episode selection. Percentages describe the current stage, not elapsed-time
+estimates. Full caches or an older HTML do not mark a running recut complete.
+Existing jobs can be monitored without restarting their evaluation; newer
+reports additionally log plot/video episode counts as they are produced.
+
 Running allocation cards show GPU-wide used, free and total VRAM (GiB).
 Individual training/evaluation cards instead sum only GPU processes carrying
 that attempt's explicit run ID, including its model, supervisor and child workers.

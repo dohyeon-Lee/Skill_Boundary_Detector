@@ -92,6 +92,10 @@ def make_policy(config: EvalConfig):
         from pi05_adapter import Pi05PolicyAdapter
 
         return Pi05PolicyAdapter(config)
+    if config.policy_type == "skillvla":
+        from skillvla_adapter import SkillVLAPolicyAdapter
+
+        return SkillVLAPolicyAdapter(config)
     raise ValueError(f"unsupported policy type: {config.policy_type}")
 
 
@@ -167,7 +171,7 @@ def commit_world(config, panel, task, task_dir, world):
     """Persist the outcome before optional CPU video processing can fail."""
     path = task_dir / f"world_{world['world_index']:03d}.json"
     if config.save_video:
-        raw, target = video_paths(config.output_dir, panel, task, world["world_index"])
+        raw, target = video_paths(getattr(config, "artifact_dir", config.output_dir), panel, task, world["world_index"])
         world.update(raw_video_path=str(raw), video_annotation_pending=True)
         write_json(path, world)
         finish_video(raw, target, world, config.video_fps)
@@ -214,10 +218,12 @@ def run_sequential_task(
                 commit_world(config, panel, spec.name, task_dir, world)
             worlds[index] = world
     pending = [index for index in range(config.num_worlds) if index not in worlds]
+    print(f"  cached episodes={len(worlds)}/{config.num_worlds}, remaining={len(pending)}", flush=True)
     options = None if config.randomization is None else {"randomization": config.randomization}
     for start in range(0, len(pending), config.parallel_worlds):
         indices = pending[start : start + config.parallel_worlds]
         environments, writers, observations, evaluations = [], [], [], []
+        overlay_writers, overlay_paths = [], []
         finished = set()
         steps = [0] * len(indices)
         max_rewards = []
@@ -228,22 +234,38 @@ def run_sequential_task(
                 env = abc_sim.make_env(
                     task=spec.name, render_cameras=True, camera_backend="mujoco",
                     camera_height=config.camera_height, camera_width=config.camera_width,
+                    **(policy.world_env_kwargs(spec.name, index) if hasattr(policy, "world_env_kwargs") else {}),
                 )
                 environments.append(env)
-                observation, _ = env.reset(seed=config.seed + index, options=options, randomize=True)
+                if hasattr(policy, "reset_world"):
+                    observation = policy.reset_world(env, index, len(environments) - 1)
+                else:
+                    observation, _ = env.reset(seed=config.seed + index, options=options, randomize=True)
                 observations.append(with_policy_prompt(observation, config.prompt_prefix))
                 evaluation = scalar_eval(env.evaluate_task())
                 evaluations.append(evaluation)
                 max_rewards.append(float(evaluation["reward"]))
-                raw, _ = video_paths(config.output_dir, panel, spec.name, index)
+                raw, _ = video_paths(config.artifact_dir, panel, spec.name, index)
                 writer = _video_writer(raw, config) if config.save_video else None
                 writers.append(writer)
+                overlay_path = (raw.parent.parent.with_name("videos_camera_overlay") / raw.parent.name / raw.name
+                                if writer is not None and hasattr(policy, "video_frame") else None)
+                overlay_paths.append(overlay_path)
+                overlay_writer = _video_writer(overlay_path, config) if overlay_path is not None else None
+                overlay_writers.append(overlay_writer)
                 if writer is not None:
-                    writer.append_data(video_frame(observation["images"], config.camera_names))
+                    frame = video_frame(observation["images"], config.camera_names)
+                    writer.append_data(frame)
+                    if overlay_writer is not None:
+                        overlay_writer.append_data(frame)
 
             while len(finished) < len(indices):
                 active = [i for i in range(len(indices)) if i not in finished]
-                actions = policy.infer(stack_observations([observations[i] for i in active]))
+                observation_batch = stack_observations([observations[i] for i in active])
+                if hasattr(policy, "infer_for_worlds"):
+                    actions = policy.infer_for_worlds(observation_batch, active, [environments[i] for i in active])
+                else:
+                    actions = policy.infer(observation_batch)
                 if actions.ndim != 3 or actions.shape[0] != len(active) or actions.shape[2] != 14 or actions.shape[1] == 0:
                     raise ValueError(f"invalid batched actions: {actions.shape}")
                 for batch_index, local in enumerate(active):
@@ -254,14 +276,26 @@ def run_sequential_task(
                         evaluation = scalar_eval(env.evaluate_task())
                         evaluations[local] = evaluation
                         max_rewards[local] = max(max_rewards[local], float(evaluation["reward"]))
+                        step_observation = None
+                        skill_ended = False
+                        if hasattr(policy, "observe_step"):
+                            step_observation = with_policy_prompt(env.get_obs(), config.prompt_prefix)
+                            skill_ended = policy.observe_step(local, step_observation)
                         if writers[local] is not None and steps[local] % config.video_every_n_steps == 0:
-                            writers[local].append_data(video_frame(env.get_obs()["images"], config.camera_names))
-                        done = steps[local] >= config.max_steps or (config.stop_on_success and rollout_over(evaluation))
+                            images = (step_observation or env.get_obs())["images"]
+                            writers[local].append_data(video_frame(images, config.camera_names))
+                            if overlay_writers[local] is not None:
+                                overlay_writers[local].append_data(policy.video_frame(local, env, images, config.camera_names))
+                        done = (steps[local] >= config.max_steps or (config.stop_on_success and rollout_over(evaluation))
+                                or (hasattr(policy, "world_done") and policy.world_done(local)))
                         if done:
                             index = indices[local]
                             if writers[local] is not None:
                                 writers[local].close()
                                 writers[local] = None
+                            if overlay_writers[local] is not None:
+                                overlay_writers[local].close()
+                                overlay_writers[local] = None
                             world = {
                                 "world_index": index, "seed": config.seed + index,
                                 "prompt": observations[local]["prompt"],
@@ -272,7 +306,12 @@ def run_sequential_task(
                                 "randomization": env._last_randomization,
                                 "final_task_eval": evaluation,
                                 "video_path": None,
+                                "video_every_n_steps": config.video_every_n_steps,
                             }
+                            if overlay_paths[local] is not None:
+                                world["camera_overlay_path"] = str(overlay_paths[local])
+                            if hasattr(policy, "finish_world"):
+                                world.update(policy.finish_world(local, task_dir / f"world_{index:03d}_trace"))
                             commit_world(config, panel, spec.name, task_dir, world)
                             worlds[index] = world
                             finished.add(local)
@@ -282,10 +321,12 @@ def run_sequential_task(
                                 on_progress(partial)
                             print(f"task={spec.name} world={index:03d} success={world['success']} steps={steps[local]} completed={len(worlds)}/{config.num_worlds}", flush=True)
                             break
+                        if skill_ended:
+                            break  # Discard the old skill's remaining actions immediately.
                     if local not in finished:
-                        observations[local] = with_policy_prompt(env.get_obs(), config.prompt_prefix)
+                        observations[local] = step_observation or with_policy_prompt(env.get_obs(), config.prompt_prefix)
         finally:
-            for writer in writers:
+            for writer in [*writers, *overlay_writers]:
                 if writer is not None:
                     writer.close()
             for env in environments:
@@ -423,8 +464,21 @@ def task_summary(
 
 
 def run(config: EvalConfig) -> dict[str, Any]:
+    if config.policy_type != "skillvla":
+        return _run(config)
+    import fcntl
+    config.artifact_dir.mkdir(parents=True, exist_ok=True)
+    with (config.artifact_dir / "evaluation.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(f"This evaluation output is already running: {config.output_dir}") from error
+        return _run(config)
+
+
+def _run(config: EvalConfig) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    metrics_dir = config.output_dir / "metrics"
+    metrics_dir = config.artifact_dir / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
     resolved_path = metrics_dir / "resolved_config.json"
     if not resolved_path.exists() and (config.output_dir / "resolved_config.json").exists():
@@ -434,7 +488,8 @@ def run(config: EvalConfig) -> dict[str, Any]:
         current = config.json_dict()
         # Worker reductions and scheduler/profile paths do not change episodes.
         ignored = {"config_path", "parallel_worlds", "output_dir"}
-        contract = lambda value: {k: v for k, v in value.items() if k not in ignored and not k.startswith("slurm_")}
+        contract = lambda value: {k: v for k, v in value.items() if k not in ignored and not k.startswith("slurm_")
+                                  and not (k == "skillvla" and v is None)}
         if contract(previous) != contract(current):
             raise ValueError("Output contains a different evaluation contract; choose a new output.run_name")
     write_json(resolved_path, config.json_dict())

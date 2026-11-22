@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
+fi
 # Download the FILTERED (OpenVLA no_noops) LIBERO suites from IPEC-COMMUNITY in their
 # original v2.1 format, into the staging area:
 #   {project_root}/{filtered_dataset_root}/_v21/{name}
