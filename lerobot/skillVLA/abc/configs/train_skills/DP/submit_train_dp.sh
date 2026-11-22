@@ -62,7 +62,7 @@ if [ "${TRAIN_DP}" != true ]; then
   exit 0
 fi
 if [ -d "${DP_FINAL_CHECKPOINT}" ]; then
-  echo "Skip ABC DP because the 100k checkpoint already exists: ${DP_FINAL_CHECKPOINT}"
+  echo "Skip ABC DP because the ${DP_STEPS}-step checkpoint already exists: ${DP_FINAL_CHECKPOINT}"
   exit 0
 fi
 

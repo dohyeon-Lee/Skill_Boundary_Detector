@@ -309,8 +309,8 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
 
     steps = int(cfg.get("dp_steps", 100000))
     save_freq = int(cfg.get("dp_save_freq", 10000))
-    if steps != 100000 or save_freq != 10000:
-        raise ValueError("ABC DP is configured for 100000 steps with 10000-step checkpoints.")
+    if steps <= 0 or save_freq <= 0:
+        raise ValueError("dp_steps and dp_save_freq must be positive integers.")
 
     if episode_selection_payload is not None:
         task_suffix = (
@@ -381,7 +381,7 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "dp_relative_exclude_joints_csv": ",".join(relative_exclude_joints),
         "dp_run_name": run_name,
         "dp_output_dir": output_dir,
-        "dp_final_checkpoint": output_dir / "checkpoints/100000/pretrained_model",
+        "dp_final_checkpoint": output_dir / "checkpoints" / f"{steps:06d}" / "pretrained_model",
         "dp_base_config": base_config,
         "dp_n_obs_steps": n_obs_steps,
         "dp_future_action_horizon": future_horizon,
