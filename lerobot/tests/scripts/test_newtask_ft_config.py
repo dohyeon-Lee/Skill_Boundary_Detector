@@ -762,9 +762,9 @@ def test_frozen_expert_can_train_dino_without_changing_other_ft_choices(tmp_path
     assert trained["visual_aux_loss"] and trained["gradient_checkpointing"] is False
     assert trained["skill_flow_active"] is ("_wovis" not in label)
     assert trained["dino_lr_scale"] == scale
-    assert trained["run_name"] == frozen["run_name"].removesuffix("_t1") + "_dino_t1"
+    assert trained["run_name"] == frozen["run_name"]
     changed = {k for k in trained if trained[k] != frozen[k]}
-    assert changed == {"freeze_vision_encoder", "run_name", "output_dir"} | ({"dino_lr_scale"} if scale != 1 else set())
+    assert changed == {"freeze_vision_encoder"} | ({"dino_lr_scale"} if scale != 1 else set())
     assert config == before
 
 
@@ -790,7 +790,7 @@ def test_vanila_ft_freezes_expert_but_trains_dino_without_fullskill_route(tmp_pa
     assert not s["freeze_vision_encoder"] and s["visual_aux_loss"]
     assert not s["unfreeze_action_head"] and not s["unfreeze_skill_layers"]
     assert not s["full_unfreeze"] and not s["skill_flow_loss"] and not s["skill_flow_active"]
-    assert s["run_name"].endswith("_frozenexpert_dino_t1")
+    assert s["run_name"].endswith("_frozenexpert_t1")
     assert json.loads(path.read_text()) == source
 
 
@@ -812,7 +812,7 @@ def test_vsa_full_unfreeze_preserves_all_requested_losses_and_dino_choice(tmp_pa
     assert s["skill_flow_loss"] is skill_loss and s["skill_flow_active"] is skill_loss
     assert s["visual_aux_loss"] and not s["dsbc_enabled"]
     assert "_full" in s["run_name"] and ("_skillbspline" in s["run_name"]) is skill_loss
-    assert ("_dino_" in s["run_name"]) is train_dino
+    assert "_dino_" not in s["run_name"]
 
 
 @pytest.mark.parametrize("conflict", ["freeze_expert", "freeze_skill_core"])

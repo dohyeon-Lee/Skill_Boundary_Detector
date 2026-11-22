@@ -31,9 +31,9 @@ def scheduler(ids):
     live = {line.split('|')[0].split('_')[0] for line in active.stdout.splitlines() if '|' in line}
     result = subprocess.run(['sacct', '-n', '-P', '-j', joined,
                              '--format=JobID,State,ExitCode'],
-                            capture_output=True, text=True, timeout=25, check=True)
+                            capture_output=True, text=True, timeout=25)
     rows = {}
-    for line in result.stdout.splitlines():
+    for line in result.stdout.splitlines() if result.returncode == 0 else []:
         parts = line.split('|')
         if len(parts) < 3 or '.' in parts[0]:
             continue
@@ -42,6 +42,25 @@ def scheduler(ids):
         root = identifier.split('_')[0]
         if root in ids:
             rows.setdefault(root, []).append({'id': identifier, 'state': state, 'exit_code': code})
+    # Some Yonsei login hosts have no working slurmdbd/sacct connection.
+    # The controller still retains recent completed jobs and full array membership.
+    if result.returncode:
+        for job in sorted(ids):
+            control = subprocess.run(['scontrol', '-o', 'show', 'job', job],
+                                     capture_output=True, text=True, timeout=20)
+            if control.returncode:
+                continue  # Accounting remains unknown; never infer success from an empty queue.
+            for line in control.stdout.splitlines():
+                fields = dict(re.findall(r'(?:^|\s)([A-Za-z]+)=([^\s]+)', line))
+                if 'JobState' not in fields:
+                    continue
+                master = fields.get('ArrayJobId', fields.get('JobId'))
+                if master != job:
+                    continue
+                index = fields.get('ArrayTaskId')
+                identifier = job + '_' + index if index else fields['JobId']
+                rows.setdefault(job, []).append({'id': identifier,
+                    'state': fields['JobState'], 'exit_code': fields.get('ExitCode', '')})
     for line in active.stdout.splitlines():
         parts = line.split('|')
         if len(parts) == 2 and parts[0].split('_')[0] in ids:
@@ -60,9 +79,10 @@ def outcomes(path):
 
 def progress(project, spec):
     """Count explicit episode outcomes, never infer success from simulator steps."""
-    out = project / spec['output']
+    storage = Path(spec.get('storage_project', project))
+    out = storage / spec['output']
     # Output must belong to this recipe, including workspace output aliases.
-    out.resolve().relative_to(project.resolve())
+    out.resolve().relative_to(storage.resolve())
     if spec.get('kind') == 'abc':
         for prefix in ('src/metrics', 'metrics'):
             value = read(out / prefix / 'summary.json') or read(out / prefix / 'partial_summary.json')
@@ -137,20 +157,37 @@ def snapshot(base, identifiers):
             raise ValueError('Invalid launch identity')
         work = base / '.cache/yonsei_launches' / identifier
         manifest = read(work / 'launch.json', {})
-        jobs = []
+        jobs, expected = [], set()
         record = work / 'jobs.jsonl'
         if record.exists():
             if record.stat().st_size > 1024 * 1024:
                 raise ValueError('Too many submitted jobs')
             for line in record.read_text().splitlines():
                 if line.strip():
-                    job = str(json.loads(line)['job_id'])
+                    entry = json.loads(line)
+                    job = str(entry['job_id'])
                     if not job.isdigit():
                         raise ValueError('Invalid Slurm identity')
                     jobs.append(job)
+                    for task in entry.get('tasks', []):
+                        if task is not None and (type(task) is not int or task < 0):
+                            raise ValueError('Invalid Slurm array index')
+                        expected.add(job if task is None else job + '_' + str(task))
         all_ids.update(jobs)
         row = {'id': identifier, 'launcher': read(work / 'status.json', {}),
-               'job_ids': sorted(set(jobs)), 'jobs': [], 'error': ''}
+               'job_ids': sorted(set(jobs)), 'jobs': [], 'error': '', 'expected_jobs': sorted(expected)}
+        row['cancel'] = read(work / 'cancel.json', {})
+        if manifest.get('training', {}).get('checkpoint_sync'):
+            row['checkpoints'] = [read(p) for p in sorted((work / 'checkpoint_events').glob('*.json'))
+                                  if not (work / 'checkpoint_acks' / p.stem).exists()]
+        row['durable_exits'] = []
+        for identity in expected:
+            marker = identity if '_' in identity else identity + '_solo'
+            path = work / 'job_status' / (marker + '.exit')
+            if path.is_file():
+                code = int(path.read_text().strip())
+                row['durable_exits'].append({'id': identity, 'state': 'COMPLETED' if code == 0 else 'FAILED',
+                                              'exit_code': str(code) + ':0'})
         spec = manifest.get('evaluation')
         if spec:
             try:
@@ -171,6 +208,9 @@ def snapshot(base, identifiers):
     for row in launches:
         for job in row['job_ids']:
             row['jobs'].extend(accounting.get(job, []))
+        actual = {j['id']: j for j in row['jobs']}
+        actual.update({j['id']: j for j in row.pop('durable_exits')})
+        row['jobs'] = list(actual.values())
         launcher = row['launcher']
         states = [j['state'] for j in row['jobs']]
         sessions = row['session_states']
@@ -179,11 +219,12 @@ def snapshot(base, identifiers):
         elif live.intersection(row['job_ids']):
             state = 'PENDING' if states and all(s == 'PENDING' for s in states) else 'RUNNING'
         elif row['job_ids']:
-            known = all(accounting.get(job) for job in row['job_ids'])
+            known = (all(identity in actual for identity in row['expected_jobs']) if row['expected_jobs']
+                     else all(accounting.get(job) for job in row['job_ids']))
             if not known or not states or any(s not in TERMINAL for s in states):
                 state = 'ACCOUNTING'
             elif any(s != 'COMPLETED' for s in states) or any(j['exit_code'] != '0:0' for j in row['jobs']):
-                state = 'FAILED'
+                state = 'CANCELLED' if row['cancel'].get('status') == 'requested' else 'FAILED'
             elif launcher.get('state') == 'COMPLETED':
                 state = 'COMPLETED'
             else:

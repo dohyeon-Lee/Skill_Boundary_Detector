@@ -30,6 +30,14 @@ def test_only_recipe_selectors_travel_not_credentials_or_source_allocation():
     assert M.selectors(env)=={k:env[k] for k in ('STAGE1_EVAL_CONFIG','TRAIN_DATA','NEWTASK_FT_VSA_CONFIG')}
 
 
+def test_abc_dp_uses_native_training_resolver_without_build_stage_flags():
+    script = M.ROOT / 'lerobot/skillVLA/abc/configs/train_skills/DP/submit_train_dp.sh'
+    config, resolver, extra = M.config_and_resolver(script, [], {})
+    assert config == script.parent / 'dp_config.yaml'
+    assert resolver == script.parent / 'src/train_dp_config.py'
+    assert extra == []
+
+
 def test_yonsei_resources_replace_local_gpu_and_scheduler_without_changing_model():
     source={'server':'rllab','project_root':'/src','train_nodelist':'node200',
             'train_partition':['debug'],'train_qos':'base_qos','slurm_submit_mode':'srun_existing',
@@ -89,11 +97,17 @@ def test_real_staging_and_detached_runner_with_fake_transport(tmp_path,monkeypat
     tool=root/'tools/remote/yonsei.py';tool.parent.mkdir(parents=True);shutil.copy2(SOURCE,tool)
     config=script.with_name('config.yaml');config.write_text('slurm: {gres: "gpu:B200:1"}\n')
     data=root/'dataset_filtered/train/data.txt';data.parent.mkdir(parents=True);data.write_text('tiny training input')
+    dep=Path('tools/lerobot-libero/libero/libero')
+    (root/dep).mkdir(parents=True)
+    (root/dep/'__init__.py').write_text('FROZEN_CODE=True\n')
+    (remote/dep/'init_files').mkdir(parents=True)
+    (remote/dep/'init_files/fixture.pt').write_bytes(b'runtime states')
+    (remote/dep/'__init__.py').write_text('OLD_CODE=True\n')
     unrelated=remote/'untouched.txt';unrelated.write_text('existing remote work')
     profile={'remote_host':'fake','remote_project_root':str(remote),'train_partition':['base'],
              'train_qos':'base_qos','train_nodelist':'','train_gres':'gpu:1'}
     monkeypatch.setattr(M,'load_profile',lambda root:profile)
-    monkeypatch.setattr(M,'code_files',lambda root:{entry,tool.relative_to(root),config.relative_to(root)})
+    monkeypatch.setattr(M,'code_files',lambda root:{entry,tool.relative_to(root),config.relative_to(root),dep/'__init__.py'})
     monkeypatch.setattr(M,'resolve_settings',lambda *a:(config,{'dataset_dir':str(data.parent)}))
     calls=[]
     def rpc(host,base,action,**values):
@@ -117,6 +131,8 @@ def test_real_staging_and_detached_runner_with_fake_transport(tmp_path,monkeypat
     assert unrelated.read_text()=='existing remote work'
     frozen=yaml.safe_load((Path(manifest['project'])/config.relative_to(root)).read_text())
     assert frozen['slurm']['gres']=='gpu:1'
+    assert (Path(manifest['project'])/dep/'__init__.py').read_text()=='FROZEN_CODE=True\n'
+    assert (Path(manifest['project'])/dep/'init_files/fixture.pt').read_bytes()==b'runtime states'
     assert 'start' in calls
 
 
@@ -128,6 +144,31 @@ def test_check_only_does_not_copy_or_launch(tmp_path,monkeypatch):
     monkeypatch.setattr(M,'transfer',lambda *a,**kw:pytest.fail('must not copy'))
     assert M.launch(script,['--yonsei-check'],tmp_path,env={})==0
     assert not (tmp_path/'.cache/yonsei_launches').exists()
+
+
+def test_remote_start_links_eval_results_to_normal_workspace(tmp_path):
+    base = tmp_path / 'remote'
+    base.mkdir()
+    (base / '.venv').symlink_to(sys.prefix, target_is_directory=True)
+    work = base / '.cache/yonsei_launches/test'
+    project = work / 'project'
+    runner = project / 'tools/remote/yonsei.py'
+    runner.parent.mkdir(parents=True)
+    runner.write_text('')  # No scheduler or GPU work in this staging check.
+    relative = 'lerobot/skillVLA/libero/configs/train_skillVLA/FT/eval/outputs/run'
+    target = base / relative
+    target.mkdir(parents=True)
+    (target / 'existing.txt').write_text('preserved')
+    manifest = {'evaluation': {'output': relative, 'storage_project': str(base)}}
+    request = {'base': str(base), 'action': 'start', 'work': str(work),
+               'links': [], 'manifest': manifest}
+    subprocess.run([sys.executable, '-c', M.RPC], input=json.dumps(request),
+                   text=True, capture_output=True, check=True)
+    link = project / relative
+    assert link.is_symlink() and link.resolve() == target
+    (link / 'index.html').write_text('report')
+    assert (target / 'index.html').read_text() == 'report'
+    assert (target / 'existing.txt').read_text() == 'preserved'
 
 
 @pytest.mark.parametrize('relative', [

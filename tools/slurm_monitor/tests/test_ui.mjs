@@ -27,7 +27,7 @@ for(const prefix of ["","/slurm"]){
   lists=["running","pending","ended","training-running","training-ended"].map(id=>ids.get(id));
   const allocation={key:"123@start",job_id:"123",job_name:"allocation",state:"RUNNING",group:"running",terminal:false,
     display_name:"GPU allocation",delivery:{status:"none"},can_cancel:true,outputs:[],prompt:"saved allocation prompt",armed:false};
-  const trainer={...allocation,key:"training:one",kind:"training",group:"training-running",can_cancel:false,
+  const trainer={...allocation,key:"training:one",kind:"training",group:"training-running",can_cancel:true,
     display_name:"model",outputs:["/repo/model"],allocation_state:"RUNNING",prompt:"",run_id:"a".repeat(32)};
   const backend={jobs:[allocation,trainer],connection:{configured:true},config:{interval:30,user:"test"},token:"monitor-token",
     gpu:{updated_at:"2026-11-09T01:00:00Z",interval:15,errors:[],devices:[{node:"node200",index:6,name:"NVIDIA B200",
@@ -51,7 +51,7 @@ for(const prefix of ["","/slurm"]){
         assert.equal(options.headers["X-Monitor-Token"],backend.token);
         const body=JSON.parse(options.body);
         if(path.endsWith("/job"))Object.assign(backend.jobs.find(job=>job.key===body.key),body.values);
-        if(path.endsWith("/cancel"))assert.equal(body.key,allocation.key);
+        if(path.endsWith("/cancel"))assert.ok([allocation.key,trainer.key].includes(body.key));
       }
       return {ok:true,json:async()=>path.endsWith("/state")?JSON.parse(JSON.stringify(backend)):{ok:true}};
     }});
@@ -87,7 +87,10 @@ for(const prefix of ["","/slurm"]){
   assert.equal(section.open,false,"polling must not reopen a collapsed section");
   assert.equal(ids.get("label-training-running").textContent,1,"count remains visible when collapsed");
   const card=ids.get("training-running").children[0];
-  assert.equal(card.querySelector(".cancel").hidden,true);
+  assert.equal(card.querySelector(".cancel").hidden,false);
+  assert.equal(card.querySelector(".cancel").textContent,"이 학습 종료");
+  await card.querySelector(".cancel").listeners.click();
+  assert.equal(allocation.state,"RUNNING");
   card.querySelector(".prompt").value="model completion instruction";
   card.querySelector(".armed").checked=true;
   card.querySelector(".prompt").listeners.input();

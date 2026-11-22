@@ -77,7 +77,13 @@ def collect(project_root, allocations, known=(), history_days=3):
                 state = "WAITING_FOR_MEMORY"
             if state == "FAILED" and resource.get("state") == "CANCELLED":
                 state = "CANCELLED"
+            stopped = small_json(root / '.cache/training_stops' / (identity + '.json'))
+            if isinstance(stopped, dict) and stopped.get('state') == 'STOPPED':
+                state = 'CANCELLED'
+                reason = 'Slurm Desk에서 이 개별 실행의 종료를 요청했습니다.'
             ended = timestamp(record.get("ended_at", ""))
+            if state == 'CANCELLED' and not ended and isinstance(stopped, dict) and stopped.get('ended_at'):
+                ended = datetime.fromtimestamp(stopped['ended_at'], timezone.utc).isoformat()
             if state in {"RUNNING", "WAITING_FOR_MEMORY"} and allocation.get("terminal"):
                 # Even COMPLETED only proves the allocation ended, not its trainers.
                 state, ended = "INTERRUPTED", allocation.get("ended_at", "")

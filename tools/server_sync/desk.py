@@ -296,6 +296,14 @@ class DeskHandler(HFHandler):
             if method == 'do_POST' and path == '/api/refresh':
                 monitor.refresh.set()
                 return self._reply(200, {'ok': True})
+            if method == 'do_POST' and path == '/api/cancel':
+                length = int(self.headers.get('Content-Length', 0))
+                if not 0 < length <= 4096:
+                    raise ValueError('Invalid cancellation request')
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    raise ValueError('JSON object required')
+                return self._reply(200, monitor.cancel(body.get('id')))
             return self._reply(404, {'error': 'Not found'})
         finally:
             self._yonsei_request = False

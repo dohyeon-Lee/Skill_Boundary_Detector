@@ -8361,6 +8361,9 @@ def train_spline_fsqae(
                 payload["code_assignments_epoch"] = previous_code_epoch
                 payload["code_assignments_fingerprint"] = assignment_fingerprint
         torch.save(payload, str(path))
+        if resumable:
+            from lerobot.utils.yonsei_checkpoint_sync import publish_checkpoint
+            publish_checkpoint(path, Path(path).parent, epoch, kind='fsq')
 
     def step(
         batch: dict[str, Tensor | None],

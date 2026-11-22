@@ -2811,9 +2811,15 @@ def build_settings(config: dict) -> dict:
             "eval_gres": str(
                 _at(config, "slurm", "gres", default=get_value(config, "train_gres", "gpu:1"))
             ),
-            "eval_cpus_per_task": int(_at(config, "slurm", "cpus", default=8)),
-            "eval_mem": str(_at(config, "slurm", "memory", default="64G")),
-            "eval_time": str(_at(config, "slurm", "time", default="4:00:00")),
+            "eval_cpus_per_task": int(get_value(
+                config, "server_eval_cpus", _at(config, "slurm", "cpus", default=8)
+            )),
+            "eval_mem": str(get_value(
+                config, "server_eval_memory", _at(config, "slurm", "memory", default="64G")
+            )),
+            "eval_time": str(get_value(
+                config, "server_eval_time", _at(config, "slurm", "time", default="4:00:00")
+            )),
             "eval_nodelist": str(get_value(config, "train_nodelist", "")),
             "eval_exclude_nodes": ",".join(
                 as_list(get_value(config, "train_exclude_nodes", []))

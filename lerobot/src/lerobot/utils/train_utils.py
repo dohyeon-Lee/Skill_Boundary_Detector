@@ -108,6 +108,8 @@ def save_checkpoint(
     if postprocessor is not None:
         postprocessor.save_pretrained(pretrained_dir)
     save_training_state(checkpoint_dir, step, optimizer, scheduler)
+    from lerobot.utils.yonsei_checkpoint_sync import publish_checkpoint
+    publish_checkpoint(checkpoint_dir, cfg.output_dir, step, getattr(cfg, 'protect_checkpoints', []))
 
 
 def save_training_state(

@@ -56,6 +56,36 @@ def test_timeout_does_not_claim_unfinished_training_completed(monitor):
     assert "TIMEOUT" in monitor.sent[0][1]
 
 
+def test_individual_stop_preserves_allocation_other_run_and_suppresses_auto_resume(monitor, monkeypatch):
+    import monitor as module
+    run = 'a' * 32
+    first = record(monitor, run)
+    second = record(monitor, 'b' * 32)
+    monitor.poll()
+    monitor.update_job(first, {'prompt': 'resume on failure', 'armed': True})
+    calls = []
+    root = Path(monitor.config['project_root'])
+    receipt = root / '.cache/training_stops' / (run + '.json')
+    def request(project, target):
+        calls.append(target['run_id'])
+        return str(receipt)
+    monkeypatch.setattr(module.training_control, 'request', request)
+    row = next(r for r in monitor.snapshot()['jobs'] if r['key'] == first)
+    assert row['can_cancel']
+    monitor.cancel_job(first)
+    assert calls == [run] and not monitor.slurm.cancelled
+    assert monitor.records[second]['state'] == 'RUNNING'
+    assert not monitor.records[first]['armed_for_completion']
+    monitor.poll()
+    assert monitor.records[first]['cancel']['status'] == 'requested'
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text('{"state":"STOPPED"}')
+    monitor.poll()
+    assert monitor.records[first]['state'] == 'CANCELLED'
+    assert not monitor.deliver_one()
+    assert not monitor.slurm.cancelled and monitor.records[second]['state'] == 'RUNNING'
+
+
 def test_failed_trainer_and_retries_are_independent_and_survive_restart(monitor):
     first = record(monitor)
     monitor.poll()

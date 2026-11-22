@@ -117,8 +117,10 @@ def _suffix(config: dict) -> str:
 
 
 def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> dict:
-    if config.get("stage1_component") != "VSA" or not as_bool(config.get("newtask_ft", False)):
-        raise ValueError("NewTask FT VSA requires stage1_component: VSA and newtask_ft: true.")
+    # This resolver and its launcher implement FT exclusively. Legacy snapshots
+    # may still contain newtask_ft, but users need not repeat the mode in YAML.
+    if config.get("stage1_component") != "VSA":
+        raise ValueError("NewTask FT VSA requires stage1_component: VSA.")
     inherited_sections = {"architecture", "vision", "skill_flow", "termination_loss",
                           "cumulative_xyz_loss", "mask_actions_after_skill_end"} & set(config)
     if inherited_sections:
@@ -390,8 +392,6 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     if not visual_aux_loss:
         run_name += "_novisaux"
-    if train_dino and not _allow_joint_adaptation:
-        run_name += "_dino"
     run_name += oversampling.suffix
     suffix = _suffix(config)
     if suffix:

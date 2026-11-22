@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 if __package__:
-    from . import codex, training, gpu, evaluation
+    from . import codex, training, gpu, evaluation, training_control
     from .slurm import CONCRETE_JOB_ID, Slurm, job_key
     from .cluster_queue import ClusterQueue
 else:
@@ -22,6 +22,7 @@ else:
     import training
     import gpu
     import evaluation
+    import training_control
     from slurm import CONCRETE_JOB_ID, Slurm, job_key
     from cluster_queue import ClusterQueue
 
@@ -144,7 +145,8 @@ class Monitor:
                 row["group"] = "ended" if row.get("terminal") else "pending" if waiting else "running"
                 if row.get("kind") == "training":
                     row["group"] = "training-ended" if row["terminal"] else "training-running"
-                row["can_cancel"] = bool(row.get("kind") != "training" and not row.get("terminal") and CONCRETE_JOB_ID.fullmatch(row["job_id"]))
+                row["can_cancel"] = (training_control.supported(row) if row.get("kind") == "training" else
+                    bool(not row.get("terminal") and CONCRETE_JOB_ID.fullmatch(row["job_id"])))
                 jobs.append(row)
             jobs.sort(key=lambda row: (row.get("ended_at", "") if row["terminal"] else row.get("submitted_at", ""), row["job_id"]), reverse=True)
             return json.loads(json.dumps({"jobs": jobs, "updated_at": self.updated_at,
@@ -208,8 +210,13 @@ class Monitor:
                     for key, row in found_training.items():
                         row.update(self.evaluations.enrich(row))
                         previous = self.data["trainings"].get(key, {})
-                        owned = {k: previous[k] for k in ("prompt", "armed", "armed_for_completion", "output_label", "delivery", "events") if k in previous}
+                        owned = {k: previous[k] for k in ("prompt", "armed", "armed_for_completion", "output_label", "delivery", "events", "cancel") if k in previous}
                         row.update(owned)
+                        receipt = row.get('cancel', {}).get('receipt')
+                        if receipt:
+                            result = training_control.read(receipt)
+                            if result.get('state') == 'FAILED':
+                                row['cancel'].update(status='uncertain', error=result.get('error', '종료 확인 실패'))
                         self.completion_defaults(row)
                         if row["terminal"] and row["armed"] and row.get("armed_for_completion") and row["prompt"].strip() and row["delivery"]["status"] == "none":
                             row["delivery"] = {"status": "waiting", "queued_at": now()}
@@ -289,28 +296,38 @@ class Monitor:
 
     def cancel_job(self, key):
         with self.lock:
-            if key not in self.jobs or self.jobs[key].get("terminal"):
+            if key not in self.records or self.records[key].get("terminal"):
                 raise ValueError("실행 중이거나 대기 중인 job만 취소할 수 있습니다.")
-            job = self.jobs[key]
+            job = self.records[key]
+            individual = job.get('kind') == 'training'
+            if individual and not training_control.supported(job):
+                raise ValueError('실행 ID가 확인된 개별 작업만 종료할 수 있습니다.')
             if not CONCRETE_JOB_ID.fullmatch(job["job_id"]):
                 raise ValueError("개별 job ID만 취소할 수 있습니다.")
             if job.get("cancel", {}).get("status") in {"requesting", "requested"}:
                 raise ValueError("이미 취소를 요청했습니다. Slurm 상태 확인을 기다리세요.")
             target = dict(job)
             job["cancel"] = {"status": "requesting", "requested_at": now()}
+            if individual:
+                # Intentional manual stops must not trigger the saved auto-resume prompt.
+                job['armed_for_completion'] = False
             self.save()
         try:
-            self.slurm.cancel(target)
+            receipt = training_control.request(self.config['project_root'], target) if individual else None
+            if not individual:
+                self.slurm.cancel(target)
         except Exception as error:
             with self.lock:
-                if key in self.jobs:
-                    self.jobs[key]["cancel"].update(status="uncertain", error=str(error))
+                if key in self.records:
+                    self.records[key]["cancel"].update(status="uncertain", error=str(error))
                     self.save()
                 self.refresh.set()
             raise ValueError(str(error)) from error
         with self.lock:
-            if key in self.jobs:
-                self.jobs[key]["cancel"].update(status="requested", accepted_at=now())
+            if key in self.records:
+                self.records[key]["cancel"].update(status="requested", accepted_at=now())
+                if receipt:
+                    self.records[key]['cancel']['receipt'] = receipt
                 self.save()
             # A successful scancel request is not terminal-state evidence.
             self.refresh.set()

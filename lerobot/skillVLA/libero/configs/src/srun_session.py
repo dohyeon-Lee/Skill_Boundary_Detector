@@ -290,6 +290,9 @@ def run_training(path):
                 or allocation["SubmitTime"] != data["allocation_submit_time"]
                 or os.environ.get("SLURMD_NODENAME") != os.uname().nodename.split('.')[0]):
             raise ValueError("Task is not running inside the requested original allocation.")
+    if data.get('training_control'):
+        control = runpy.run_path(str(REPO / 'tools/slurm_monitor/training_control.py'))
+        return control['execute'](data['control_root'], data['training_control'], data['control_receipt'])
     environment = os.environ.copy()
     environment.update(data["environment"])
     environment = exported_environment(environment, data['options'].get('--export', 'ALL'))

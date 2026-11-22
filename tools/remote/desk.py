@@ -5,6 +5,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -45,9 +46,16 @@ def query(host, base, ids):
     from tools.remote.yonsei import endpoint
     endpoint({'remote_host': host, 'remote_project_root': base}, {})
     code = (ROOT / 'tools/remote/probe.py').read_text()
-    result = subprocess.run(['ssh', *SSH_OPTIONS, host, 'python3 -c ' + shlex.quote(code)],
-                            input=json.dumps({'base': base, 'ids': ids}),
-                            capture_output=True, text=True, check=True, timeout=100)
+    try:
+        result = subprocess.run(['ssh', *SSH_OPTIONS, host, 'python3 -c ' + shlex.quote(code)],
+                                input=json.dumps({'base': base, 'ids': ids}),
+                                capture_output=True, text=True, timeout=100)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('Yonsei 상태 조회 시간 초과; 다음 조회에서 재시도합니다.') from None
+    if result.returncode:
+        lines = (result.stderr or '').strip().splitlines()
+        detail = lines[-1][:250] if lines else 'SSH 연결 종료'
+        raise RuntimeError('Yonsei 상태 조회 실패: ' + detail) from None
     return json.loads(result.stdout)
 
 
@@ -90,8 +98,9 @@ def collect(root, receipt, manifest):
     parent.mkdir(parents=True, exist_ok=True)
     stage = parent / ('.yonsei-' + receipt.name + '.partial')
     stage.mkdir(exist_ok=True)
-    remote = str(Path(manifest['project']) / relative)
-    if not remote.startswith(manifest['project'].rstrip('/') + '/'):
+    storage = manifest['evaluation'].get('storage_project', manifest['project'])
+    remote = str(Path(storage) / relative)
+    if not remote.startswith(storage.rstrip('/') + '/'):
         raise ValueError('Invalid remote result path')
     transport = 'ssh ' + shlex.join(SSH_OPTIONS)
     common = ['rsync', '-rlt', '--safe-links', '--protect-args', '--timeout=120',
@@ -106,6 +115,8 @@ def collect(root, receipt, manifest):
     if verified.stdout.strip():
         raise RuntimeError('Remote results changed during transfer; retrying next poll')
     repair_paths(stage, remote, target)
+    if storage != manifest['project']:
+        repair_paths(stage, str(Path(manifest['project']) / relative), target)
     atomic(stage / 'yonsei_origin.json', {'launch_id': receipt.name, 'host': manifest['host'],
            'remote_output': remote, 'collected_at': time.time(), 'verified': 'rsync-checksum'})
     # No replacement of an existing result folder. A completed receipt is immutable.
@@ -136,6 +147,29 @@ class Worker:
             with self.lock:
                 self.inflight.pop(receipt.name, None)
 
+    def transfer_checkpoints(self, receipt, manifest, events):
+        from tools.remote.checkpoints import collect_one, acknowledge
+        path = receipt / 'checkpoint_sync.json'
+        value = load(path, {'completed': {}})
+        try:
+            for event in sorted(events, key=lambda e: (e['output'], e['step'])):
+                value.update(state='TRANSFERRING', current_step=event['step'], updated_at=time.time())
+                atomic(path, value)
+                target = collect_one(self.root, receipt, manifest, event)
+                acknowledge(manifest, receipt, event)
+                value.setdefault('completed', {})[event['id']] = {'step': event['step'], 'path': target}
+                value.pop('error', None)
+                value.pop('retry_after', None)
+                atomic(path, value)
+            value.update(state='WATCHING', updated_at=time.time())
+            atomic(path, value)
+        except Exception as error:
+            value.update(state='RETRY', error=str(error)[:1000], retry_after=time.time()+120)
+            atomic(path, value)
+        finally:
+            with self.lock:
+                self.inflight.pop(receipt.name + ':checkpoints', None)
+
     def poll(self):
         manifests, groups, rows = {}, {}, {}
         for path in sorted(self.receipts.glob('*/launch.json'), reverse=True)[:200]:
@@ -149,10 +183,11 @@ class Worker:
             rows[identifier] = {'id': identifier, 'script': manifest.get('script', ''),
                 'created_at': manifest.get('created_at') or path.stat().st_mtime,
                 'host': manifest['host'], 'evaluation': manifest.get('evaluation'),
+                'training': manifest.get('training'),
                 'collection': collection, **cached}
-            if collection.get('state') == 'COLLECTED' or cached.get('state') == 'FAILED':
+            if collection.get('state') == 'COLLECTED' or (cached.get('state') in {'FAILED', 'CANCELLED'} and not manifest.get('training')):
                 continue
-            if cached.get('state') == 'COMPLETED' and not manifest.get('evaluation'):
+            if cached.get('state') == 'COMPLETED' and not (manifest.get('evaluation') or manifest.get('training')):
                 continue
             if manifest.get('dry_run'):
                 rows[identifier]['state'] = 'DRY_RUN'
@@ -170,6 +205,16 @@ class Worker:
                     rows[identifier].update(row)
                     rows[identifier].pop('connection_error', None)
                     collection = load(receipt / 'collection.json', {})
+                    if row.get('checkpoints') and manifests[identifier].get('training'):
+                        sync = load(receipt / 'checkpoint_sync.json', {})
+                        if sync.get('retry_after', 0) <= time.time():
+                            with self.lock:
+                                key = identifier + ':checkpoints'
+                                if key not in self.inflight and len(self.inflight) < 2:
+                                    thread = threading.Thread(target=self.transfer_checkpoints,
+                                        args=(receipt, manifests[identifier], row['checkpoints']), daemon=True)
+                                    self.inflight[key] = thread
+                                    thread.start()
                     if row['state'] == 'COMPLETED' and manifests[identifier].get('evaluation'):
                         if (collection.get('state') != 'COLLECTED' and
                                 collection.get('retry_after', 0) <= time.time()):
@@ -186,6 +231,8 @@ class Worker:
                     rows[identifier]['connection_error'] = detail
         for identifier, row in rows.items():
             row['collection'] = load(self.receipts / identifier / 'collection.json', row['collection'])
+            if row.get('training'):
+                row['checkpoint_sync'] = load(self.receipts / identifier / 'checkpoint_sync.json', {'state': 'WATCHING', 'completed': {}})
         value = {'updated_at': time.time(), 'jobs': list(rows.values()), 'errors': errors,
                  'interval': 30, 'automatic_collection': True}
         atomic(self.folder / 'state.json', value)
@@ -216,7 +263,41 @@ class Monitor:
 
     def snapshot(self):
         state = load(self.folder / 'state.json', {'jobs': [], 'errors': [], 'updated_at': None})
+        for row in state.get('jobs', []):
+            row['cancel'] = load(self.root / '.cache/yonsei_launches' / row['id'] / 'cancel.json', {})
+            row['can_cancel'] = bool(row.get('job_ids') and not row.get('existing_allocation') and
+                                     row.get('state') in {'PENDING', 'RUNNING', 'ACCOUNTING', 'FINALIZING'})
         return {**state, 'stale': not state.get('updated_at') or time.time() - state['updated_at'] > 150}
+
+    def cancel(self, identifier):
+        if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', identifier):
+            raise ValueError('Invalid launch identity')
+        row = next((r for r in self.snapshot().get('jobs', []) if r['id'] == identifier), None)
+        if not row or not row.get('can_cancel'):
+            raise ValueError('실행 중이거나 대기 중인 Yonsei batch 잡만 취소할 수 있습니다.')
+        receipt = self.root / '.cache/yonsei_launches' / identifier
+        manifest = load(receipt / 'launch.json')
+        from tools.remote.yonsei import endpoint
+        host, base = endpoint({'remote_host': manifest['host'],
+                               'remote_project_root': manifest['profile']['project']}, {})
+        with (receipt / 'cancel.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if load(receipt / 'cancel.json', {}).get('status') == 'requested':
+                raise ValueError('이미 취소를 요청했습니다. 상태 확인을 기다리세요.')
+            code = (ROOT / 'tools/remote/cancel.py').read_text()
+            try:
+                result = subprocess.run(['ssh', *SSH_OPTIONS, host, 'python3 -c ' + shlex.quote(code)],
+                    input=json.dumps({'base': base, 'id': identifier}),
+                    capture_output=True, text=True, timeout=60)
+                if result.returncode:
+                    raise ValueError((result.stderr.strip().splitlines() or ['취소 요청 실패'])[-1][:500])
+                value = json.loads(result.stdout)
+                atomic(receipt / 'cancel.json', value)
+            except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+                atomic(receipt / 'cancel.json', {'status': 'uncertain', 'error': str(error)[:500]})
+                raise ValueError(str(error)) from None
+        self.refresh.set()
+        return value
 
 
 def daemon(root):

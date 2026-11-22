@@ -1,12 +1,10 @@
-# Shared config for visualize_training_dataset.py and inspect_training_dataset.py.
-# Both programs are intentionally argument-free:
-#   python visualize_training_dataset.py
-#   python inspect_training_dataset.py
+# Run with the project's .venv automatically:
+#   ./visualize_training_dataset.sh
 #
 # project_root and the default dataset_root are inherited from the nearest
 # configs/global_config.yaml. This file overrides only visualization-local settings.
 
-# ── Shared by both programs ────────────────────────────────────────────────
+# ── Dataset ───────────────────────────────────────────────────────────────
 dataset: abc_sim_all
 # Blank: use {project_root}/{dataset_root} from global_config.yaml.
 # Relative paths are resolved from project_root; absolute paths are also accepted.
@@ -23,8 +21,11 @@ visualize:
   # language_prompt: exact frame-level instruction text (1,950 groups here)
   task_grouping: source_task
 
-  # Task selector: integer, task02, exact/unique partial language, all, or "*".
-  task: all
+  # source_task: all | grab_clutter | group_ABCVLA_easy_task (global abc_sim_task_groups).
+  # Multiple tasks/groups: [grab_clutter, put_relative] (overlaps are deduplicated).
+  # Integer/task02 and exact/unique partial labels also work.
+  # Global group names require task_grouping: source_task.
+  task: group_ABCVLA_task
 
   # Maximum episodes per selected task. If fewer exist, all available episodes are shown.
   samples: 1

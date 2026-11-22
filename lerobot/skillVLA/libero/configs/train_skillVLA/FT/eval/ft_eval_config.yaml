@@ -6,27 +6,17 @@ model_defaults:
 models:
 - label: VSA_FT5k_VLM_termination
   model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlmtermGT_k10_s1_pw2_w1_vlast9_base_100k_libero_10_full_1_ft_bs16_frozenexpert_dino_fullloss
-  checkpoint: '005000'
+  checkpoint: '010000'
   external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
   external_predictor_checkpoint: '020000'
   skill_source: external
   advance_mode: own
   end_mode: termination
   focus_source: predictor
-output_name: ft_nonproprio_vlmtermGT_PT100k_FT5k_PredFT20k_10eps_th03_range1
+output_name: ft_nonproprio_vlmtermGT_PT100k_FT10k_PredFT20k_10eps_th03_range1
 resume: true
 target_task: libero_10
-task_ids:
-- 0
-- 1
-- 2
-- 3
-- 4
-- 5
-- 6
-- 7
-- 8
-- 9
+task_ids: [0, 1,2,3,4,5,6,7,8,9]
 eval_num_gpus: 1
 eval_max_workers_per_gpu: 2
 

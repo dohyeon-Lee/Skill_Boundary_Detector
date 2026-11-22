@@ -10,6 +10,9 @@ train_gres: gpu:1  # GPU type is selected by slurm_profile partitions above.
 # still use only their assigned GPU. These values do not affect training.
 server_eval_num_gpus: 4
 server_eval_max_workers_per_gpu: 1
+server_eval_cpus: 8
+server_eval_memory: 64G
+server_eval_time: '3:00:00'
 
 # Yonsei AI cluster (Slurm). Selected automatically when the checkout lives under a detect: prefix
 # (see ../libero/configs/src/global_config_loader.py); override with SBD_SERVER=yonsei. project_root = the checkout.

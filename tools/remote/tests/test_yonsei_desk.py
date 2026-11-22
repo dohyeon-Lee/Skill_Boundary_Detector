@@ -59,6 +59,33 @@ def test_scheduler_tracks_array_master_ids_instead_of_raw_allocation_ids(monkeyp
     assert {r['state'] for r in rows['123']} == {'COMPLETED', 'OUT_OF_MEMORY', 'PENDING'}
 
 
+def test_scheduler_uses_controller_when_accounting_database_is_unavailable(monkeypatch):
+    from types import SimpleNamespace
+    def run(command, **kwargs):
+        if command[0] == 'squeue':
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        if command[0] == 'sacct':
+            return SimpleNamespace(returncode=1, stdout='', stderr='Connection refused')
+        return SimpleNamespace(returncode=0, stdout='JobId=124 ArrayJobId=123 ArrayTaskId=0 JobState=FAILED ExitCode=1:0\n')
+    monkeypatch.setattr(probe.subprocess, 'run', run)
+    rows, active = probe.scheduler({'123'})
+    assert not active and rows['123'] == [{'id':'123_0','state':'FAILED','exit_code':'1:0'}]
+
+
+def test_durable_array_exits_survive_controller_retention_and_require_every_element(tmp_path, monkeypatch):
+    root, base, work, receipt, manifest = fixture(tmp_path)
+    (work/'status.json').write_text('{"state":"COMPLETED","exit_code":0}')
+    (work/'jobs.jsonl').write_text('{"job_id":"123","tasks":[0,1]}\n')
+    folder=work/'job_status';folder.mkdir()
+    (folder/'123_0.exit').write_text('0')
+    monkeypatch.setattr(probe,'scheduler',lambda _:({},set()))
+    assert probe.snapshot(base,[receipt.name])[0]['state']=='ACCOUNTING'
+    (folder/'123_1.exit').write_text('1')
+    assert probe.snapshot(base,[receipt.name])[0]['state']=='FAILED'
+    (folder/'123_1.exit').write_text('0')
+    assert probe.snapshot(base,[receipt.name])[0]['state']=='COMPLETED'
+
+
 def test_existing_allocation_requires_its_own_inner_worker_completion(tmp_path, monkeypatch):
     root, base, work, receipt, manifest = fixture(tmp_path)
     manifest['args'] = ['--74311']
@@ -74,10 +101,13 @@ def test_existing_allocation_requires_its_own_inner_worker_completion(tmp_path, 
     assert probe.snapshot(base, [receipt.name])[0]['state'] == 'COMPLETED'
 
 
-def test_partial_episode_progress_and_final_metrics_include_cached_tasks(tmp_path):
+@pytest.mark.parametrize('shared', [False, True])
+def test_partial_episode_progress_and_final_metrics_include_cached_tasks(tmp_path, shared):
     root, base, work, receipt, manifest = fixture(tmp_path)
     project = work / 'project'
-    out = project / manifest['evaluation']['output']
+    if shared:
+        manifest['evaluation']['storage_project'] = str(base)
+    out = (base if shared else project) / manifest['evaluation']['output']
     record = out / 'panels/00_model/videos/libero_90_0/eval_progress.json'
     record.parent.mkdir(parents=True)
     record.write_text('{"successes":[true,false],"total_episodes":2}')
@@ -109,12 +139,39 @@ def test_sbatch_recorder_handles_arrays_parsable_output_and_errors(tmp_path):
     assert len(record.read_text().splitlines()) == 2
 
 
-def test_collection_copies_video_repairs_paths_suffixes_and_preserves_collision(tmp_path, monkeypatch):
+def test_sbatch_wrapper_records_worker_exit_and_keeps_original_directives(tmp_path):
+    import os
+    real, wrapper, original = tmp_path/'actual', tmp_path/'sbatch', tmp_path/'job.sh'
+    marker = tmp_path/'generated-wrapper-path'
+    real.write_text('#!/bin/bash\nprintf "%s" "${@: -1}" > '+str(marker)+'\necho "Submitted batch job 123"\n')
+    real.chmod(0o755)
+    wrapper.write_text(yonsei.SBATCH_RECORDER)
+    original.write_text('#!/bin/bash\n#SBATCH --output=logs/%x_%j.out\nexit 7\n')
+    env={**os.environ,'SBD_YONSEI_REAL_SBATCH':str(real),
+         'SBD_YONSEI_JOB_FILE':str(tmp_path/'jobs.jsonl'),
+         'SBD_YONSEI_JOB_STATUS_DIR':str(tmp_path/'status')}
+    subprocess.run([sys.executable,str(wrapper),'--array=0-1%2',str(original)],env=env,check=True)
+    wrapped=Path(marker.read_text())
+    assert '#SBATCH --output=logs/%x_%j.out' in wrapped.read_text()
+    result=subprocess.run(['bash',str(wrapped)],env={**env,'SLURM_ARRAY_JOB_ID':'123',
+                          'SLURM_ARRAY_TASK_ID':'1','SLURM_JOB_ID':'124'})
+    assert result.returncode==7
+    assert (tmp_path/'status/123_1.exit').read_text().strip()=='7'
+    assert json.loads((tmp_path/'jobs.jsonl').read_text())['tasks']==[0,1]
+
+
+@pytest.mark.parametrize('shared', [False, True])
+def test_collection_copies_video_repairs_paths_suffixes_and_preserves_collision(tmp_path, monkeypatch, shared):
     root, base, work, receipt, manifest = fixture(tmp_path)
-    out = Path(manifest['project']) / manifest['evaluation']['output']
+    if shared:
+        manifest['evaluation']['storage_project'] = str(base)
+    out = Path(base if shared else manifest['project']) / manifest['evaluation']['output']
     out.mkdir(parents=True)
     (out / 'index.html').write_text('<video src="' + str(out) + '/video.mp4"></video>')
     (out / 'video.mp4').write_bytes(b'video-fixture')
+    if shared:
+        private = Path(manifest['project']) / manifest['evaluation']['output']
+        (out / 'private.html').write_text('<video src="' + str(private) + '/video.mp4"></video>')
     target = desk.destination(root, receipt, manifest)
     target.mkdir(parents=True)
     (target / 'keep.txt').write_text('existing local result')
@@ -135,6 +192,8 @@ def test_collection_copies_video_repairs_paths_suffixes_and_preserves_collision(
     assert (target / 'keep.txt').read_text() == 'existing local result'
     assert (copied / 'video.mp4').read_bytes() == b'video-fixture'
     assert str(copied) + '/video.mp4' in (copied / 'index.html').read_text()
+    if shared:
+        assert str(copied) + '/video.mp4' in (copied / 'private.html').read_text()
     assert '--checksum' in calls[1] and '--dry-run' in calls[1]
     assert desk.collect(root, receipt, manifest) == str(copied)
 

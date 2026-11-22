@@ -62,11 +62,18 @@ def endpoint(profile, env):
 def selectors(env):
     # Configs and experiment selectors only; never credentials, CUDA/Slurm state,
     # or a caller's scheduler/partition/venv overrides.
-    return {k: v for k, v in env.items() if k in SELECTORS or
+    selected = {k: v for k, v in env.items() if k in SELECTORS or
             (k.endswith(('_CONFIG', '_CONFIG_RESOLVER', '_DRY_RUN')) and
              k.startswith(('ABC_', 'TRAIN_', 'STAGE1_', 'SKILL_', 'NEWTASK_',
                            'PI05_', 'LIBERO_', 'FSQ_', 'FT_', 'XYZ_', 'ATTENTION_',
                            'FILTERED_', 'ORIGINAL_', 'GROOT_', 'MOLMOACT2_')))}
+    for key, value in list(selected.items()):
+        if key.endswith('_CONFIG') and '.config_snapshots' in Path(value).parts:
+            print(f'Ignoring inherited automatic snapshot: {key}={value}; using the current workflow YAML.',
+                  file=sys.stderr, flush=True)
+            selected.pop(key)
+            selected.pop(key.removesuffix('_CONFIG') + '_JOB_NAME', None)
+    return selected
 
 
 def parse_flags(args):
@@ -93,7 +100,10 @@ def config_and_resolver(script, args, env, root=ROOT):
     cfg = TREE / family / 'configs'
     parent = script.parent
     variable, default, resolver, extra = '', '', None, []
-    if '/train_skillVLA/' in rel:
+    if '/generate_training_dataset/visualized_dataset/' in rel and family == 'abc':
+        default = 'visualized_dataset_config.yaml'
+        resolver = parent / 'src/visualized_dataset_config.py'
+    elif '/train_skillVLA/' in rel:
         common = root / SHARED / 'train_skillVLA'
         if '/eval/' in rel and script.name == 'submit_eval.sh':
             if family == 'libero':
@@ -131,8 +141,9 @@ def config_and_resolver(script, args, env, root=ROOT):
             default, resolver = 'eval_config.yaml', common / 'DP/eval/src/config.py'
         elif '/DP/' in rel:
             variable = 'ABC_DP_CONFIG' if family == 'abc' else 'TRAIN_SKILLS_CONFIG'
-            default, resolver = 'dp_config.yaml', common / 'src/train_skills_config.py'
-            extra = ['--stage', 'dp']
+            default = 'dp_config.yaml'
+            resolver = common / ('DP/src/train_dp_config.py' if family == 'abc' else 'src/train_skills_config.py')
+            extra = [] if family == 'abc' else ['--stage', 'dp']
         elif '/FSQ/eval/' in rel:
             variable, default = 'ABC_FSQ_EVAL_CONFIG', 'eval_config.yaml'
             resolver = root / SHARED / 'train_skills/skill_eval/fsq_codebook/src/config.py'
@@ -211,9 +222,12 @@ def resolve_settings(script, args, env, root=ROOT):
     if not resolver.is_file():
         raise FileNotFoundError('Native workflow config resolver not found: ' + str(resolver))
     command = [str(root / '.venv/bin/python'), str(resolver), '--config', str(config), *extra, '--shell']
-    result = run(command, cwd=root, env={**os.environ, **env,
-        'PYTHONPATH': str(root / 'lerobot/src') + os.pathsep + os.environ.get('PYTHONPATH', '')},
-        capture_output=True)
+    resolver_env = {**os.environ, **env,
+        'PYTHONPATH': str(root / 'lerobot/src') + os.pathsep + os.environ.get('PYTHONPATH', '')}
+    if resolver.name == 'stage1_eval_config.py' and script.name == 'submit_eval.sh':
+        # Reproduce the PT/FT shell wrapper rather than inheriting its caller's directory.
+        resolver_env['STAGE1_EVAL_WORK_DIR'] = str(script.parent)
+    result = run(command, cwd=root, env=resolver_env, capture_output=True)
     exports = {}
     for line in result.stdout.splitlines():
         words = shlex.split(line)
@@ -234,7 +248,7 @@ def configured_file_inputs(config, root=ROOT):
     def walk(value):
         if isinstance(value, dict):
             for k,v in value.items():
-                if k.endswith('_root') or any(word in k.lower() for word in ('output','archive')):
+                if k.endswith(('_root', '_root_override')) or any(word in k.lower() for word in ('output','archive')):
                     continue
                 walk(v)
         elif isinstance(value,list):
@@ -433,6 +447,35 @@ elif r['action'] == 'start':
             if name.startswith(('dataset','outputs')):target.mkdir(parents=True,exist_ok=True)
             if target.exists():
                 link.parent.mkdir(parents=True,exist_ok=True);link.symlink_to(target,target_is_directory=target.is_dir())
+        elif link.is_dir() and not link.is_symlink() and (base/name).is_dir():
+            # Code snapshots contain source/config files but omit binary simulator
+            # assets. Keep frozen code; fill absent entries from shared dependencies.
+            pending=[(link,base/name)]
+            while pending:
+                destination,source=pending.pop()
+                for child in source.iterdir():
+                    entry=destination/child.name
+                    if not entry.exists() and not entry.is_symlink():
+                        entry.symlink_to(child,target_is_directory=child.is_dir())
+                    elif entry.is_dir() and not entry.is_symlink() and child.is_dir():
+                        pending.append((entry,child))
+    for name in r['manifest'].get('runtime_inputs',[]):
+        if not (project/name).is_dir():
+            raise RuntimeError('Required runtime directory missing before job submission: '+str(project/name))
+    evaluation=r['manifest'].get('evaluation')
+    if evaluation and evaluation.get('storage_project'):
+        relative=Path(evaluation['output'])
+        if relative.is_absolute() or '..' in relative.parts or relative == Path('.'):
+            raise ValueError('Invalid evaluation output path')
+        target=base/relative
+        target.resolve().relative_to(base.resolve())
+        link=project/relative
+        # Keep source frozen while publishing reports in the normal workspace.
+        if link.exists() or link.is_symlink():
+            raise RuntimeError('Snapshot evaluation output already exists: '+str(link))
+        target.mkdir(parents=True,exist_ok=True)
+        link.parent.mkdir(parents=True,exist_ok=True)
+        link.symlink_to(target,target_is_directory=True)
     manifest=work/'launch.json';manifest.write_text(json.dumps(r['manifest']))
     with (work/'console.log').open('ab',buffering=0) as log:
         child=subprocess.Popen([str(base/'.venv/bin/python'),str(project/'tools/remote/yonsei.py'),
@@ -527,6 +570,16 @@ def launch(script, args, root=ROOT, env=None):
     exported = selectors(env)
     config, settings = resolve_settings(script, args, exported, root)
     inputs = input_paths(settings, root) + list(configured_file_inputs(config, root))
+    runtime_inputs = []
+    if ('/libero/' in relative.as_posix() and '/eval/' in relative.as_posix()
+            and script.name == 'submit_eval.sh' and settings.get('models_json')):
+        benchmark = root / 'tools/lerobot-libero/libero/libero'
+        for name in ('init_files', 'bddl_files', 'assets'):
+            dependency = benchmark / name
+            if not dependency.is_dir():
+                raise FileNotFoundError('Required LIBERO runtime input: ' + str(dependency))
+            inputs.append(dependency)
+            runtime_inputs.append(dependency.relative_to(root).as_posix())
     # Explicit file arguments and custom config selectors travel with the recipe.
     files = {relative}
     for value in [*args, *exported.values()]:
@@ -586,10 +639,26 @@ def launch(script, args, root=ROOT, env=None):
     manifest = {'source': str(root), 'host': host, 'project': destination, 'script': str(relative),
                 'cwd': cwd, 'args': forwarded, 'environment': exported,
                 'profile': summary, 'inputs': names,
+                'runtime_inputs': runtime_inputs,
                 'created_at': time.time(),
                 'evaluation': evaluation_spec(script, settings, root),
                 'dry_run': any(k.endswith('_DRY_RUN') and v == '1' for k,v in exported.items())
                            or '--dry-run' in forwarded}
+    if not manifest['evaluation'] and 'train' in script.stem:
+        raw = (yaml.safe_load(config.read_text()) or {}) if config else {}
+        protected = (settings.get('protect_checkpoints') or raw.get('training', {}).get('protect_checkpoints') or
+                     raw.get('protect_checkpoints') or raw.get('dp_protect_checkpoints') or [])
+        if isinstance(protected, str):
+            protected = json.loads(protected)
+        if not isinstance(protected, list) or any(type(n) is not int or n < 0 for n in protected):
+            raise ValueError('protect_checkpoints must be a list of non-negative integers')
+        manifest['training'] = {'checkpoint_sync': True, 'protected': protected}
+        dataset = next((settings.get(k) for k in ('skillvla_dataset_dir', 'dp_dataset_dir', 'dataset_dir')
+                        if settings.get(k)), None)
+        if dataset:
+            manifest['training']['dataset'] = asset_relative(Path(dataset), root).as_posix()
+    if (manifest['evaluation'] or manifest.get('training')) and not manifest['dry_run']:
+        manifest['evaluation']['storage_project'] = base
     (audit/'launch.json').write_text(json.dumps(manifest,indent=2))
     links = ['.venv', '.venv_groot_lerobot', '.venv_molmoact2', 'models', 'third_party', 'libero_original_dataset',
              'tools/lerobot-libero', 'tools/openpi', 'lerobot/libero']
@@ -620,8 +689,54 @@ def launch(script, args, root=ROOT, env=None):
 
 
 SBATCH_RECORDER = '''#!/usr/bin/env python3
-import fcntl, json, os, re, subprocess, sys
-result = subprocess.run([os.environ['SBD_YONSEI_REAL_SBATCH'], *sys.argv[1:]],
+import fcntl, json, os, re, subprocess, sys, shlex, uuid
+from pathlib import Path
+args = sys.argv[1:]
+array = None
+for i, value in enumerate(args):
+    if value.startswith('--array='): array = value.split('=',1)[1]
+    elif value in {'--array','-a'} and i+1<len(args): array = args[i+1]
+tasks = [None]
+if array:
+    tasks=[]
+    for item in array.split('%',1)[0].split(','):
+        m=re.fullmatch(r'(\\d+)(?:-(\\d+)(?::(\\d+))?)?',item)
+        if not m: raise ValueError('Unsupported Slurm array specification')
+        start=int(m[1]);stop=int(m[2] or m[1]);step=int(m[3] or 1)
+        if step<1 or stop-start>10000: raise ValueError('Invalid Slurm array size')
+        tasks.extend(range(start,stop+1,step))
+# Durable per-array-element exits are independent of slurmdbd/controller retention.
+status_dir=os.environ.get('SBD_YONSEI_JOB_STATUS_DIR')
+if status_dir:
+    folder=Path(status_dir);folder.mkdir(parents=True,exist_ok=True)
+    for i,value in enumerate(args):
+        if value.startswith('-') or not Path(value).is_file(): continue
+        original=Path(value).absolute()
+        text=original.read_text()
+        if not text.startswith('#!'): continue
+        wrapper=folder/('batch-'+uuid.uuid4().hex+'.sh')
+        directives=''.join(line+'\\n' for line in text.splitlines() if line.startswith('#SBATCH'))
+        body="""#!/usr/bin/env bash
+"""+directives+"""
+record_exit() {
+  result=$?
+  trap - EXIT
+  master=${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-}}
+  task=${SLURM_ARRAY_TASK_ID:-solo}
+  if [[ "$master" =~ ^[0-9]+$ && "$task" =~ ^([0-9]+|solo)$ ]]; then
+    marker="${SBD_YONSEI_JOB_STATUS_DIR}/${master}_${task}.exit"
+    printf '%s\\n' "$result" > "${marker}.$$"
+    mv -- "${marker}.$$" "$marker"
+  fi
+  exit "$result"
+}
+trap record_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+bash """+shlex.quote(str(original))+""" "$@"
+"""
+        wrapper.write_text(body);wrapper.chmod(0o755);args[i]=str(wrapper);break
+result = subprocess.run([os.environ['SBD_YONSEI_REAL_SBATCH'], *args],
                         stdout=subprocess.PIPE, text=True)
 sys.stdout.write(result.stdout)
 sys.stdout.flush()
@@ -632,7 +747,7 @@ if result.returncode == 0:
         sys.exit(2)
     with open(os.environ['SBD_YONSEI_JOB_FILE'], 'a') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
-        stream.write(json.dumps({'job_id': match[1]}) + '\\n')
+        stream.write(json.dumps({'job_id': match[1], 'tasks': tasks}) + '\\n')
 sys.exit(result.returncode)
 '''
 
@@ -646,6 +761,12 @@ def execute(manifest_path):
                    and k not in {'CUDA_VISIBLE_DEVICES','VIRTUAL_ENV','PYTHONPATH'}}
     environment.update(data['environment'], SBD_SERVER='yonsei', SBD_SCHEDULER='slurm',
                        SBD_REMOTE_ACTIVE='1', SBD_SLURM_SUBMIT_MODE=data['profile'].get('slurm_submit_mode','sbatch'))
+    if data.get('training', {}).get('checkpoint_sync'):
+        environment.update(SBD_YONSEI_CHECKPOINT_OUTBOX=str(path.parent / 'checkpoint_events'),
+            SBD_YONSEI_LAUNCH_ID=path.parent.name, SBD_YONSEI_PROJECT=data['project'],
+            SBD_YONSEI_WORKSPACE=data['profile']['project'],
+            SBD_YONSEI_PROTECTED_CHECKPOINTS=json.dumps(data['training']['protected']),
+            SBD_YONSEI_DATASET_RELATIVE=data['training'].get('dataset', ''))
     # The reused venv's editable lerobot install points at the old main checkout.
     # Resolve every bootstrap import from this launch's frozen source instead.
     # Slurm exports this path to workers as well as the submission-time resolver.
@@ -659,6 +780,7 @@ def execute(manifest_path):
         recorder.chmod(0o755)
         environment.update(SBD_YONSEI_REAL_SBATCH=real_sbatch,
                            SBD_YONSEI_JOB_FILE=str(path.parent / 'jobs.jsonl'),
+                           SBD_YONSEI_JOB_STATUS_DIR=str(path.parent / 'job_status'),
                            PATH=str(bin_dir) + os.pathsep + environment.get('PATH', ''))
     try:
         code = subprocess.call(['bash',str(Path(data['project'])/data['script']),*data['args']],

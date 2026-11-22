@@ -9,7 +9,7 @@ dp_dataset: abc_sim_all
 # all | one official task ID | a YAML list | a task group | a reproducible
 # training set from abc_sim_training_sets in global_config.yaml.
 # dp_tasks: grab_clutter
-dp_tasks: group_ABCVLA_easy_task_1k_eps
+dp_tasks: sim_put_the_plastic_bottles_in_the_bin
 # ABC/YAM coordinate contract:
 #   - observation.state remains the canonical 14D absolute joint position
 #   - dataset: train on the original 14D absolute joint targets
@@ -34,7 +34,7 @@ dp_history_encoder: transformer  # flat | GRU_iid | GRU_epi | transformer | tran
 # GRU는 둘 다 2층. 추론/SBD에서는 현재 state + 이전 hidden 사용, episode 시작에서 초기화.
 # GRU_iid: 무작위 window마다 hidden=0. GRU_epi: episode 내 구간을 순서대로 연결, 구간마다 gradient 분리.
 dp_history_encoder_dim: 128      # 고정. flat에서는 사용하지 않음
-dp_unet_size: base             # small=[128,256,512] | base=[512,1024,2048]
+dp_unet_size: small             # small=[128,256,512] | base=[512,1024,2048]
 # 폴더명: encoder 접미사(flat은 생략), small 접미사(base는 생략)를 자동 반영.
 dp_lr_scheduler: constant
 dp_lr: 0.0001
@@ -45,7 +45,7 @@ dp_batch_size: 64
 dp_num_workers: 8
 dp_seed: 42
 dp_log_freq: 200
-dp_save_freq: 10000
+dp_save_freq: 50000
 dp_wandb_enable: true
 dp_wandb_project: DP_ABC
 

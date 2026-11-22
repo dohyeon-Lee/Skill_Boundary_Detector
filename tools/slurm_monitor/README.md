@@ -16,6 +16,15 @@ An existing standalone monitor can be reused with `--reuse-slurm-port 8767`.
 
 ## Jobs and completion instructions
 
+Active individual training/evaluation cards offer **이 학습 종료 / 이 평가 종료**.
+The request runs through the existing allocation worker and signals only owned
+processes carrying that exact run ID and allocation ID. It checks ownership and
+process birth before signalling; PID descriptors are used on supported kernels.
+It does not call scancel, open SSH, or allocate another GPU step. Other runs and
+the allocation remain available. A manual individual stop suppresses automatic
+completion instructions for that attempt, preventing an unintended restart.
+The existing allocation cancellation button retains its original behavior.
+
 ABC/LIBERO `DP/eval` cards show separate counters for the DP partial build,
 GMM clustering, threshold/curvature calculation, plots, and video HTML.
 Counts include reusable caches and follow each attempt's frozen probe and

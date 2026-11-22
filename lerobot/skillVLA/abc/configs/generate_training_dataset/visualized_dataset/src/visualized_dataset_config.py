@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared, validated YAML settings for the training-dataset inspection tools."""
+"""Validated YAML settings for the training-dataset visualizer."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ class DatasetSettings:
 class VisualizationSettings:
     list_tasks_only: bool
     task_grouping: str
-    task: str
+    task: str | tuple[str, ...]
     samples: int
     sampling: str
     seed: int
@@ -163,7 +163,13 @@ def visualization_settings(config: dict[str, Any]) -> VisualizationSettings:
         if output.suffix.lower() != ".html":
             raise ValueError(f"visualize.output must end in .html, got {output}")
 
-    task = str(section.get("task", "")).strip()
+    raw_task = section.get("task", "")
+    if isinstance(raw_task, (list, tuple)):
+        task = tuple(str(value).strip() for value in raw_task)
+        if not task or any(not value for value in task):
+            raise ValueError("visualize.task list must contain non-empty task/group selectors")
+    else:
+        task = str(raw_task).strip()
     list_tasks_only = _bool(section.get("list_tasks_only", False), "visualize.list_tasks_only")
     if not list_tasks_only and not task:
         raise ValueError("visualize.task must not be blank unless list_tasks_only is true")
@@ -191,5 +197,17 @@ def visualization_settings(config: dict[str, Any]) -> VisualizationSettings:
 def reject_cli_arguments() -> None:
     if len(sys.argv) > 1:
         raise SystemExit(
-            f"CLI arguments are not used. Edit {DEFAULT_CONFIG_PATH} and run the Python file without arguments."
+            f"CLI arguments are not used. Edit {DEFAULT_CONFIG_PATH} and run the .sh launcher without arguments."
         )
+
+
+if __name__ == "__main__":
+    # Read-only native resolver for --yonsei input discovery; no visualization.
+    import argparse
+    import shlex
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--shell", action="store_true")
+    args = parser.parse_args()
+    dataset = dataset_settings(load_config(args.config))
+    print("export DATASET_DIR=" + shlex.quote(str(dataset.dataset_dir)))

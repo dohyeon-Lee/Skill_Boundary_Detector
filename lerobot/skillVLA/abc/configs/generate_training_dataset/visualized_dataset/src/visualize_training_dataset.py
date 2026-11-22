@@ -9,16 +9,18 @@ LeRobot v3 stores multiple episodes in packed AV1 video files. This script selec
 episodes from one task, extracts their timestamp ranges with ffmpeg, transcodes the
 clips to VP9 WebM and H.264 MP4, and writes an HTML gallery with the selected camera.
 
-Edit ``visualized_dataset_config.yaml`` and run ``python visualize_training_dataset.py``.
+Edit ``visualized_dataset_config.yaml`` and run ``./visualize_training_dataset.sh``.
 """
 
 from __future__ import annotations
 
 import html
+import hashlib
 import json
 import os
 import random
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -31,7 +33,7 @@ from urllib.parse import quote
 import pandas as pd
 import pyarrow.parquet as pq
 
-VISUALIZED_DIR = Path(__file__).resolve().parent
+VISUALIZED_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(VISUALIZED_DIR / "src"))
 
 from visualized_dataset_config import (  # noqa: E402
@@ -290,6 +292,41 @@ def resolve_task(selector: str, tasks: dict[int, str]) -> int:
         matches = ", ".join(f"task{index:02d}" for index in partial)
         raise ValueError(f"Task language selector is ambiguous; matches: {matches}")
     raise ValueError(f"No task label contains: {selector!r}")
+
+
+def resolve_selected_tasks(selector, tasks, config, grouping):
+    selectors = list(selector) if isinstance(selector, (tuple, list)) else [str(selector).strip() or "all"]
+    all_selectors = [value for value in selectors if value.casefold() in {"all", "*"}]
+    if all_selectors:
+        if len(selectors) != 1:
+            raise ValueError("visualize.task cannot mix all/* with explicit tasks or groups")
+        return sorted(tasks)
+    # Reuse the same global group validation/expansion as ABC DP training.
+    helpers = runpy.run_path(str(VISUALIZED_DIR.parents[1] / "train_skills/DP/src/train_dp_config.py"))
+    groups = helpers["configured_task_groups"](config)
+    if any(value in groups or value.startswith("group_") for value in selectors) and grouping != "source_task":
+        raise ValueError("ABC Sim task groups require visualize.task_grouping: source_task")
+    expanded, _ = helpers["expand_task_selectors"](selectors, groups)
+    selected = []
+    for value in expanded:
+        index = resolve_task(value, tasks)
+        if index not in selected:
+            selected.append(index)
+    return selected
+
+
+def selection_slug(selector, selected, *, tasks=None, grouping=None):
+    if len(selected) == 1:
+        if grouping == "source_task" and tasks is not None:
+            return re.sub(r"[^A-Za-z0-9_.-]+", "_", tasks[selected[0]]).strip("._-")
+        return f"task{selected[0]:02d}"
+    if isinstance(selector, str):
+        if selector.casefold() in {"all", "*"}:
+            return "all_tasks"
+        if selector.startswith("group_"):
+            return re.sub(r"[^A-Za-z0-9_.-]+", "_", selector)[:80]
+    digest = hashlib.sha256(",".join(str(index) for index in sorted(selected)).encode()).hexdigest()[:8]
+    return f"tasks{len(selected)}_{digest}"
 
 
 def source_clip(
@@ -767,7 +804,7 @@ def build_html(
     escaped_dataset = html.escape(dataset_name)
     escaped_path = html.escape(str(dataset_dir))
     all_tasks = len(selected_task_indexes) > 1
-    selection_label = "all tasks" if all_tasks else f"task{selected_task_indexes[0]:02d}"
+    selection_label = "selected tasks" if all_tasks else f"task{selected_task_indexes[0]:02d}"
     subtitle = (
         f"{len(selected_task_indexes)} tasks · samples is a per-task maximum"
         if all_tasks
@@ -861,13 +898,14 @@ def main() -> None:
         settings.task_grouping,
     )
     counts = task_episode_counts(episodes, tasks)
+    selected_task_indexes = resolve_selected_tasks(settings.task, tasks, config, settings.task_grouping)
 
     if settings.list_tasks_only:
         print(f"Dataset: {dataset_config.dataset}")
         print(f"Path   : {dataset_dir}")
         print(f"Group  : {settings.task_grouping}")
-        for task_index, language in sorted(tasks.items()):
-            print(f"task{task_index:02d} | episodes={counts[task_index]:4d} | {language}")
+        for task_index in selected_task_indexes:
+            print(f"task{task_index:02d} | episodes={counts[task_index]:4d} | {tasks[task_index]}")
         return
     ffmpeg = shutil.which(settings.ffmpeg)
     if ffmpeg is None and settings.ffmpeg == "ffmpeg":
@@ -885,11 +923,6 @@ def main() -> None:
             "set visualize.ffmpeg to an executable path or install imageio-ffmpeg "
             "in the Python environment running this script"
         )
-
-    if settings.task.casefold() in {"all", "*"}:
-        selected_task_indexes = sorted(tasks)
-    else:
-        selected_task_indexes = [resolve_task(settings.task, tasks)]
 
     default_camera = DEFAULT_CAMERA if DEFAULT_CAMERA in available_cameras else available_cameras[0]
     cameras = list(settings.cameras) or [default_camera]
@@ -922,15 +955,16 @@ def main() -> None:
             if settings.sampling == "first"
             else f"random_seed{settings.seed}"
         )
+        selection_name = selection_slug(
+            settings.task, selected_task_indexes, tasks=tasks, grouping=settings.task_grouping
+        )
         if len(selected_task_indexes) == 1:
-            selection_slug = f"task{selected_task_indexes[0]:02d}"
             sample_slug = str(len(samples))
         else:
-            selection_slug = "all_tasks"
             sample_slug = f"{settings.samples}_per_task"
         if settings.task_grouping != "language_prompt":
-            selection_slug = f"{settings.task_grouping}_{selection_slug}"
-        run_dir = PREVIEW_ROOT / dataset_slug / f"{selection_slug}_{sampling_slug}_{sample_slug}"
+            selection_name = f"{settings.task_grouping}_{selection_name}"
+        run_dir = PREVIEW_ROOT / dataset_slug / f"{selection_name}_{sampling_slug}_{sample_slug}"
         output_path = run_dir / "index.html"
         media_dir = run_dir / "media"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -971,7 +1005,7 @@ def main() -> None:
         print(f"Task    : task{task_index:02d} | {tasks[task_index]}")
         print(f"Episodes: {episode_ids}")
     else:
-        print(f"Tasks   : all {len(selected_task_indexes)} tasks")
+        print(f"Tasks   : {len(selected_task_indexes)} selected tasks")
         print(f"Episodes: {len(samples)} total (up to {settings.samples} per task)")
     print(f"Media   : {media_dir} ({media_size / 1024**2:.1f} MiB)")
     print(f"HTML    : {output_path}")

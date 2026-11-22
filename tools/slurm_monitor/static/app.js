@@ -56,10 +56,12 @@ function createCard(job) {
   card.querySelector(".cancel").addEventListener("click",async()=>{
     const current=state.jobs.find(row=>row.key===job.key);
     if(!current || !current.can_cancel || canceling.has(job.key))return;
-    const warning=current.armed?"\n취소가 확인되면 저장된 종료 후 지시도 기존 설정대로 전송됩니다.":"";
-    if(!confirm(`${current.display_name}\nJob #${current.job_id}을 취소할까요?${warning}`))return;
+    const individual=current.kind==="training";
+    const warning=individual?"\n같은 GPU의 다른 작업과 전체 할당은 유지됩니다. 자동 후속 지시는 전송하지 않습니다.":current.armed?"\n취소가 확인되면 저장된 종료 후 지시도 기존 설정대로 전송됩니다.":"";
+    const question=individual?"이 개별 실행을 종료할까요?":`Job #${current.job_id}을 취소할까요?`;
+    if(!confirm(`${current.display_name}\n${question}${warning}`))return;
     canceling.add(job.key);updateCard(card,current);
-    try{await post("/api/cancel",{key:job.key});toast("취소를 요청했습니다. Slurm에서 종료가 확인되면 상태가 바뀝니다.");}
+    try{await post("/api/cancel",{key:job.key});toast(individual?"개별 실행의 종료를 요청했습니다. 종료 확인 후 상태가 바뀝니다.":"취소를 요청했습니다. Slurm에서 종료가 확인되면 상태가 바뀝니다.");}
     catch(error){toast(error.message,true);}
     finally{canceling.delete(job.key);await load();}
   });
@@ -93,10 +95,10 @@ function updateCard(card, job) {
   const cancelButton=card.querySelector(".cancel");
   cancelButton.hidden=!job.can_cancel;
   cancelButton.disabled=canceling.has(job.key)||["requesting","requested"].includes(cancelStatus);
-  cancelButton.textContent=cancelButton.disabled?"취소 요청 중":"Job 취소";
+  cancelButton.textContent=cancelButton.disabled?"종료 요청 중":training?(job.evaluation_progress?"이 평가 종료":"이 학습 종료"):"Job 취소";
   const cancelNote=card.querySelector(".cancel-status");
   cancelNote.hidden=!cancelStatus||job.terminal;
-  cancelNote.textContent=cancelStatus==="uncertain"?`취소 요청 결과 확인 필요 · ${job.cancel.error || "Slurm 상태를 확인하세요."}`:"취소 요청 중 · Slurm 종료 상태 확인을 기다립니다.";
+  cancelNote.textContent=cancelStatus==="uncertain"?`종료 요청 결과 확인 필요 · ${job.cancel.error || "상태를 확인하세요."}`:training?"종료 요청 중 · 개별 실행 종료를 확인하고 있습니다.":"취소 요청 중 · Slurm 종료 상태 확인을 기다립니다.";
   const progress=card.querySelector(".training-progress");
   progress.replaceChildren();
   progress.hidden=!(job.training_progress?.length);

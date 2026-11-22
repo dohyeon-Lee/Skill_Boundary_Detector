@@ -27,6 +27,9 @@ SkillVLA PT/FT simulator evaluation also reads `server_eval_num_gpus` and
 the experiment YAML's `eval_num_gpus` / `eval_max_workers_per_gpu`. Yonsei defaults
 to four separate one-GPU jobs with one worker each; the experiment's local packing
 remains unchanged. `--yonsei --JOB_ID` uses that allocation's single GPU instead.
+Its resource requests are also overridden by `server_eval_cpus: 8`,
+`server_eval_memory: 64G`, and `server_eval_time: '3:00:00'`. These apply per
+one-GPU job on the next submission; existing job snapshots are unchanged.
 These server overrides do not change episode count, replanning or training.
 
 Before executing, the sender freezes the current code (including uncommitted
@@ -42,8 +45,11 @@ before starting a transfer.
 Every launch uses its own code checkout under
 `<remote_project_root>/.cache/yonsei_launches/<id>/project`, so changing local or
 remote source files cannot move a queued shell reader's offsets. Data, models,
-and training outputs use the destination workspace through links. Eval reports
-written beside source files live in that launch's `project/.../eval/outputs`.
+and training outputs use the destination workspace through links. New evaluation
+launches also save reports at the matching path in the normal Yonsei workspace,
+`<remote_project_root>/.../eval/outputs/<run>`. The frozen checkout links to that
+run directory; monitoring and automatic collection read the normal workspace.
+Older launches retain their original private output locations.
 Its `console.log` and `status.json` track the launcher; Slurm tracks the jobs
 it submits. Launcher completion does not mean training/evaluation completion.
 Local receipts are under `.cache/yonsei_launches/<id>/`.
@@ -56,7 +62,24 @@ just the submitting shell. After successful completion it copies that run's
 HTML, videos and statistics back to the corresponding local eval output folder.
 The received folder always ends in `_yonsei`. If that name already belongs to
 another run, a launch ID is inserted before `_yonsei`; existing results are
-preserved. Training checkpoints and datasets are not automatically downloaded.
+preserved. Datasets are not automatically downloaded.
+
+Training launches automatically transfer completed checkpoints while training
+continues. A nonempty `protect_checkpoints` list (under `training`, or at the
+config root) restricts transfers to those steps; an absent/empty list transfers
+every saved checkpoint. The trainer's effective protection list is used when
+available. DP/SkillVLA/pi05 standard saves include model, processors, optimizer,
+scheduler and RNG state; periodic FSQ epoch saves are also supported. This
+applies to new `--yonsei` launches using the updated source snapshot.
+
+Completed saves are sealed into a hard-link staging folder before native
+retention, then collected by the lab watcher without blocking training on SSH.
+The receiving run directory ends in `_yonsei`. Checkpoints are published only
+after an rsync checksum and native checkpoint structure validation; interrupted
+transfers retry. Existing local runs/checkpoints are never overwritten. After
+verified receipt, only transfer staging links are removed remotely; original
+training checkpoints remain subject to the normal training retention settings.
+Yonsei Desk displays the selection, copied steps and retry state.
 
 Transfers resume after connection failures. Results are staged in a hidden
 directory, verified with rsync checksums, then published atomically. Absolute

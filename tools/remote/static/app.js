@@ -1,15 +1,16 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const states = {PENDING:'대기 중',RUNNING:'실행 중',LAUNCHING:'제출 중',ACCOUNTING:'종료 상태 확인 중',FINALIZING:'마무리 중',COMPLETED:'실행 완료',FAILED:'실패',DRY_RUN:'설정 확인'};
+  const states = {PENDING:'대기 중',RUNNING:'실행 중',LAUNCHING:'제출 중',ACCOUNTING:'종료 상태 확인 중',FINALIZING:'마무리 중',COMPLETED:'실행 완료',FAILED:'실패',CANCELLED:'취소됨',DRY_RUN:'설정 확인'};
   const transfers = {TRANSFERRING:'결과 회수 중',COLLECTED:'결과 회수 완료',RETRY:'결과 회수 재시도 대기'};
   let token='',data={jobs:[]},busy=false;
+  const canceling=new Set();
   function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   const pct=n=>Number.isFinite(n)?n.toFixed(1)+'%':'—';
   function render(){
     const opened=new Set([...document.querySelectorAll('details[open][data-key]')].map(n=>n.dataset.key));
     const jobs=data.jobs||[];
-    $('active').textContent=jobs.filter(j=>!['COMPLETED','FAILED','DRY_RUN'].includes(j.state)).length;
+    $('active').textContent=jobs.filter(j=>!['COMPLETED','FAILED','CANCELLED','DRY_RUN'].includes(j.state)).length;
     $('finished').textContent=jobs.filter(j=>j.state==='COMPLETED'&&j.evaluation).length;
     $('collected').textContent=jobs.filter(j=>j.collection?.state==='COLLECTED').length;
     $('failed').textContent=jobs.filter(j=>j.state==='FAILED').length;
@@ -20,8 +21,31 @@
       const card=el('article',undefined,'card job'),head=el('div',undefined,'job-head');
       const name=job.evaluation?.output?.split('/').pop()||job.script.split('/').slice(-2).join('/');
       head.append(el('h3',name),el('span',states[job.state]||job.state||'연결 대기','badge '+(job.state||'')));card.append(head);
+      if(job.can_cancel){
+        const button=el('button',job.cancel?.status==='requested'?'취소 요청 중':'이 실행 취소','cancel danger');
+        button.disabled=canceling.has(job.id)||job.cancel?.status==='requested';
+        button.addEventListener('click',async()=>{
+          if(!confirm(`${name}\nYonsei Slurm ${(job.job_ids||[]).join(', ')} 잡을 취소할까요? 다른 실행은 유지됩니다.`))return;
+          canceling.add(job.id);button.disabled=true;
+          try{
+            const r=await fetch('/yonsei/api/cancel',{method:'POST',headers:{'Content-Type':'application/json','X-Sync-Token':token},body:JSON.stringify({id:job.id})});
+            const value=await r.json();if(!r.ok)throw Error(value.error||r.status);
+            job.cancel=value;button.textContent='취소 요청 중';await update();
+          }catch(error){$('notice').hidden=false;$('notice').textContent='취소 요청 확인 필요: '+error.message;}
+          finally{canceling.delete(job.id);button.disabled=job.cancel?.status==='requested';}
+        });head.append(button);
+      }
+      if(job.cancel?.error)card.append(el('p',job.cancel.error,'error'));
       card.append(el('p',new Date(job.created_at*1000).toLocaleString()+' · Slurm '+((job.job_ids||[]).join(', ')||'제출 대기'),'meta'));
       const p=job.progress;
+      if(job.training?.checkpoint_sync){
+        const sync=job.checkpoint_sync||{},completed=Object.values(sync.completed||{});
+        const selection=job.training.protected?.length?'보호 스텝만: '+job.training.protected.join(', '):'새 체크포인트 전체';
+        card.append(el('p',`체크포인트 자동 전송 · ${selection} · 완료 ${completed.length}개`,'result-state'));
+        if(sync.state==='TRANSFERRING')card.append(el('p',`${sync.current_step} 체크포인트 전송 중…`));
+        if(sync.error)card.append(el('p','전송 재시도 대기: '+sync.error,'error'));
+        for(const checkpoint of completed)card.append(el('p',`${checkpoint.step}: ${checkpoint.path}`,'meta'));
+      }
       if(p?.total){
         const line=el('div',undefined,'progress-line');line.append(el('span',`완료 ${p.completed} / ${p.total} 에피소드 (${pct(p.percent)})`),el('strong','현재 성공률 '+pct(p.success_pct)));card.append(line);
         const bar=el('progress');bar.max=p.total;bar.value=p.completed;bar.setAttribute('aria-label','평가 진행률');card.append(bar);
