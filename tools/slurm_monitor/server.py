@@ -65,6 +65,10 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path == "/api/state":
                 self.reply(200, {**self.server.monitor.snapshot(), "token": self.server.token})
+            elif path in {"/desk-metrics.js", "/desk-metrics.css"}:
+                asset = REPO / "tools" / path.lstrip("/").replace("desk-metrics", "desk_metrics")
+                mime = "text/javascript" if path.endswith(".js") else "text/css"
+                self.reply(200, asset.read_bytes(), mime + "; charset=utf-8")
             elif path in {"/", "/app.js", "/style.css"}:
                 file, mime = {"/": ("index.html", "text/html"), "/app.js": ("app.js", "text/javascript"),
                               "/style.css": ("style.css", "text/css")}[path]

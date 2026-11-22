@@ -78,14 +78,16 @@ def test_termination_loss_ignores_expired_holds_and_weights_only_terminal_object
 
 
 @pytest.mark.parametrize('finetune', [False, True])
-def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, finetune):
+@pytest.mark.parametrize('term_weight', [0.0, 1.0])
+def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, finetune, term_weight):
     from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy, apply_newtask_ft_freeze
     from lerobot.configs.policies import PreTrainedConfig
     from test_uv_gt_xyz import goal_batch
     model = tiny_vlm_model(monkeypatch, DUAL_BOTTLENECK_NOPROPRIO_LABEL,
                            vlm_termination_enabled=True, device="cpu",
                            newtask_ft_enabled=finetune, newtask_ft_freeze_expert=finetune,
-                           newtask_ft_skill_flow_loss=False)
+                           newtask_ft_skill_flow_loss=False,
+                           vlm_termination_loss_weight=term_weight)
     # Build the policy around the same tiny real VLM/Expert used above.
     policy = SkillExpertPolicy(model.config)
     policy.model = model
@@ -113,11 +115,19 @@ def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, fi
         return original(memory, state, code, goal)
     monkeypatch.setattr(model, 'vlm_termination_from_image_tokens', record)
     loss, metrics = policy(batch)
-    assert observed[0][0].tolist() == [3]
-    torch.testing.assert_close(observed[0][1][:, :2], torch.tensor([[.6, -.4]]))
-    assert torch.isfinite(loss) and metrics['vlm_termination/post_end_conditions_per_frame'] == .5
+    assert torch.isfinite(loss)
+    if term_weight:
+        assert observed[0][0].tolist() == [3]
+        torch.testing.assert_close(observed[0][1][:, :2], torch.tensor([[.6, -.4]]))
+        assert metrics['vlm_termination/post_end_conditions_per_frame'] == .5
+    else:
+        assert observed == []  # No previous-skill termination forward when loss is off.
+        assert metrics['vlm_termination/weight'] == 0
     loss.backward()
-    assert model.vlm_termination_head[-1].weight.grad.abs().sum() > 0
+    if term_weight:
+        assert model.vlm_termination_head[-1].weight.grad.abs().sum() > 0
+    else:
+        assert all(p.grad is None for p in model.vlm_termination_head.parameters())
     if finetune:
         assert all(not p.requires_grad and p.grad is None for p in model.gemma_expert.parameters())
         assert model.cond_encoder.model.layers[0].self_attn.q_proj.weight.grad.abs().sum() > 0
@@ -129,6 +139,7 @@ def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, fi
     saved.save_pretrained(tmp_path)
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.vlm_termination_enabled and restored.vlm_termination_post_end_steps == 10
+    assert restored.vlm_termination_loss_weight == term_weight
     # The deployed head consumes current cameras/state/skill/UV only.
     batch.pop('skill_start_state')
     probability = policy.predict_termination_probability(batch)

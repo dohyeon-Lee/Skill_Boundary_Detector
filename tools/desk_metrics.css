@@ -1,0 +1,19 @@
+/* RunPod metrics layout shared by all desks. */
+.desk-metrics{--metrics-line:#303c4e;--metrics-accent:#79d9b3;min-width:0;color:#e6edf7;font:14px/1.6 system-ui,sans-serif}
+.desk-metrics>summary{display:flex;align-items:center;gap:10px;cursor:pointer;list-style:none;min-width:0;font-weight:600;padding:0;font-size:14px}
+.desk-metrics>summary::-webkit-details-marker{display:none}.desk-metrics>summary::marker{content:""}
+.desk-metrics>summary::before{content:"›";font-size:22px;line-height:1;flex:0 0 12px;text-align:center;color:#9caabd}
+.desk-metrics[open]>summary::before{transform:rotate(90deg)}
+.desk-metrics .fold-title{flex:1;min-width:0;overflow-wrap:anywhere}.desk-metrics .fold-body{padding-top:12px;min-width:0}
+.desk-metrics.eval-progress,.desk-metrics.train-progress{border-top:1px solid var(--metrics-line);padding-top:12px;margin-top:12px}
+.desk-metrics.model-progress{padding:10px 12px;margin-top:12px;background:#202b3a;border-radius:8px}
+.desk-metrics .meta{color:#9caabd;font-size:12px;overflow-wrap:anywhere;margin:6px 0}
+.desk-metrics .task-list{display:grid;gap:7px}
+.desk-metrics.task-row{display:grid;grid-template-columns:minmax(110px,2fr) minmax(70px,3fr) 64px;gap:12px;align-items:center;font-variant-numeric:tabular-nums}
+.desk-metrics.task-row span:first-child{overflow-wrap:anywhere}.desk-metrics .success-value{text-align:right;white-space:nowrap}
+.desk-metrics.overall-row{padding:8px 0 12px;border-bottom:1px solid var(--metrics-line);margin-bottom:5px;font-weight:650;color:var(--metrics-accent)}
+.desk-metrics.progress-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;align-items:center}
+.desk-metrics progress{width:100%;accent-color:var(--metrics-accent);height:12px;margin:0}
+.desk-metrics.progress-row progress{grid-column:1/-1}.desk-metrics progress.unknown{opacity:.35}
+.desk-metrics .progress-count{font-variant-numeric:tabular-nums;font-size:12px;color:var(--metrics-accent);white-space:nowrap}
+@media(max-width:760px){.desk-metrics.task-row{grid-template-columns:minmax(80px,1.5fr) minmax(50px,2fr) 54px;gap:8px;font-size:12px}.desk-metrics.model-progress{padding:8px}.desk-metrics.progress-row{grid-template-columns:minmax(0,1fr)}.desk-metrics .progress-count{white-space:normal}}

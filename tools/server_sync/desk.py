@@ -320,6 +320,10 @@ class DeskHandler(HFHandler):
                 return self._slurm("do_GET")
             if path == "/hf" or path.startswith("/hf/"):
                 return self._hf("do_GET")
+            if path in {"/desk-metrics.js", "/desk-metrics.css"}:
+                asset = REPO / "tools" / path.lstrip("/").replace("desk-metrics", "desk_metrics")
+                mime = "text/javascript" if path.endswith(".js") else "text/css"
+                return self._reply(200, asset.read_bytes(), mime + "; charset=utf-8")
             if path == "/desk.css":
                 return self._reply(200, (HERE / "static/desk.css").read_bytes(), "text/css; charset=utf-8")
             if path == "/storage.js":

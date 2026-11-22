@@ -122,3 +122,10 @@ and runs the native evaluator's submission dry run on Yonsei.
 New `.sh` workflows should source `lerobot/skillVLA/remote.sh` at the beginning,
 inside `if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then ...; fi`. The coverage check
 in `tools/remote/tests/test_yonsei.py` catches omitted hooks.
+
+Yonsei Desk, Slurm Desk and RunPod Desk share the same evaluation completion,
+overall/task success bars, and training step/epoch progress renderer. Unknown
+counters remain unknown. New training snapshots publish exact counters; jobs
+already running use bounded reads of their private launch logs, with rounded
+log counters marked approximate. The desk never loads model weights to monitor
+progress. Run cards preserve their collapsed/expanded state when polling.

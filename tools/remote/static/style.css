@@ -3,4 +3,12 @@
 .yonsei-desk .storage-panel{margin:18px 0 24px;max-width:none;background:var(--panel);border-color:var(--line);color:var(--text)}
 .yonsei-desk .storage-heading strong{color:var(--text)}
 .yonsei-desk .storage-volume,.yonsei-desk .storage-path{color:var(--muted)}
-.stats{margin:24px 0}.stats>div{background:var(--panel)}.toolbar{margin-top:24px}#jobs{display:grid;gap:16px}.job{min-width:0}.job-head{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.job h3{font-size:16px}.progress-line{display:flex;justify-content:space-between;gap:12px;margin-top:18px}progress{display:block;width:100%;height:12px;accent-color:var(--accent);margin:8px 0 12px}.task-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin:12px 0}.task{padding:8px 12px;border:1px solid var(--line);border-radius:8px;display:flex;justify-content:space-between;gap:12px}.job details{margin-top:12px}.job code{overflow-wrap:anywhere;white-space:normal}.result-state{margin-top:12px;color:var(--accent)}#notice{margin:16px 0;padding:12px;border:1px solid #86515a;border-radius:10px;color:#ffb4a9}.help{margin-top:18px}.badge.PENDING,.badge.ACCOUNTING{color:#f7cf84}.badge.RUNNING,.badge.COMPLETED{color:var(--accent)}.badge.FAILED{color:#ffb4a9}.error{color:#ffb4a9;font-size:12px;overflow-wrap:anywhere}summary{font-weight:600}button:disabled{opacity:.5}.model{padding:12px 0;border-top:1px solid var(--line)}
+.stats{margin:24px 0}.stats>div{background:var(--panel)}.toolbar{margin-top:24px}
+#jobs{display:grid;gap:16px}.yonsei-job{min-width:0;margin:0}
+.yonsei-job>summary{display:grid;grid-template-columns:12px minmax(0,1fr) auto;align-items:center;gap:10px}
+.yonsei-job>summary>.card-actions{justify-content:flex-end;gap:8px;flex-wrap:wrap;max-width:420px}
+.yonsei-job .fold-title{min-width:0}.yonsei-job h4{margin:0;font-size:14px;overflow-wrap:anywhere}
+.result-state{margin-top:12px;color:var(--accent)}#notice{margin:16px 0;padding:12px;border:1px solid #86515a;border-radius:10px;color:#ffb4a9}
+.help{margin-top:18px}.badge.pending,.badge.accounting{color:#f7cf84}.badge.completed{color:var(--accent)}.badge.cancelled{color:#f7cf84}
+.error{color:#ffb4a9;font-size:12px;overflow-wrap:anywhere}button:disabled{opacity:.5}
+@media(max-width:760px){.yonsei-job>summary{grid-template-columns:12px minmax(0,1fr)}.yonsei-job>summary>.card-actions{grid-column:2;justify-content:flex-start;max-width:none}}

@@ -220,13 +220,13 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     legacy_keys = {
         "train_dino", "dino_lr_scale", "unfreeze_action_head", "full_unfreeze", "dsbc",
     }
-    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert", "freeze_skill_core", "train_bridge_layers_and_head", "visual_aux_loss"} | legacy_keys)
+    unknown_adaptation = set(adaptation) - ({"skill_flow_loss", "freeze_expert", "freeze_skill_core", "train_bridge_layers_and_head", "visual_aux_loss", "termination_loss"} | legacy_keys)
     if unknown_adaptation:
         raise ValueError(
             f"Unsupported adaptation settings: {sorted(unknown_adaptation)}. "
             "Standalone VSA FT exposes adaptation.full_unfreeze, adaptation.train_dino, adaptation.dino_lr_scale, "
             "adaptation.skill_flow_loss, adaptation.freeze_expert "
-            "adaptation.freeze_skill_core, adaptation.train_bridge_layers_and_head and adaptation.visual_aux_loss."
+            "adaptation.freeze_skill_core, adaptation.train_bridge_layers_and_head, adaptation.visual_aux_loss and adaptation.termination_loss."
         )
 
     skill_flow_loss = as_bool(adaptation.get("skill_flow_loss", False))
@@ -243,6 +243,10 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     ):
         raise ValueError("adaptation.freeze_skill_core requires standalone independent-planner FT and freeze_expert=false.")
     visual_aux_loss = as_bool(adaptation.get("visual_aux_loss", True))
+    termination_loss = as_bool(adaptation.get("termination_loss", True))
+    # Retain the checkpoint's integrated termination head for evaluation.
+    # The FT toggle changes only its supervision, not the model architecture.
+    vlm_termination_loss_weight = 1.0 if termination_loss else 0.0
     uses_bspline_plan = label in _STAGE1.BSPLINE_ARCH_LABELS
     skill_loss_kind = "bspline" if uses_bspline_plan else "flow"
     if _allow_joint_adaptation:
@@ -278,7 +282,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
                     f"adaptation.{key} is no longer a standalone VSA FT choice; "
                     f"remove it (fixed value: {expected!r})."
                 )
-        train_dino = as_bool(adaptation.get("train_dino", False))
+        train_dino = as_bool(adaptation.get("train_dino", True))
         dino_lr_scale = float(adaptation.get("dino_lr_scale", 1.0))
         full_unfreeze = as_bool(adaptation.get("full_unfreeze", False))
         if full_unfreeze and (freeze_expert or freeze_skill_core):
@@ -392,6 +396,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         run_name += "_skillbspline" if uses_bspline_plan else "_skillflow"
     if not visual_aux_loss:
         run_name += "_novisaux"
+    if source.get("vlm_termination_enabled", False) and not termination_loss:
+        run_name += "_notermloss"
     run_name += oversampling.suffix
     suffix = _suffix(config)
     if suffix:
@@ -425,6 +431,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "skill_flow_loss": skill_flow_loss,
         "skill_flow_active": skill_flow_active,
         "visual_aux_loss": visual_aux_loss,
+        "termination_loss": termination_loss,
+        "vlm_termination_loss_weight": vlm_termination_loss_weight,
         "skill_loss_kind": skill_loss_kind,
         "dsbc_enabled": dsbc_enabled,
         "dino_lr_scale": dino_lr_scale,

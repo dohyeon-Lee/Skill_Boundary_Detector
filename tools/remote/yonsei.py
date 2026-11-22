@@ -653,11 +653,16 @@ def launch(script, args, root=ROOT, env=None):
         if not isinstance(protected, list) or any(type(n) is not int or n < 0 for n in protected):
             raise ValueError('protect_checkpoints must be a list of non-negative integers')
         manifest['training'] = {'checkpoint_sync': True, 'protected': protected}
+        for key in ('dp_steps', 'steps', 'fsq_num_epochs'):
+            if settings.get(key):
+                manifest['training']['total'] = int(settings[key])
+                manifest['training']['unit'] = 'epoch' if key == 'fsq_num_epochs' else 'step'
+                break
         dataset = next((settings.get(k) for k in ('skillvla_dataset_dir', 'dp_dataset_dir', 'dataset_dir')
                         if settings.get(k)), None)
         if dataset:
             manifest['training']['dataset'] = asset_relative(Path(dataset), root).as_posix()
-    if (manifest['evaluation'] or manifest.get('training')) and not manifest['dry_run']:
+    if manifest['evaluation'] and not manifest['dry_run']:
         manifest['evaluation']['storage_project'] = base
     (audit/'launch.json').write_text(json.dumps(manifest,indent=2))
     links = ['.venv', '.venv_groot_lerobot', '.venv_molmoact2', 'models', 'third_party', 'libero_original_dataset',
@@ -669,7 +674,7 @@ def launch(script, args, root=ROOT, env=None):
     started = rpc(host, base, 'start', work=work, links=links, manifest=manifest)
     (audit/'remote.json').write_text(json.dumps(started,indent=2))
     # Collection is supervised locally and survives terminal/UI closure.
-    if manifest['evaluation'] and not manifest['dry_run']:
+    if (manifest['evaluation'] or manifest.get('training')) and not manifest['dry_run']:
         sys.path.insert(0, str(root))
         from tools.remote.desk import ensure_daemon
         ensure_daemon(root)

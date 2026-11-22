@@ -77,6 +77,76 @@ def outcomes(path):
     return successes
 
 
+def tail_head(path, limit=65536):
+    with path.open('rb') as stream:
+        head = stream.read(limit)
+        stream.seek(0, 2)
+        if stream.tell() > limit:
+            stream.seek(max(limit, stream.tell()-limit))
+            head += b'\n' + stream.read(limit)
+    return head.decode('utf-8', errors='replace')
+
+
+def parse_training(text, total=None):
+    targets = re.findall(r"(?:\bcfg\.steps\s*=\s*|['\"]steps['\"]\s*:\s*|^schedule\s*:\s*steps=)(\d+)", text, re.M)
+    total = int(targets[-1]) if targets else total
+    metrics = list(re.finditer(r'\bstep:\s*([\d,]+(?:\.\d+)?)([KMB]?)\s+smpl:|Checkpoint policy after step\s+(\d+)\b', text))
+    if metrics:
+        match = metrics[-1]
+        step = int(match[3]) if match[3] else int(float(match[1].replace(',', '')) * {'':1,'K':1000,'M':1000000,'B':1000000000}[match[2]])
+        return {'step': step, 'total': total, 'unit': 'step', 'approximate': bool(not match[3] and match[2])}
+    epochs = re.findall(r'\[FSQ[^\]]*\]\s+(\d+)\s*/\s*(\d+)\b', text)
+    if epochs:
+        step, goal = map(int, epochs[-1])
+        return {'step': step, 'total': goal, 'unit': 'epoch', 'approximate': False}
+    return {'step': None, 'total': total, 'unit': 'step', 'approximate': False}
+
+
+def training_progress(work, manifest):
+    items = []
+    # New trainers publish exact counters without loading any model/checkpoint.
+    for path in sorted((work/'training_progress').glob('*.json'))[:32]:
+        item = read(path, {})
+        if (type(item.get('step')) is int and type(item.get('total')) is int and
+                0 <= item['step'] <= item['total'] and item['total'] > 0):
+            items.append(item)
+    if not items:
+        # Frozen jobs already running can be monitored through their existing logs.
+        project = work/'project'
+        folders = {Path(manifest.get('cwd', str(project))), project/Path(manifest.get('script', '')).parent}
+        paths = set()
+        for folder in folders:
+            try:
+                folder.resolve().relative_to(project.resolve())
+                for suffix in ('*.out', '*.err'):
+                    paths.update((folder/'logs').glob(suffix))
+            except (OSError, ValueError):
+                continue
+        texts = []
+        for path in sorted(paths, key=lambda p:p.stat().st_mtime, reverse=True)[:32]:
+            try:
+                texts.append((path, tail_head(path)))
+            except OSError:
+                continue
+        total = (manifest.get('training') or {}).get('total')
+        combined = '\n'.join(text for _, text in texts)
+        total = parse_training(combined, total)['total']
+        for path, text in texts:
+            item = parse_training(text, total)
+            if item['step'] is not None:
+                item.update(output=path.stem, updated_at=path.stat().st_mtime)
+                items.append(item)
+        if not items:
+            item = parse_training('', total)
+            item['unit'] = (manifest.get('training') or {}).get('unit', 'step')
+            item.update(output='', updated_at=max((p.stat().st_mtime for p,_ in texts), default=None))
+            items.append(item)
+    for item in items:
+        step, total = item['step'], item['total']
+        item['percent'] = min(100, 100*step/total) if step is not None and total else None
+    return items
+
+
 def progress(project, spec):
     """Count explicit episode outcomes, never infer success from simulator steps."""
     storage = Path(spec.get('storage_project', project))
@@ -177,9 +247,14 @@ def snapshot(base, identifiers):
         row = {'id': identifier, 'launcher': read(work / 'status.json', {}),
                'job_ids': sorted(set(jobs)), 'jobs': [], 'error': '', 'expected_jobs': sorted(expected)}
         row['cancel'] = read(work / 'cancel.json', {})
-        if manifest.get('training', {}).get('checkpoint_sync'):
+        if (manifest.get('training') or {}).get('checkpoint_sync'):
             row['checkpoints'] = [read(p) for p in sorted((work / 'checkpoint_events').glob('*.json'))
                                   if not (work / 'checkpoint_acks' / p.stem).exists()]
+        if manifest.get('training') or ('train' in Path(manifest.get('script', '')).stem and '/eval/' not in manifest.get('script', '')):
+            try:
+                row['training_progress'] = training_progress(work, manifest)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                row['error'] = 'Training progress unavailable: ' + str(error)[:300]
         row['durable_exits'] = []
         for identity in expected:
             marker = identity if '_' in identity else identity + '_solo'

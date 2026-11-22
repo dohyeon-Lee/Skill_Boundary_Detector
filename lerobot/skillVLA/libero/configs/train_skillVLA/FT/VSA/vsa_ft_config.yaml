@@ -8,12 +8,10 @@ run:
   suffix: ""
 
 adaptation:
-  train_dino: true
-  dino_lr_scale: 1.0
   freeze_expert: true
-  train_bridge_layers_and_head: false
   skill_flow_loss: true
   visual_aux_loss: true
+  termination_loss: false  # true: 종료 loss 가중치 1 / false: 종료 loss 끔 (비교 실험)
 
 training:
   dataloader:

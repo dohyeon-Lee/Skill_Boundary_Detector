@@ -102,7 +102,7 @@ def _vsa_setup(tmp_path: Path, *, label="arch13_skill", **dataset_kwargs) -> dic
 def test_vsa_inherits_checkpoint_and_uses_new_dataset(tmp_path: Path) -> None:
     settings = VSA.build_settings(_vsa_setup(tmp_path))
     assert settings["architecture_label"] == "arch13_skill"
-    assert settings["freeze_vision_encoder"] is True
+    assert settings["freeze_vision_encoder"] is False
     assert settings["transition_jitter_pmax"] == 10
     assert settings["transition_jitter_late_start_pmax"] == 5
     assert settings["dino_model_path"] == tmp_path / "models/dino"
@@ -719,7 +719,7 @@ def test_warm_start_accepts_run_and_checkpoint_selectors(tmp_path: Path) -> None
 def test_vsa_removed_choices_are_fixed_but_old_default_snapshots_still_load(tmp_path: Path) -> None:
     config = _vsa_setup(tmp_path)
     base = VSA.build_settings(config)
-    assert base["freeze_vision_encoder"] is True
+    assert base["freeze_vision_encoder"] is False
     assert base["unfreeze_action_head"] is False
     assert base["full_unfreeze"] is False
     assert base["dsbc_enabled"] is False
@@ -751,7 +751,7 @@ def test_vsa_removed_choices_are_fixed_but_old_default_snapshots_still_load(tmp_
 @pytest.mark.parametrize("scale", [1.0, 0.1])
 def test_frozen_expert_can_train_dino_without_changing_other_ft_choices(tmp_path, label, scale):
     config = _vsa_setup(tmp_path, label=label)
-    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": True, "visual_aux_loss": True}
+    config["adaptation"] = {"freeze_expert": True, "skill_flow_loss": True, "visual_aux_loss": True, "train_dino": False}
     frozen = VSA.build_settings(config)
     config["adaptation"].update(train_dino=True, dino_lr_scale=scale)
     before = json.loads(json.dumps(config))
@@ -1039,7 +1039,7 @@ def test_skill_core_ft_keeps_prefix_frozen_without_unfreezing_full_planner(tmp_p
     assert settings["unfreeze_action_head"] and not settings["unfreeze_skill_layers"]
     assert settings["skill_flow_loss"] is (requested_loss and not wovis)
     assert settings["skill_flow_active"] is (requested_loss and not wovis)
-    assert settings["visual_aux_loss"] and settings["freeze_vision_encoder"]
+    assert settings["visual_aux_loss"] and not settings["freeze_vision_encoder"]
     assert "_skillcore" in settings["run_name"]
     assert json.loads(path.read_text()) == source
     script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
@@ -1089,3 +1089,24 @@ def test_bridge_head_ft_rejects_conflicting_modes(tmp_path, conflict):
     config["adaptation"] = {"train_bridge_layers_and_head": True, conflict: True}
     with pytest.raises(ValueError, match="train_bridge_layers_and_head"):
         VSA.build_settings(config)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_vsa_termination_loss_toggle_preserves_head_and_separates_output(tmp_path, enabled):
+    config = _vsa_setup(tmp_path)
+    checkpoint = tmp_path / config["warm_start"]["vsa_checkpoint"] / "config.json"
+    source = json.loads(checkpoint.read_text())
+    source["vlm_termination_enabled"] = True
+    source["vlm_termination_loss_weight"] = 1.0
+    checkpoint.write_text(json.dumps(source))
+    config["adaptation"] = {"termination_loss": enabled}
+    settings = VSA.build_settings(config)
+    assert settings["vlm_termination_loss_weight"] == float(enabled)
+    assert settings["termination_loss"] is enabled
+    assert ("_notermloss" in settings["run_name"]) is (not enabled)
+    assert settings["freeze_vision_encoder"] is False
+    assert settings["dino_lr_scale"] == 1.0
+    assert settings["train_bridge_layers_and_head"] is False
+    assert json.loads(checkpoint.read_text()) == source
+    script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
+    assert '--policy.vlm_termination_loss_weight="${VLM_TERMINATION_LOSS_WEIGHT:-1.0}"' in script

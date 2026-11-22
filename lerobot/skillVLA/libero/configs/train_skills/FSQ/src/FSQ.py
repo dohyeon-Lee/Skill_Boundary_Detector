@@ -8603,6 +8603,8 @@ def train_spline_fsqae(
             previous_code_epoch = epoch
 
         train_avg = {k: v / max(train_count, 1) for k, v in train_sum.items()}
+        from lerobot.utils.yonsei_checkpoint_sync import report_progress
+        report_progress(save_path.parent, epoch, cfg.epochs, unit='epoch')
         val_avg = {k: v / max(val_count, 1) for k, v in val_sum.items()}
         train_end_avg = {k: v / max(train_count, 1) for k, v in train_end.items()}
         val_end_avg = {k: v / max(val_count, 1) for k, v in val_end.items()}

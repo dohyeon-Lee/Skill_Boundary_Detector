@@ -1,7 +1,6 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const cards = new Map(), drafts = new Map();
-const evaluationFolds = new Map();
 const canceling = new Set();
 const API_BASE=location.pathname==="/slurm"||location.pathname.startsWith("/slurm/")?"/slurm":"";
 const groups=["training-running","training-ended","running","pending","ended"];
@@ -102,16 +101,7 @@ function updateCard(card, job) {
   const progress=card.querySelector(".training-progress");
   progress.replaceChildren();
   progress.hidden=!(job.training_progress?.length);
-  for(const item of job.training_progress || []) {
-    const line=document.createElement("div");
-    const label=job.training_progress.length>1?(item.output.split("/").pop()+" · "):"";
-    const number=value=>Number(value).toLocaleString("ko-KR");
-    const value=item.step===null?"스텝 확인 중":`${item.approximate?"약 ":""}${number(item.step)}`;
-    const fraction=item.step!==null&&item.total?` · ${(item.step/item.total*100).toFixed(1)}%`:"";
-    line.textContent=label+(job.state==="PENDING"?"대기 중 · 이전 학습 기록 ":"학습 스텝 ")+value+(item.total?` / ${number(item.total)}`:"")+fraction;
-    line.title=item.source?`최근 기록: ${date(item.updated_at)}\n${item.source}`:"학습 로그가 기록되면 자동으로 표시합니다.";
-    progress.append(line);
-  }
+  if(job.training_progress?.length) progress.append(DeskMetrics.renderTrainingProgress(job.training_progress, 'slurm:'+job.key));
   const status=job.delivery.status;
   let text=deliveryNames[status] || status;
   if(status==="none") text=job.armed?"자동 전송 설정됨 · 종료 대기":job.prompt?"자동 전송 꺼짐":"종료 후 지시 미설정";
@@ -172,34 +162,17 @@ function renderEvaluation(card,job) {
     }
     return;
   }
-  const final=progress.phase==="final";
-  container.querySelector(".evaluation-summary").textContent=`${final?"평가 결과":progress.at_least?"확인된 평가 진행":"평가 진행"} · ${progress.completed_episodes} / ${progress.total_episodes}회 · ${pct(progress.percent)} · ${final?"성공률":"중간 성공률"} ${pct(progress.success_pct)}`;
-  const bar=(parent,item)=>{
-    add(parent,"p",`${item.completed_episodes} / ${item.total_episodes}회 · ${pct(item.percent)} 완료`,"eval-count");
-    const node=document.createElement("progress");node.max=100;
-    if(Number.isFinite(item.percent))node.value=item.percent;
-    node.setAttribute("aria-label","평가 진행률");parent.append(node);
-  };
-  bar(body,progress);
-  add(body,"p",final?"완료된 전체 평가 결과입니다.":"중간 성공률은 성공 여부가 확인된 완료 에피소드 기준이며, 최종 결과와 달라질 수 있습니다.","muted");
-  if(progress.at_least)add(body,"p","이전 실행은 에피소드 로그가 없어 완료된 태스크 결과를 기준으로 갱신합니다. 진행 중인 태스크는 집계에 포함되지 않을 수 있습니다.","muted");
-  if(progress.incomplete)add(body,"p","로그 범위를 넘어 일부 진행률을 확인할 수 없습니다.","eval-warning");
-  for(const model of progress.models||[]) {
-    const key=`${job.key}:${model.label}`,group=add(body,"details","","eval-model");
-    group.open=evaluationFolds.get(key)??true;
-    group.addEventListener("toggle",()=>evaluationFolds.set(key,group.open));
-    add(group,"summary",`${model.label} · ${model.completed_episodes}/${model.total_episodes}회 · 성공률 ${pct(model.success_pct)}`);
-    const content=add(group,"div","","eval-model-body");bar(content,model);
-    add(content,"p",`태스크 ${model.completed_tasks}/${model.total_tasks} 완료 · 성공 ${model.successes}/${model.observed_episodes}회 집계`,"muted");
-    const table=add(content,"table","","eval-task-table"),head=add(table,"thead",""),heading=add(head,"tr","");
-    for(const text of ["Task","진행","성공 / 집계 · 성공률"])add(heading,"th",text);
-    const rows=add(table,"tbody","");
-    for(const task of model.tasks||[]) {
-      const row=add(rows,"tr","");add(row,"td",task.name);add(row,"td",`${task.completed_episodes}/${task.total_episodes}회`);
-      add(row,"td",task.successes===null?"—":`${task.successes}/${task.completed_episodes} · ${pct(task.success_pct)}`);
+  container.querySelector(".evaluation-summary").textContent=progress.phase==="final"?"평가 결과":"평가 진행 상황";
+  const metricsKey='slurm:'+job.key;
+  DeskMetrics.renderProgress(progress, metricsKey, (key,label,cls,open)=>{
+    if(key===metricsKey+':progress'){
+      container.classList.add('desk-metrics');
+      body.classList.add('fold-body');
+      return {node:container,summary:container.querySelector('.evaluation-summary'),body};
     }
-  }
-  if(progress.updated_at)add(body,"p",`결과 갱신 ${date(progress.updated_at*1000)}`,"muted");
+    return DeskMetrics.fold(key,label,cls,open);
+  });
+
 }
 function renderJobGPUs(jobCard,job) {
   const container=jobCard.querySelector(".job-gpus");
@@ -277,6 +250,7 @@ function renderClusterQueue() {
 }
 function render() {
   if(!state)return;
+  DeskMetrics.capture();
   renderClusterQueue();
   const needle=$("search").value.trim().toLowerCase();
   const visible=state.jobs.filter(job=>[job.display_name,job.job_id,job.job_name,...(job.outputs||[])].join(" ").toLowerCase().includes(needle));

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 
 class Element {
-  constructor(){this.children=[];this.listeners={};this.value="";this.checked=false;this.textContent="";
+  constructor(){this.children=[];this.listeners={};this.value="";this.checked=false;this.textContent="";this.dataset={};this.isConnected=true;
     this.classList={add(){},remove(){}};this.selectors=new Map();}
   append(...children){this.children.push(...children);}
   setAttribute(name,value){this[name]=value;}
@@ -21,7 +21,7 @@ const source=fs.readFileSync(new URL("../static/app.js",import.meta.url),"utf8")
 const preferences=new Map();
 for(const prefix of ["","/slurm"]){
   const ids=new Map([...html.matchAll(/id="([^"]+)"/g)].map(match=>[match[1],new Element()]));
-  const document={getElementById:id=>ids.get(id)||null,createElement:()=>new Element()};
+  const document={getElementById:id=>ids.get(id)||null,querySelectorAll:()=>[],createElement:()=>new Element()};
   ids.get("job-template").content={firstElementChild:new Element()};
   ids.get("settings-form").elements={namedItem:()=>new Element()};
   lists=["running","pending","ended","training-running","training-ended"].map(id=>ids.get(id));
@@ -55,6 +55,7 @@ for(const prefix of ["","/slurm"]){
       }
       return {ok:true,json:async()=>path.endsWith("/state")?JSON.parse(JSON.stringify(backend)):{ok:true}};
     }});
+  vm.runInContext(fs.readFileSync(new URL("../../desk_metrics.js",import.meta.url),"utf8"),context);
   vm.runInContext(source,context);
   await new Promise(resolve=>setTimeout(resolve,10));
   assert.equal(ids.get("count-running").textContent,1);

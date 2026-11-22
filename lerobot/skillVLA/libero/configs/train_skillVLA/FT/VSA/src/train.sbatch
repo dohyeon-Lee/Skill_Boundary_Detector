@@ -68,6 +68,7 @@ else
   echo "loss      : main action flow + architecture auxiliaries (skill auxiliary loss off)"
 fi
 echo "visual aux: enabled=${VISUAL_AUX_LOSS:-true} (Top/Wrist patch and vision XYZ/UV; start/current)"
+echo "term loss : enabled=${TERMINATION_LOSS:-true} weight=${VLM_TERMINATION_LOSS_WEIGHT:-1.0}"
 echo "dino      : frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
 echo "dsbc      : enabled=${DSBC_ENABLED} (10-step FRS, per-step 5*tanh, all-layer reader)"
 echo "normalize : inherited from the warm-start checkpoint"
@@ -118,6 +119,7 @@ else
     --policy.newtask_ft_full_unfreeze="${FULL_UNFREEZE}"
     --policy.newtask_ft_skill_flow_loss="${SKILL_FLOW_LOSS}"
     --policy.newtask_ft_visual_aux_loss="${VISUAL_AUX_LOSS:-true}"
+    --policy.vlm_termination_loss_weight="${VLM_TERMINATION_LOSS_WEIGHT:-1.0}"
     --policy.newtask_ft_dsbc_enabled="${DSBC_ENABLED}"
     --policy.fsq_path="${FSQ_PATH}"
     --policy.dino_model_path="${DINO_MODEL_PATH}"

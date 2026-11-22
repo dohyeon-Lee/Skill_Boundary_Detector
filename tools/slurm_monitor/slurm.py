@@ -281,6 +281,14 @@ class Slurm:
                 pass
         work_dir = detail.get("WorkDir") or job.get("work_dir", "")
         job["work_dir"] = work_dir
+        # Interactive allocations outlive any trainer launched inside the shell.
+        # A matching job name/log filename cannot identify the current workload.
+        if detail.get("BatchFlag") == "0" or job.get("allocation_only"):
+            job.update(allocation_only=True, outputs=[], output_source="GPU 할당",
+                       log_paths=[], training_progress=[], evaluation_progress=None,
+                       evaluation_error="")
+            job.pop("snapshot_path", None)
+            return job
         paths = []
         for field in ("StdOut", "StdErr"):
             if detail.get(field):

@@ -1380,6 +1380,9 @@ def train(
         )
 
     checkpoint_steps = set(cfg.save_steps)
+    if is_main_process:
+        from lerobot.utils.yonsei_checkpoint_sync import report_progress
+        report_progress(cfg.output_dir, step, cfg.steps)
     protected_checkpoint_steps = set(cfg.protect_checkpoints)
     training_observer = None
     if training_observer_factory is not None:
@@ -1462,6 +1465,7 @@ def train(
 
         if is_log_step:
             logging.info(train_tracker)
+            report_progress(cfg.output_dir, step, cfg.steps)
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:
@@ -1778,6 +1782,7 @@ def train(
     # Network flush may outlast the distributed collective timeout. Other ranks
     # finish first; no GPU collectives are held open while rank 0 archives data.
     if is_main_process:
+        report_progress(cfg.output_dir, step, cfg.steps)
         finish_checkpoint_archive(cfg)
 
 

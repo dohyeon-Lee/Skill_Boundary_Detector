@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 from pathlib import Path
 import shutil
 import time
 import uuid
+
+
+def report_progress(output_dir, step, total, unit='step'):
+    outbox = os.environ.get('SBD_YONSEI_CHECKPOINT_OUTBOX')
+    if not outbox:
+        return
+    try:
+        output = str(Path(output_dir).absolute())
+        folder = Path(outbox).parent / 'training_progress'
+        folder.mkdir(parents=True, exist_ok=True)
+        key = hashlib.sha256(output.encode()).hexdigest()[:24]
+        temporary = folder / ('.' + key + '.' + uuid.uuid4().hex)
+        temporary.write_text(json.dumps({'output': output, 'step': int(step), 'total': int(total),
+                                        'unit': unit, 'updated_at': time.time(), 'approximate': False}))
+        temporary.replace(folder / (key + '.json'))
+    except Exception:
+        logging.exception('Could not publish Yonsei training progress')
 
 
 def publish_checkpoint(path, output_dir, step, protected=None, *, kind='lerobot'):

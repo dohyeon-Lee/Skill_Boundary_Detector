@@ -15,3 +15,10 @@
 .slurm-desk .storage-panel{margin:18px 0 24px;background:#181d25;border-color:#354052;color:#e6ebf2}
 .slurm-desk .storage-volume,.slurm-desk .storage-path{color:#929eaf}.slurm-desk .storage-free{color:#7bd6af}
 @media(max-width:1440px){.storage-panel{margin-left:32px;margin-right:32px}}@media(max-width:640px){.storage-panel{margin-left:16px;margin-right:16px}}
+
+/* One content width and horizontal gutter across every Desk tab. */
+:root{--desk-max-width:1440px;--desk-side-padding:32px}
+body>main,body>.header,body>footer{box-sizing:border-box;width:100%;max-width:var(--desk-max-width);margin-left:auto;margin-right:auto;padding-left:var(--desk-side-padding);padding-right:var(--desk-side-padding)}
+body>.desk-tabs{box-sizing:border-box;width:100%;max-width:var(--desk-max-width);padding-left:var(--desk-side-padding);padding-right:var(--desk-side-padding)}
+body>.storage-panel{box-sizing:border-box;width:calc(100% - 2 * var(--desk-side-padding));max-width:calc(var(--desk-max-width) - 2 * var(--desk-side-padding));margin-left:auto;margin-right:auto}
+@media(max-width:760px){:root{--desk-side-padding:18px}}

@@ -87,11 +87,12 @@ def test_source_helpers_keep_arguments_and_do_not_dispatch(tmp_path):
     assert result.stdout.splitlines()==['--yonsei','value']
 
 
-def test_real_staging_and_detached_runner_with_fake_transport(tmp_path,monkeypatch):
+@pytest.mark.parametrize('training', [False, True])
+def test_real_staging_and_detached_runner_with_fake_transport(tmp_path,monkeypatch,training):
     root=tmp_path/'source';root.mkdir()
     remote=tmp_path/'remote';remote.mkdir()
     (remote/'.venv').symlink_to(sys.prefix,target_is_directory=True)
-    entry=Path('lerobot/skillVLA/libero/configs/work/submit.sh')
+    entry=Path('lerobot/skillVLA/libero/configs/work') / ('submit_train.sh' if training else 'submit.sh')
     script=root/entry;script.parent.mkdir(parents=True)
     script.write_text('#!/bin/bash\nprintf "%s\\n" "$SBD_SERVER" "$@"\n')
     tool=root/'tools/remote/yonsei.py';tool.parent.mkdir(parents=True);shutil.copy2(SOURCE,tool)
@@ -109,6 +110,9 @@ def test_real_staging_and_detached_runner_with_fake_transport(tmp_path,monkeypat
     monkeypatch.setattr(M,'load_profile',lambda root:profile)
     monkeypatch.setattr(M,'code_files',lambda root:{entry,tool.relative_to(root),config.relative_to(root),dep/'__init__.py'})
     monkeypatch.setattr(M,'resolve_settings',lambda *a:(config,{'dataset_dir':str(data.parent)}))
+    from tools.remote import desk
+    watchers=[]
+    monkeypatch.setattr(desk,'ensure_daemon',lambda root:watchers.append(root))
     calls=[]
     def rpc(host,base,action,**values):
         calls.append(action)
@@ -134,6 +138,11 @@ def test_real_staging_and_detached_runner_with_fake_transport(tmp_path,monkeypat
     assert (Path(manifest['project'])/dep/'__init__.py').read_text()=='FROZEN_CODE=True\n'
     assert (Path(manifest['project'])/dep/'init_files/fixture.pt').read_bytes()==b'runtime states'
     assert 'start' in calls
+    assert watchers == ([root] if training else [])
+    if training:
+        assert manifest['evaluation'] is None
+        assert manifest['training']['checkpoint_sync'] is True
+        assert manifest['training']['dataset'] == 'dataset_filtered/train'
 
 
 def test_check_only_does_not_copy_or_launch(tmp_path,monkeypatch):

@@ -63,15 +63,7 @@ async function api(path, body) {
 }
 const labels = {RUNNING:"실행 중", EXITED:"중단됨", STOPPED:"중단됨", TERMINATED:"종료됨", DELETED:"삭제됨", STOP_REQUESTED:"중단 확인 중", STARTING:"시작 중", PROVISIONING:"준비 중", running:"실행 중", pending:"대기 중", done:"완료", failed:"실패", stopped:"중단됨", pod_stopped:"Pod 종료", cancelled:"취소", final:"최종 결과", partial:"부분 결과", unverified:"완료 상태 미확인"};
 function badge(value) { return el("span", labels[value] || value, `badge ${String(value).toLowerCase()}`); }
-function successRow(name, value, overall = false) {
-  const row = el("div", null, `task-row${overall ? " overall-row" : ""}`), bar = el("progress");
-  bar.max = 100;
-  bar.value = Number.isFinite(value) ? value : 0;
-  bar.setAttribute("aria-label", `${name} 성공률${Number.isFinite(value) ? "" : " 미확인"}`);
-  if (!Number.isFinite(value)) bar.className = "unknown";
-  row.append(el("span", name), bar, el("span", pct(value), "success-value"));
-  return row;
-}
+function successRow(...args) { return DeskMetrics.successRow(...args); }
 function renderResult(result, jobKey) {
   const label = el("div");
   label.append(el("h4", result.kind === "skill_boundary_detection" ? "스킬 경계 평가 결과" : "평가 결과"), el("div", result.name, "meta"));
@@ -103,49 +95,9 @@ function renderResult(result, jobKey) {
   view.body.append(location.node);
   return view.node;
 }
-function progressRow(name, progress, training = false) {
-  const row = el("div", null, "progress-row"), bar = el("progress");
-  bar.max = 100;
-  if (Number.isFinite(progress.percent)) bar.value = progress.percent;
-  bar.setAttribute("aria-label", `${name} ${training ? "학습" : "평가"} 진행률`);
-  const count = value => Number.isFinite(value) ? value.toLocaleString() : "—";
-  const done = training ? count(progress.completed_steps) : progress.completed_episodes;
-  const total = training ? count(progress.total_steps) : progress.total_episodes;
-  row.append(el("strong", name), el("span", `${done} / ${total}${training ? " step" : "회"} · ${pct(progress.percent)}`, "progress-count"), bar);
-  return row;
-}
-function renderProgress(progress, key) {
-  const view = fold(`${key}:progress`, "평가 진행 상황", "eval-progress", true);
-  view.body.append(progressRow("전체 진행률", progress));
-  view.body.append(el("p", "중간 성공률은 결과가 확인된 완료 에피소드 기준이며 최종 결과와 달라질 수 있습니다.", "meta"));
-  if (progress.incomplete) view.body.append(el("p", "로그 범위를 넘어 일부 진행률을 확인할 수 없습니다.", "inline-error"));
-  for (const model of progress.models || []) {
-    const group = fold(`${key}:progress:model:${model.label}`, model.label, "model-progress", true);
-    group.body.append(progressRow("평가 진행률", model));
-    group.body.append(el("p", `태스크 ${model.completed_tasks} / ${model.total_tasks} 완료 · 성공 ${model.successes} / 집계 ${model.observed_episodes}회`, "meta"));
-    const list = el("div", null, "task-list");
-    list.append(successRow("Overall · 중간", model.success_pct, true));
-    for (const task of model.tasks || []) {
-      list.append(successRow(`${task.name} · ${task.completed_episodes}/${task.total_episodes}회`, task.success_pct));
-    }
-    group.body.append(list); view.body.append(group.node);
-  }
-  if (progress.updated_at) view.body.append(el("p", `로그 갱신 ${when(progress.updated_at * 1000)}`, "meta"));
-  return view.node;
-}
-function renderTrainingProgress(progress, key) {
-  const view = fold(`${key}:training-progress`, "학습 진행 상황", "train-progress", true);
-  if (progress.runs.length > 1) view.body.append(progressRow("전체 진행률", progress, true));
-  for (const run of progress.runs) {
-    const group = fold(`${key}:training-progress:run:${run.label}`, run.label, "model-progress", true);
-    group.body.append(progressRow("학습 진행률", run, true));
-    group.body.append(el("p", `최근 저장 체크포인트: ${Number.isFinite(run.latest_checkpoint) ? `${run.latest_checkpoint.toLocaleString()} step` : "아직 확인되지 않음"}`, "meta training-checkpoint"));
-    if (run.completed_steps == null) group.body.append(el("p", "현재 step을 확인할 수 없습니다. 로그 갱신을 기다립니다.", "meta"));
-    view.body.append(group.node);
-  }
-  if (progress.updated_at) view.body.append(el("p", `로그 갱신 ${when(progress.updated_at * 1000)}`, "meta"));
-  return view.node;
-}
+function progressRow(...args) { return DeskMetrics.progressRow(...args); }
+function renderProgress(progress, key) { return DeskMetrics.renderProgress(progress, key, fold); }
+function renderTrainingProgress(progress, key) { return DeskMetrics.renderTrainingProgress(progress, key, fold); }
 function renderJob(pod, job, results, archived = false) {
   const key = `pod:${pod.id}:job:${archived ? "archive:" : ""}${job.id}`;
   const title = el("div");

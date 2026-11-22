@@ -603,3 +603,40 @@ def test_grouped_training_models_use_their_own_logs(tmp_path):
     rows = slurm.training_progress({**job(), "outputs": [a, b]}, {"parent.out": text})
     assert [row["step"] for row in rows] == [12000, 9000]
     assert all(row["total"] == 100000 for row in rows)
+
+
+@pytest.mark.parametrize('batch_flag', ['0', '1'])
+def test_interactive_allocation_never_inherits_old_training_log(tmp_path, batch_flag):
+    logs = tmp_path/'logs'
+    logs.mkdir()
+    old = logs/'stage1_123.err'
+    old.write_text('output_dir: /repo/old_plan90\nschedule: steps=100000\nstep:56K smpl:896K\n')
+    client = slurm.Slurm('me', runner=lambda args:
+                         f'BatchFlag={batch_flag} Command=bash WorkDir={tmp_path}')
+    row = client.enrich({**job(), 'outputs':['/repo/old_plan90'],
+                         'training_progress':[{'step':56000}], 'snapshot_path':'/old/config',
+                         'evaluation_progress':{'percent':50}})
+    if batch_flag == '0':
+        assert row['allocation_only'] is True
+        assert row['outputs'] == row['training_progress'] == row['log_paths'] == []
+        assert row['evaluation_progress'] is None
+        assert 'snapshot_path' not in row
+        assert old.is_file()
+    else:
+        assert not row.get('allocation_only')
+        assert row['training_progress'][0]['step'] == 56000
+
+
+def test_allocation_snapshot_hides_stale_progress_and_keeps_individual_training(monitor):
+    key = only(monitor)
+    monitor.jobs[key].update(allocation_only=True, outputs=['/repo/old_plan90'],
+                             training_progress=[{'step':56000}], evaluation_progress={'percent':50})
+    child = {**job(), 'kind':'training', 'run_id':'current', 'outputs':['/repo/new_plan30'],
+             'training_progress':[{'step':27000,'total':100000}]}
+    monitor.data['trainings']['training:current'] = child
+    rows = {row['key']:row for row in monitor.snapshot()['jobs']}
+    assert rows[key]['display_name'] == 'GPU 할당 #123'
+    assert rows[key]['training_progress'] == rows[key]['outputs'] == []
+    assert rows[key]['evaluation_progress'] is None
+    assert rows['training:current']['training_progress'][0]['step'] == 27000
+    assert rows['training:current']['display_name'] == 'new_plan30'

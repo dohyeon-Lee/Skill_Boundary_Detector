@@ -107,6 +107,8 @@ class Evaluations:
         return value
 
     def enrich(self, row):
+        if row.get("allocation_only"):
+            return {}
         result = {}
         if row.get("sbd_eval_launch_path"):
             try:

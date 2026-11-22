@@ -100,7 +100,7 @@ class DeskTest(unittest.TestCase):
             self.assertIn(b'aria-label="', data)
             self.assertIn(f'href="{active}" aria-current="page"'.encode(), data)
             self.assertIn(b'href="/desk.css"', data)
-        for asset in ("/app.js", "/style.css", "/desk.css", "/storage.js", "/hf/app.js", "/hf/hf.css",
+        for asset in ("/desk-metrics.js", "/desk-metrics.css", "/app.js", "/style.css", "/desk.css", "/storage.js", "/hf/app.js", "/hf/hf.css",
                       "/slurm/app.js", "/slurm/style.css", "/runpod/app.js", "/runpod/style.css", "/yonsei/app.js", "/yonsei/style.css"):
             self.assertEqual(self.request("GET", asset)[0], 200, asset)
         self.assertIn(b'src="/hf/app.js"', self.request("GET", "/hf/")[1])

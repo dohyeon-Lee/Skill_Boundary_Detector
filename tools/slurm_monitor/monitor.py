@@ -137,8 +137,13 @@ class Monitor:
                 if job.get("container"):
                     continue
                 row = {**job, "key": key}
+                if row.get("allocation_only"):
+                    # Also suppress inherited metadata in restored snapshots.
+                    row.update(outputs=[], log_paths=[], training_progress=[],
+                               evaluation_progress=None, evaluation_error="")
                 outputs = row.get("outputs", [])
                 row["display_name"] = row.get("output_label") or (
+                    f"GPU 할당 #{row['job_id']}" if row.get("allocation_only") else
                     Path(outputs[0]).name + (f" 외 {len(outputs) - 1}개" if len(outputs) > 1 else "")
                     if outputs else row["job_name"] + " · 출력 폴더 확인 중")
                 waiting = row["state"] in {"PENDING", "REQUEUED", "REQUEUE_FED", "REQUEUE_HOLD"}

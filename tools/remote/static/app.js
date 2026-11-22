@@ -8,7 +8,7 @@
   function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
   const pct=n=>Number.isFinite(n)?n.toFixed(1)+'%':'—';
   function render(){
-    const opened=new Set([...document.querySelectorAll('details[open][data-key]')].map(n=>n.dataset.key));
+    DeskMetrics.capture();
     const jobs=data.jobs||[];
     $('active').textContent=jobs.filter(j=>!['COMPLETED','FAILED','CANCELLED','DRY_RUN'].includes(j.state)).length;
     $('finished').textContent=jobs.filter(j=>j.state==='COMPLETED'&&j.evaluation).length;
@@ -18,9 +18,14 @@
     const list=jobs.filter(j=>JSON.stringify([j.evaluation?.output,j.script,j.job_ids,j.id]).toLowerCase().includes(needle));
     const fragment=document.createDocumentFragment();
     for(const job of list){
-      const card=el('article',undefined,'card job'),head=el('div',undefined,'job-head');
-      const name=job.evaluation?.output?.split('/').pop()||job.script.split('/').slice(-2).join('/');
-      head.append(el('h3',name),el('span',states[job.state]||job.state||'연결 대기','badge '+(job.state||'')));card.append(head);
+      const name=job.evaluation?.output?.split('/').pop()||job.training_progress?.find(p=>p.output)?.output.split('/').pop()||job.script.split('/').slice(-2).join('/');
+      const title=el('div');title.append(el('h4',name),el('div','Slurm '+((job.job_ids||[]).join(', ')||'제출 대기'),'meta'));
+      const view=DeskMetrics.fold('yonsei:'+job.id,title,'card job-card yonsei-job');
+      const card=view.body,head=el('div',undefined,'card-actions');
+      if(job.progress)head.append(el('span','진행 '+pct(job.progress.percent),'badge partial job-progress-badge'));
+      if(job.training_progress?.length)head.append(el('span','학습 '+pct(DeskMetrics.normalizeTraining(job.training_progress).percent),'badge partial job-training-badge'));
+      head.append(el('span',states[job.state]||job.state||'연결 대기','badge '+String(job.state||'').toLowerCase()));
+      view.summary.append(head);
       if(job.can_cancel){
         const button=el('button',job.cancel?.status==='requested'?'취소 요청 중':'이 실행 취소','cancel danger');
         button.disabled=canceling.has(job.id)||job.cancel?.status==='requested';
@@ -33,7 +38,7 @@
             job.cancel=value;button.textContent='취소 요청 중';await update();
           }catch(error){$('notice').hidden=false;$('notice').textContent='취소 요청 확인 필요: '+error.message;}
           finally{canceling.delete(job.id);button.disabled=job.cancel?.status==='requested';}
-        });head.append(button);
+        });card.append(button);
       }
       if(job.cancel?.error)card.append(el('p',job.cancel.error,'error'));
       card.append(el('p',new Date(job.created_at*1000).toLocaleString()+' · Slurm '+((job.job_ids||[]).join(', ')||'제출 대기'),'meta'));
@@ -46,16 +51,10 @@
         if(sync.error)card.append(el('p','전송 재시도 대기: '+sync.error,'error'));
         for(const checkpoint of completed)card.append(el('p',`${checkpoint.step}: ${checkpoint.path}`,'meta'));
       }
+      if(job.training_progress?.length)card.append(DeskMetrics.renderTrainingProgress(job.training_progress,'yonsei:'+job.id));
+      else if(job.training)card.append(DeskMetrics.renderTrainingProgress([{step:null,total:job.training.total,unit:job.training.unit}],'yonsei:'+job.id));
       if(p?.total){
-        const line=el('div',undefined,'progress-line');line.append(el('span',`완료 ${p.completed} / ${p.total} 에피소드 (${pct(p.percent)})`),el('strong','현재 성공률 '+pct(p.success_pct)));card.append(line);
-        const bar=el('progress');bar.max=p.total;bar.value=p.completed;bar.setAttribute('aria-label','평가 진행률');card.append(bar);
-        const details=el('details');details.dataset.key=job.id+'-tasks';details.open=opened.has(details.dataset.key);details.append(el('summary','모델·task별 성공률'));
-        for(const model of p.models||[]){
-          const panel=el('section',undefined,'model');panel.append(el('h4',model.label+' · '+pct(model.success_pct)));
-          const grid=el('div',undefined,'task-grid');
-          for(const task of model.tasks||[]){const row=el('div',undefined,'task');row.append(el('span',`Task ${task.task_id} · ${task.completed}/${task.total}`),el('strong',pct(task.success_pct)));grid.append(row);}
-          panel.append(grid);details.append(panel);
-        }card.append(details);
+        card.append(DeskMetrics.renderProgress({...p,phase:job.state==='COMPLETED'?'final':'partial'},'yonsei:'+job.id));
       }else if(job.evaluation){card.append(el('p',job.state==='COMPLETED'?'리포트 생성 완료':'평가 준비 중 · 에피소드 결과가 저장되면 진행률이 표시됩니다.'));}
       const c=job.collection||{};
       if(c.state){card.append(el('div',transfers[c.state]||c.state,'result-state'));
@@ -65,7 +64,7 @@
       if(job.connection_error)card.append(el('p','연결 확인 실패 · 마지막 확인 결과입니다: '+job.connection_error,'error'));
       if(job.error)card.append(el('p',job.error,'error'));
       for(const j of job.jobs||[]){if(!['COMPLETED','RUNNING','PENDING'].includes(j.state))card.append(el('p',`Slurm ${j.id}: ${j.state} (${j.exit_code})`,'error'));}
-      fragment.append(card);
+      fragment.append(view.node);
     }
     if(!list.length)fragment.append(el('p','아직 Yonsei 실행 기록이 없습니다. 평가 폴더에서 ./submit_eval.sh --yonsei 로 시작하세요.','empty'));
     $('jobs').replaceChildren(fragment);

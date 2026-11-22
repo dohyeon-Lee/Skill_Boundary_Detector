@@ -179,6 +179,9 @@ class RunPodUITests(unittest.TestCase):
                     body, mime = html.encode(), "text/html"
                 elif self.path == "/checks.js":
                     body, mime = CHECKS.encode(), "text/javascript"
+                elif self.path in ("/desk-metrics.js", "/desk-metrics.css"):
+                    body = (STATIC.parents[1] / self.path.lstrip("/").replace("desk-metrics", "desk_metrics")).read_bytes()
+                    mime = "text/javascript" if self.path.endswith(".js") else "text/css"
                 elif self.path in ("/runpod/app.js", "/runpod/style.css"):
                     body = (STATIC / self.path.rsplit("/", 1)[-1]).read_bytes()
                     mime = "text/javascript" if self.path.endswith(".js") else "text/css"

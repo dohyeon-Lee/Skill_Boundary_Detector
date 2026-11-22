@@ -5135,13 +5135,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 independent_flow_loss = self.model.take_fullskill_flow_loss()
         vlm_term_per_sample, vlm_term_metrics = None, {}
         if self.config.vlm_termination_enabled:
-            if not action_only:
+            if not action_only and self.config.vlm_termination_loss_weight > 0:
                 from .vlm_termination import vlm_termination_loss
                 vlm_term_per_sample, vlm_term_metrics = vlm_termination_loss(
                     self.model, self.config, batch, base_state,
                 )
             else:
                 self.model.take_vlm_termination_outputs()
+                vlm_term_metrics["vlm_termination/weight"] = self.config.vlm_termination_loss_weight
         chunk_end_state_loss = None
         chunk_end_state_per_sample = None
         chunk_end_state_mae = None

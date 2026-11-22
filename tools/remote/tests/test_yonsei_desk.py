@@ -249,3 +249,43 @@ def test_code_snapshot_excludes_partial_model_directories(tmp_path):
     code.parent.mkdir(parents=True)
     code.write_text('')
     assert yonsei.code_files(tmp_path) == {code.relative_to(tmp_path)}
+
+
+def test_training_progress_exact_outbox_and_legacy_log_fallback(tmp_path):
+    work = tmp_path/'launch'
+    project = work/'project'
+    logs = project/'DP/logs'
+    logs.mkdir(parents=True)
+    manifest = {'cwd': str(project/'DP'), 'script':'DP/submit_train_dp.sh',
+                'training':{'total':100000}}
+    (logs/'ABC_DP_123.err').write_text("{'steps': 100000}\nstep: 1.2K smpl: 1200\n")
+    progress = probe.training_progress(work, manifest)
+    assert len(progress) == 1
+    assert progress[0]['step'] == 1200
+    assert progress[0]['percent'] == 1.2
+    assert progress[0]['approximate'] is True
+    from lerobot.utils.yonsei_checkpoint_sync import report_progress
+    from unittest.mock import patch
+    with patch.dict('os.environ', {'SBD_YONSEI_CHECKPOINT_OUTBOX':str(work/'checkpoint_events')}):
+        report_progress('/outputs/DP/model', 1273, 100000)
+    exact = probe.training_progress(work, manifest)
+    assert len(exact) == 1
+    assert exact[0]['step'] == 1273
+    assert exact[0]['approximate'] is False
+    assert exact[0]['percent'] == 1.273
+
+
+def test_training_preparing_and_fsq_epoch_counters(tmp_path):
+    work = tmp_path/'launch'
+    project = work/'project'
+    logs = project/'FSQ/logs'
+    logs.mkdir(parents=True)
+    manifest = {'cwd':str(project/'FSQ'), 'script':'FSQ/submit_train_fsq.sh',
+                'training':{'total':2000,'unit':'epoch'}}
+    (logs/'FSQ_123.out').write_text('Preparing dataset')
+    item, = probe.training_progress(work, manifest)
+    assert item['step'] is None and item['percent'] is None
+    assert item['total'] == 2000
+    (logs/'FSQ_123.out').write_text('[FSQ-v3] 50/2000 train loss=0.3')
+    item, = probe.training_progress(work, manifest)
+    assert (item['unit'], item['step'], item['total'], item['percent']) == ('epoch',50,2000,2.5)

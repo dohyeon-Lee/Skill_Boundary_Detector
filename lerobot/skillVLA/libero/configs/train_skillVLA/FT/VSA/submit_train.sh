@@ -71,6 +71,7 @@ else
 fi
 echo "  skill aux : ${SKILL_LOSS_KIND} enabled=${SKILL_FLOW_ACTIVE}"
 echo "  visual aux: enabled=${VISUAL_AUX_LOSS:-true}"
+echo "  term loss : enabled=${TERMINATION_LOSS:-true} weight=${VLM_TERMINATION_LOSS_WEIGHT:-1.0}"
 echo "  run       : ${RUN_NAME}"
 echo "  output    : ${OUTPUT_DIR}"
 
