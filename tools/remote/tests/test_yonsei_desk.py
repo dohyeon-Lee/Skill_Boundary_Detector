@@ -163,3 +163,30 @@ def test_output_spec_never_selects_whole_outputs_tree(tmp_path):
     assert yonsei.evaluation_spec(script, {'eval_out_dir': str(tmp_path / 'eval/outputs/run')}, tmp_path)['output'] == 'eval/outputs/run'
     with pytest.raises(ValueError):
         yonsei.evaluation_spec(script, {'eval_out_dir': str(tmp_path / 'eval/outputs')}, tmp_path)
+
+
+def test_frozen_source_wins_over_venv_editable_checkout(tmp_path, monkeypatch):
+    root, base, work, receipt, manifest = fixture(tmp_path)
+    source = work / 'project/lerobot/src/lerobot/utils'
+    source.mkdir(parents=True)
+    (source.parent / '__init__.py').write_text('')
+    (source / '__init__.py').write_text('')
+    (source / 'sbd_smoothing.py').write_text('MARKER="new snapshot"\n')
+    launcher = work / 'project/eval/submit_eval.sh'
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text('#!/bin/bash\n"' + sys.executable + '" -c "from lerobot.utils.sbd_smoothing import MARKER; print(MARKER)"\n')
+    manifest.update(cwd=str(launcher.parent), environment={}, profile={'slurm_submit_mode':'sbatch'})
+    (work / 'launch.json').write_text(json.dumps(manifest))
+    monkeypatch.setenv('PYTHONPATH', '/old/checkout/lerobot/src')
+    assert yonsei.execute(work / 'launch.json') == 0
+
+
+def test_code_snapshot_excludes_partial_model_directories(tmp_path):
+    subprocess.run(['git','init','-q',str(tmp_path)],check=True)
+    model = tmp_path / 'models/dinov3-vits16/config.json'
+    model.parent.mkdir(parents=True)
+    model.write_text('{}')
+    code = tmp_path / 'lerobot/src/lerobot/fresh.py'
+    code.parent.mkdir(parents=True)
+    code.write_text('')
+    assert yonsei.code_files(tmp_path) == {code.relative_to(tmp_path)}

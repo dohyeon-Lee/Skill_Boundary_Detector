@@ -32,7 +32,7 @@ CODE_SUFFIXES = {'.py', '.sh', '.sbatch', '.yaml', '.yml', '.json', '.toml',
                  '.md', '.txt', '.cfg', '.ini', '.xml', '.urdf', '.obj', '.stl', '.mjcf', '.csv'}
 SKIP_PARTS = {'.git', '.venv', '__pycache__', '.cache', '.config_snapshots', '.hf_configs',
               'checkpoints', 'partial_build', 'logs', 'logs_train', 'wandb', 'outputs',
-              'outputs_filtered', 'outputs_ABC', 'dataset', 'dataset_filtered', 'dataset_ABC'}
+              'outputs_filtered', 'outputs_ABC', 'dataset', 'dataset_filtered', 'dataset_ABC', 'models'}
 SELECTORS = {'TRAIN_DATA', 'SOURCE_DATA', 'STAGE1_ARCHITECTURE_OVERRIDE',
              'TERMINATOR_ARCHITECTURE_OVERRIDE', 'SKILL_AUX_PREDICTOR_MODE_OVERRIDE',
              'EVAL_MAX_CONCURRENT', 'STAGE1_EVAL_JOB_NAME', 'EVAL_NODE_LOCAL_VENV'}
@@ -646,6 +646,10 @@ def execute(manifest_path):
                    and k not in {'CUDA_VISIBLE_DEVICES','VIRTUAL_ENV','PYTHONPATH'}}
     environment.update(data['environment'], SBD_SERVER='yonsei', SBD_SCHEDULER='slurm',
                        SBD_REMOTE_ACTIVE='1', SBD_SLURM_SUBMIT_MODE=data['profile'].get('slurm_submit_mode','sbatch'))
+    # The reused venv's editable lerobot install points at the old main checkout.
+    # Resolve every bootstrap import from this launch's frozen source instead.
+    # Slurm exports this path to workers as well as the submission-time resolver.
+    environment['PYTHONPATH'] = str(Path(data['project']) / 'lerobot/src')
     real_sbatch = shutil.which('sbatch', path=environment.get('PATH'))
     if real_sbatch:
         bin_dir = path.parent / 'bin'
