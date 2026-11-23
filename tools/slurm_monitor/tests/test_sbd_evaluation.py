@@ -46,8 +46,16 @@ def cache(settings, kind, probe, episode):
     (folder / f"ep{episode:07d}.npz").touch()
 
 
-def test_counts_only_selected_episodes_and_probe_even_in_shared_allocation(tmp_path):
+@pytest.mark.parametrize("file_transport", [False, True])
+def test_counts_only_selected_episodes_and_probe_even_in_shared_allocation(tmp_path, file_transport):
     row, settings, _ = attempt(tmp_path)
+    if file_transport:
+        launch_path = tmp_path / ".cache/srun_sessions/one/launch.json"
+        settings_path = tmp_path / ".cache/settings.json"
+        settings_path.write_text(json.dumps(settings))
+        launch_path.write_text(json.dumps({"environment": {
+            "DP_ABLATION_SETTINGS_FILE": str(settings_path)}}))
+        row = training.collect(tmp_path, [])["training:one"]
     cache(settings, "raw", "current_gt", 1)
     cache(settings, "raw", "current_gt", 999)
     cache(settings, "raw", "previous_action", 2)

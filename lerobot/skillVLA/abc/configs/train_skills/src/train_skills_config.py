@@ -167,6 +167,9 @@ def resolve_build_parallelism(
 
 def load_settings(config_path: Path, dataset: str | None = None) -> dict[str, Any]:
     shared = _shared_config_module()
+    # This module instance belongs to this build only. Inherited exports from
+    # other workflows must not override the merged build/global YAML.
+    shared.get_value = lambda cfg, key, default=None, env=None: cfg.get(key, default)
     cfg = shared.load_config(config_path)
     profile = str(cfg.get("skillset_sbd_profile", "libero_standard")).strip().lower()
     if profile not in SBD_PROFILES:
@@ -176,10 +179,16 @@ def load_settings(config_path: Path, dataset: str | None = None) -> dict[str, An
     # A profile owns the complete post-processing recipe so one YAML choice is
     # enough and stale individual knobs cannot silently create a hybrid build.
     cfg.update(SBD_PROFILES[profile])
+    initial_mask = cfg.get("initial_mask", True)
+    if not isinstance(initial_mask, bool):
+        raise ValueError("initial_mask must be true or false")
+    if not initial_mask:
+        cfg["skillset_output_suffix"] += "_imask0"
     gaussian_center = str(cfg.get("skillset_gaussian_center", "current_gt")).strip().lower()
     if gaussian_center not in {"current_gt", "previous_action"}:
         raise ValueError("skillset_gaussian_center must be current_gt|previous_action.")
     settings = shared.build_data_settings(cfg, dataset=dataset)
+    settings["skillset_initial_mask"] = initial_mask
     settings["skillset_gaussian_center"] = gaussian_center
     source_tasks = _as_list(cfg.get("abc_source_tasks", ["grab_clutter"]))
     if not source_tasks:

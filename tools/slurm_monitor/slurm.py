@@ -86,7 +86,7 @@ def read_log(path, limit=131072):
 def output_paths(text):
     # Grouped jobs log an output directory for each independently trained model.
     grouped = re.findall(r"^START\s+[^\n]*?\boutput=(/\S+)", text, re.MULTILINE)
-    plain = re.findall(r"^(?:output\s*:\s*|DONE\s*->\s*)(/[^\r\n]+)", text, re.MULTILINE)
+    plain = re.findall(r"^\s*(?:output\s*:\s*|DONE\s*->\s*)(/[^\r\n]+)", text, re.MULTILINE | re.IGNORECASE)
     return list(dict.fromkeys(path.strip() for path in (grouped or plain)))
 
 
@@ -133,6 +133,15 @@ def snapshot_output(work_dir, submitted_at):
 
 def training_steps(text):
     """Read training metrics, preserving the precision of abbreviated K/M logs."""
+    # FSQ reports completed epochs, not LeRobot optimizer steps. Only accept
+    # its explicit training rows; calibration/sample counts are not progress.
+    epochs = re.findall(r"^\[FSQ(?:-v\d+)?\]\s+(\d+)\s*/\s*(\d+)\s+train=", text, re.MULTILINE)
+    if epochs:
+        epoch, total = map(int, epochs[-1])
+        return epoch, total, False
+    epoch_target = re.findall(r"^schedule\s*:\s*epochs\s*=\s*(\d+)", text, re.MULTILINE)
+    if epoch_target:
+        return None, int(epoch_target[-1]), False
     target = re.findall(
         r"(?:^schedule\s*:\s*steps\s*=\s*|\bcfg\.steps\s*=\s*)(\d+)",
         text, re.MULTILINE,
@@ -164,9 +173,10 @@ def training_progress(job, logs):
             part.lower() == "eval" for part in Path(job.get("work_dir", "")).parts):
         return []
     combined = "\n".join(logs.values())
+    epochs = bool(re.search(r"^\[FSQ(?:-v\d+)?\]|^schedule\s*:\s*epochs=", combined, re.MULTILINE))
     detected = (re.search(r"^schedule\s*:\s*steps=|\bcfg\.steps\s*=\s*\d+|\bstep:\s*[\d.,]+[KMB]?\s+smpl:", combined, re.MULTILINE)
                 or any(part in {"VSA", "Predictor", "Terminator"} for part in Path(job.get("work_dir", "")).parts))
-    if not detected:
+    if not detected and not epochs:
         return []
     parent_total = training_steps(combined)[1]
     children = {}
@@ -186,7 +196,7 @@ def training_progress(job, logs):
             if step is not None:
                 candidates.append((step, approximate, path))
         checkpoint = Path(output) / "checkpoints" / "last" if output else None
-        if checkpoint:
+        if checkpoint and not epochs:
             config = small_json(checkpoint / "pretrained_model" / "train_config.json")
             goal = config.get("steps") if isinstance(config, dict) else None
             if type(goal) is int and goal > 0:
@@ -197,7 +207,7 @@ def training_progress(job, logs):
             if type(step) is int and step >= 0:
                 candidates.append((step, False, str(step_path)))
         total = total or parent_total
-        if not total and output and job.get("resource_status_path"):
+        if not total and output and job.get("resource_status_path") and not epochs:
             # A fresh run may not have saved its first checkpoint yet. The
             # guard records that run's parsed config before initialization.
             metadata = small_json(Path(job["resource_status_path"]).parent / "trainer.json")
@@ -214,6 +224,8 @@ def training_progress(job, logs):
             updated = None
         progress.append({"output": output, "step": step, "total": total,
                          "approximate": approximate, "source": source, "updated_at": updated})
+        if epochs:
+            progress[-1]["unit"] = "epoch"
     return progress
 
 

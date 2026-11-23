@@ -60,10 +60,10 @@ class _LayerwiseConditionReader(nn.Module):
             nn.Linear(4 * latent_width, latent_width),
         )
 
-    def forward(self, latent: Tensor, condition_hidden: Tensor) -> Tensor:
-        return self.mix_latents(self.read_condition(latent, condition_hidden))
+    def forward(self, latent: Tensor, condition_hidden: Tensor, *, key_padding_mask=None) -> Tensor:
+        return self.mix_latents(self.read_condition(latent, condition_hidden, key_padding_mask=key_padding_mask))
 
-    def read_condition(self, latent: Tensor, condition_hidden: Tensor) -> Tensor:
+    def read_condition(self, latent: Tensor, condition_hidden: Tensor, *, key_padding_mask=None) -> Tensor:
         """Cross-attention residual, retaining the caller's input-memory scope."""
         query = self.cross_norm(latent)
         attention_options = (
@@ -72,7 +72,7 @@ class _LayerwiseConditionReader(nn.Module):
             else {"need_weights": False}
         )
         update, attention = self.cross_attention(
-            query, condition_hidden, condition_hidden, **attention_options
+            query, condition_hidden, condition_hidden, key_padding_mask=key_padding_mask, **attention_options
         )
         self.last_cross_attention = attention if self.capture_cross_attention else None
         return latent + update

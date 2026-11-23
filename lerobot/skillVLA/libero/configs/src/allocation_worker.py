@@ -62,7 +62,19 @@ def start(directory, allocation, runner):
     return directory
 
 
-def ensure(root, allocation, runner, tmux):
+def registered(directory, allocation):
+    """Only retain requests for the exact worker that served this allocation."""
+    try:
+        data = json.loads((directory / 'worker_status.json').read_text())
+        return (data.get('state') == 'RUNNING'
+                and data.get('job_id') == allocation['JobId']
+                and data.get('allocation_submit_time') == allocation['SubmitTime']
+                and isinstance(data.get('pid'), int) and data['pid'] > 0)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def ensure(root, allocation, runner, tmux, *, allow_wait=False):
     directory = directory_for(root, allocation)
     if ready(directory):
         return directory
@@ -82,16 +94,16 @@ def ensure(root, allocation, runner, tmux):
             target = launch['session']
             command = subprocess.check_output([*tmux, 'display-message', '-p', '-t', target,
                                                 '#{pane_current_command}'], text=True,
-                                               stderr=subprocess.DEVNULL).strip()
+                                               stderr=subprocess.DEVNULL, timeout=3).strip()
             if command not in {'bash', 'sh', 'zsh'}:
                 screen = subprocess.check_output([*tmux, 'capture-pane', '-p', '-t', target,
-                                                   '-S', '-5'], text=True)
+                                                   '-S', '-5'], text=True, timeout=3)
                 lines = [line.strip() for line in screen.splitlines() if line.strip()]
                 if not lines or re.search(r'[$#%]\s*$', lines[-1]) is None:
                     continue
             bootstrap = shlex.join([sys.executable, str(SELF), 'start-current', str(root), str(runner)])
-            subprocess.run([*tmux, 'send-keys', '-t', target, '-l', bootstrap], check=True)
-            subprocess.run([*tmux, 'send-keys', '-t', target, 'Enter'], check=True)
+            subprocess.run([*tmux, 'send-keys', '-t', target, '-l', bootstrap], check=True, timeout=3)
+            subprocess.run([*tmux, 'send-keys', '-t', target, 'Enter'], check=True, timeout=3)
             deadline = time.monotonic() + 6
             while time.monotonic() < deadline:
                 if ready(directory):
@@ -99,20 +111,32 @@ def ensure(root, allocation, runner, tmux):
                 time.sleep(.1)
         except (OSError, ValueError, subprocess.SubprocessError):
             continue
+    if allow_wait and registered(directory, allocation):
+        # A stale heartbeat can mean uninterruptible NFS I/O rather than a
+        # dead worker. Preserve its request; the original step consumes it
+        # once I/O resumes, without another GPU step or a manual bootstrap.
+        return directory
     bootstrap = shlex.join([sys.executable, str(SELF), 'start-current', str(root), str(runner)])
     raise ValueError('No worker is running inside the original allocation. In its existing srun shell, run: '
                      + bootstrap + '. No new job or GPU step was requested.')
 
 
-def enqueue(directory, path):
-    if not ready(directory):
+def enqueue(directory, path, *, allow_unready=False):
+    active = ready(directory)
+    if not active and not allow_unready:
         raise ValueError('The original allocation worker is unavailable; no job was submitted.')
+    if not active:
+        data = json.loads(path.read_text())
+        if not registered(directory, {'JobId': data['existing_job_id'],
+                                       'SubmitTime': data['allocation_submit_time']}):
+            raise ValueError('The original allocation worker identity changed; no job was submitted.')
     status_path = path.parent / 'dispatch_status.json'
-    if status_path.exists() and json.loads(status_path.read_text()).get('state') in {'QUEUED', 'RUNNING'}:
+    if status_path.exists() and json.loads(status_path.read_text()).get('state') in {'WAITING_FOR_WORKER', 'QUEUED', 'RUNNING'}:
         raise ValueError('This frozen launch is already queued or running in the original allocation.')
     requests = directory / 'requests'
     requests.mkdir(mode=0o700, exist_ok=True)
-    write_json(path.parent / 'dispatch_status.json', {'state': 'QUEUED', 'worker': str(directory)})
+    write_json(path.parent / 'dispatch_status.json', {
+        'state': 'QUEUED' if active else 'WAITING_FOR_WORKER', 'worker': str(directory)})
     write_json(requests / (path.parent.name + '.json'), {'launch_path': str(path)})
 
 

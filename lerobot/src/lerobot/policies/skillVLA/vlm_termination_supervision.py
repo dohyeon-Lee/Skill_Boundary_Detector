@@ -8,9 +8,10 @@ TERMINAL = "vlm_termination_terminal"
 PAST_CODES = "vlm_termination_past_codes"
 PAST_VALID = "vlm_termination_past_valid"
 PAST_UV = "vlm_termination_past_uv"
+PAST_UV_VALID = "vlm_termination_past_uv_valid"
 PAST_TERMINAL = "vlm_termination_past_terminal"
 PAST_DISTANCE = "vlm_termination_past_distance"
-KEYS = (DISTANCE, TERMINAL, PAST_CODES, PAST_VALID, PAST_UV, PAST_TERMINAL, PAST_DISTANCE)
+KEYS = (DISTANCE, TERMINAL, PAST_CODES, PAST_VALID, PAST_UV, PAST_UV_VALID, PAST_TERMINAL, PAST_DISTANCE)
 
 
 def termination_conditions(frame, selected, starts, lengths, codes, steps, *, episode_length):

@@ -38,6 +38,7 @@ echo "Stats     : ${FSQ_STATS_PATH}"
 echo "Action    : ${FSQ_ACTION_SPACE} ${FSQ_ACTION_DIM}D"
 echo "Grippers  : ${FSQ_ACTION_GRIPPER_INDICES_STR} (weight=${FSQ_ACTION_GRIPPER_WEIGHT})"
 echo "Output    : ${FSQ_OUTPUT_DIR}"
+echo "schedule  : epochs=${FSQ_NUM_EPOCHS}"
 nvidia-smi || true
 
 read -r -a FSQ_LEVELS <<< "${FSQ_LEVELS_STR}"
@@ -50,6 +51,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "skillset_seg_name": "${SKILLSET_SEG_NAME}",
   "skillset_manifest_path": "${SKILLSET_MANIFEST_PATH}",
   "action_space": "${FSQ_ACTION_SPACE}",
+  "encoder_mode": "${FSQ_ENCODER_MODE}",
   "action_dim": ${FSQ_ACTION_DIM},
   "action_gripper_indices": [${FSQ_ACTION_GRIPPER_INDICES_STR// /, }],
   "action_gripper_weight": ${FSQ_ACTION_GRIPPER_WEIGHT},
@@ -92,6 +94,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --raw_dataset_dir "${RAW_DATASET_DIR}" \
     --stats_path "${FSQ_STATS_PATH}" \
     --action_space "${FSQ_ACTION_SPACE}" \
+    --action_encoder_mode "${FSQ_ENCODER_MODE}" \
     --output_dir "${FSQ_OUTPUT_DIR}" \
     --quantizer "${FSQ_QUANTIZER}" \
     --bsq_code_dim "${BSQ_CODE_DIM}" \

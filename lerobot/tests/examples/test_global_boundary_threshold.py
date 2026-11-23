@@ -119,3 +119,17 @@ def test_global_mean_reducer_excludes_terminal_masked_curve_tail(
     payload = json.loads(output.read_text())
     assert payload["global_mean"] == 2.0
     assert payload["n_replan_points"] == 2
+
+
+def test_global_mean_accounts_for_fully_masked_episode_without_adding_zero(tmp_path, monkeypatch):
+    curves = tmp_path / 'curves'; curves.mkdir()
+    np.savez(curves / 'ep0000000.npz', episode_id=0, sg_vals=[1., 3.])
+    np.savez(curves / 'ep0000001.npz', episode_id=1, sg_vals=np.full(9, np.nan),
+             threshold_valid_start=4, threshold_valid_count=3, no_valid_boundary_anchors=True)
+    output = tmp_path / 'threshold.json'
+    monkeypatch.setattr(sys, 'argv', ['reduce', '--curves_dir', str(curves),
+                        '--output_path', str(output), '--expected_episodes', '2'])
+    main()
+    payload = json.loads(output.read_text())
+    assert payload['global_mean'] == 2.0 and payload['n_replan_points'] == 2
+    assert payload['n_episodes'] == 2 and payload['n_no_valid_boundary_anchors'] == 1

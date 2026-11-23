@@ -1185,6 +1185,10 @@ def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict
     paths depend on the trained DP and boundary-detector settings, but never on
     the downstream quantizer, autoencoder, decoder, or FSQ optimization config.
     """
+    workers = int(cfg.get("skillset_single_gpu_workers", 0))
+    cpus = int(cfg.get("skillset_cpus_per_task", 4))
+    if workers < 0 or cpus < 1 or workers > cpus:
+        raise ValueError("skillset_single_gpu_workers must be 0 (array) or positive and <= skillset_cpus_per_task.")
     dp_settings = dp_train_settings(cfg, dataset)
     target_dataset = dp_settings["target_dataset"]
     root = dp_settings["project_root"]
@@ -1268,6 +1272,7 @@ def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict
         "skillset_seg_name": fsq_seg_dir.name,
         "skillset_manifest_path": skillset_dir / "skillset_manifest.json",
         "skillset_tasks_per_job": int(get_value(cfg, "skillset_tasks_per_job", 5)),
+        "skillset_single_gpu_workers": workers,
         "skillset_wandb_project": str(
             get_value(cfg, "skillset_wandb_project", "Skill_dataset")
         ),
@@ -2016,6 +2021,13 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
     preset = presets[fsq_autoencoder_mode]
     fsq_encoder_input_mode = preset["encoder_input_mode"]
     fsq_encoder_arch = preset["encoder_arch"]
+    fsq_encoder_mode = str(cfg.get("fsq_encoder_mode", "original")).strip().lower()
+    # Accept the common spelling slips, but serialize a single canonical name.
+    fsq_encoder_mode = {"sperate": "separate", "spaperate": "separate"}.get(fsq_encoder_mode, fsq_encoder_mode)
+    if fsq_encoder_mode not in {"original", "separate", "separate_full"}:
+        raise ValueError("fsq_encoder_mode must be original|separate|separate_full.")
+    if fsq_encoder_mode in {"separate", "separate_full"} and fsq_encoder_arch != "action_seq":
+        raise ValueError(f"fsq_encoder_mode: {fsq_encoder_mode} requires fsq_autoencoder.mode: action|norm_action.")
     fsq_reconstructor_arch = preset["reconstructor_arch"]
     fsq_reconstructor_output_mode = preset["reconstructor_output_mode"]
     fsq_start_state_conditioning = str(
@@ -2293,6 +2305,8 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         fsq_run_name += "__inital_proprio_conditioned"
     if fsq_exp:
         fsq_run_name += f"_{fsq_exp}"
+    if fsq_encoder_mode != "original":
+        fsq_run_name += f"_{fsq_encoder_mode}"
     # Slurm partition/qos/nodelist/exclude are canonical (read from global_config.yaml's train_*);
     # output keys below keep their per-job prefix so submit scripts read the same $..._PARTITION vars.
     slurm_partitions = as_list(get_value(cfg, "train_partition", ["debug"]))
@@ -2407,6 +2421,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "fsq_encoder_grounding_convention": fsq_encoder_grounding_convention,
         "fsq_encoder_length_token": fsq_encoder_length_token,
         "fsq_encoder_arch": fsq_encoder_arch,
+        "fsq_encoder_mode": fsq_encoder_mode,
         "fsq_init_calibration": fsq_init_calibration,
         "fsq_init_calibration_gain": str(fsq_init_calibration_gain),
         "fsq_init_calibration_samples": fsq_init_calibration_samples,

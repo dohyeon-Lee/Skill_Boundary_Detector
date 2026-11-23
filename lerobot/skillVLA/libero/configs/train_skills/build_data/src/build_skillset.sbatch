@@ -73,6 +73,15 @@ if [ ! -d "${DP_POLICY_PATH}" ]; then
   exit 1
 fi
 
+if [ -n "${LIBERO_EPISODE_SHARD_PATH:-}" ]; then
+  TASK_IDS="$("${BOOTSTRAP_PYTHON}" - <<'PY'
+import json, os
+print(" ".join(map(str, json.loads(os.environ["LIBERO_TASK_INDICES_JSON"]))))
+PY
+)"
+  START_TASK=0
+  END_TASK=all
+else
 TASKS_PER_JOB=${SKILLSET_TASKS_PER_JOB}
 TOTAL_TASKS=${TOTAL_TASKS:-}
 if [ -z "${TOTAL_TASKS}" ]; then
@@ -96,6 +105,7 @@ for TASK_ID in $(seq "${START_TASK}" "${END_TASK}"); do
   fi
   TASK_IDS="${TASK_IDS} ${TASK_ID}"
 done
+fi
 
 if [ -z "${TASK_IDS// }" ]; then
   echo "No tasks assigned to this array index; exiting."
@@ -135,6 +145,10 @@ if [ "${USE_CACHED_CURVES:-false}" = "true" ]; then
   CACHED_CURVES_ARG=(--use_cached_curves)
   echo "  source     : cached curves (no DP/VF inference)"
 fi
+EPISODE_SHARD_ARG=()
+if [ -n "${LIBERO_EPISODE_SHARD_PATH:-}" ]; then
+  EPISODE_SHARD_ARG=(--episode_ids_path "${LIBERO_EPISODE_SHARD_PATH}" --write_done_markers)
+fi
 
 # For a fixed cross-task reference, segmentation reads the source JSON directly.
 # Otherwise the global reducer created this skillset's own threshold JSON.
@@ -163,6 +177,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --policy_path "${DP_POLICY_PATH}" \
     --output_dir "${SKILLSET_DIR}" \
     --task_ids ${TASK_IDS} \
+    "${EPISODE_SHARD_ARG[@]}" \
     ${CURVES_ARG[@]+"${CURVES_ARG[@]}"} \
     --replan_interval "${SKILLSET_REPLAN_INTERVAL}" \
     --nms_dist "${SKILLSET_NMS_DIST}" \

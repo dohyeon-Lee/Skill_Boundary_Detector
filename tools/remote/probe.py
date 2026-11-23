@@ -103,44 +103,67 @@ def parse_training(text, total=None):
 
 
 def training_progress(work, manifest):
+    """Use this launch's counters or logs belonging to its recorded Slurm jobs."""
     items = []
-    # New trainers publish exact counters without loading any model/checkpoint.
+    training = manifest.get('training') or {}
+    created = manifest.get('created_at', 0)
+    # The outbox is private to this launch, unlike a workflow's shared logs/.
     for path in sorted((work/'training_progress').glob('*.json'))[:32]:
         item = read(path, {})
         if (type(item.get('step')) is int and type(item.get('total')) is int and
-                0 <= item['step'] <= item['total'] and item['total'] > 0):
+                0 <= item['step'] <= item['total'] and item['total'] > 0 and
+                isinstance(item.get('updated_at'), (int, float)) and
+                item['updated_at'] >= created):
             items.append(item)
     if not items:
-        # Frozen jobs already running can be monitored through their existing logs.
+        identities = set()
+        record = work/'jobs.jsonl'
+        if record.is_file() and record.stat().st_size <= 1024*1024:
+            for line in record.read_text().splitlines():
+                if line.strip():
+                    identity = str(json.loads(line).get('job_id', ''))
+                    if identity.isdigit():
+                        identities.add(identity)
+        # Match the job-id field, never arbitrary digits in a model/run name.
+        pattern = (re.compile(r'_(?:' + '|'.join(sorted(identities)) +
+                              r')(?:_(?:[0-9]+|solo)?)?(?:\.(?:run[a-zA-Z0-9]+|step[0-9]+))?\.(?:out|err)$')
+                   if identities else None)
         project = work/'project'
         folders = {Path(manifest.get('cwd', str(project))), project/Path(manifest.get('script', '')).parent}
         paths = set()
         for folder in folders:
             try:
                 folder.resolve().relative_to(project.resolve())
-                for suffix in ('*.out', '*.err'):
-                    paths.update((folder/'logs').glob(suffix))
+                if pattern:
+                    for suffix in ('*.out', '*.err'):
+                        for path in (folder/'logs').glob(suffix):
+                            if pattern.search(path.name) and path.stat().st_mtime >= created:
+                                paths.add(path)
             except (OSError, ValueError):
                 continue
-        texts = []
+        grouped = {}
         for path in sorted(paths, key=lambda p:p.stat().st_mtime, reverse=True)[:32]:
             try:
-                texts.append((path, tail_head(path)))
+                text = tail_head(path)
+                grouped.setdefault(path.stem, []).append((path, text))
             except OSError:
                 continue
-        total = (manifest.get('training') or {}).get('total')
-        combined = '\n'.join(text for _, text in texts)
-        total = parse_training(combined, total)['total']
-        for path, text in texts:
-            item = parse_training(text, total)
-            if item['step'] is not None:
-                item.update(output=path.stem, updated_at=path.stat().st_mtime)
-                items.append(item)
-        if not items:
-            item = parse_training('', total)
-            item['unit'] = (manifest.get('training') or {}).get('unit', 'step')
-            item.update(output='', updated_at=max((p.stat().st_mtime for p,_ in texts), default=None))
-            items.append(item)
+        for label, logs in grouped.items():
+            combined = '\n'.join(text for _, text in logs)
+            total = training.get('total') or parse_training(combined)['total']
+            candidates = []
+            for path, text in logs:
+                item = parse_training(text, total)
+                if item['step'] is not None:
+                    item.update(total=total, output=label, updated_at=path.stat().st_mtime)
+                    candidates.append(item)
+            # Stdout/stderr describe one run, not two models in the dashboard.
+            if candidates:
+                items.append(max(candidates, key=lambda item:(item['step'], item['updated_at'])))
+    if not items:
+        items = [{'step': None, 'total': training.get('total'),
+                  'unit': training.get('unit', 'step'), 'approximate': False,
+                  'output': training.get('label', ''), 'updated_at': None}]
     for item in items:
         step, total = item['step'], item['total']
         item['percent'] = min(100, 100*step/total) if step is not None and total else None

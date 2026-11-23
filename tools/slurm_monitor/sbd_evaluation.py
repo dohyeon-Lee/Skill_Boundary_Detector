@@ -22,10 +22,15 @@ def progress(reader, row, read_log):
         return None
     launch = reader.read_json(launch_path, 4 * 1024 * 1024)
     import json
-    raw_settings = launch.get("environment", {}).get("DP_ABLATION_SETTINGS_JSON")
-    if not raw_settings:
+    environment = launch.get("environment", {})
+    settings_file = environment.get("DP_ABLATION_SETTINGS_FILE")
+    raw_settings = environment.get("DP_ABLATION_SETTINGS_JSON")
+    if settings_file:
+        settings = reader.read_json(reader.safe(settings_file), 4 * 1024 * 1024)
+    elif raw_settings:
+        settings = json.loads(raw_settings)
+    else:
         return None
-    settings = json.loads(raw_settings)
     source = settings.get("source_manifest")
     if not source or not settings.get("artifact_dir"):
         return None

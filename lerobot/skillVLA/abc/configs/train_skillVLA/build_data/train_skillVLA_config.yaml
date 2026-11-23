@@ -5,14 +5,14 @@ source_dataset: abc_sim_all
 skillvla_dataset_root: skillvla
 skillvla_data_mode: pt
 
-# Match the evaluated absolute-action FSQ checkpoint and reuse the training
+# Match the evaluated put_relative absolute-action original FSQ and reuse the training
 # skillset recorded in its fsq_meta.json.
-fsq_run_name: FSQ3332_contrastiveON_routeON_loss_abc_grab_clutter_absolute_joint
-fsq_checkpoint: 1000
+fsq_run_name: FSQ3332_contrastiveON_routeON_loss_abc_put_relative_absolute_joint_jit30
+fsq_checkpoint: 2000
 
 # Keep the output label readable and stable. Set an additional suffix only when
 # intentionally building another annotation/jitter variant from the same FSQ.
-skillvla_run_name: FSQ3332_contrastive_1000_pt
+skillvla_run_name: FSQ3332_contrastive_2000_pt_put_relative_absolute_joint_jit30
 skillvla_output_suffix: ""
 
 # Match LIBERO's fixed 20-step window (1 s at 20 Hz). At ABC's 30 Hz, the

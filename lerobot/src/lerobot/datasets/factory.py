@@ -620,6 +620,8 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
 
                     dataset_cls = partial(
                         ABCNativeSkillVLADataset,
+                        vlm_termination_enabled=bool(getattr(cfg.policy, "vlm_termination_enabled", False)),
+                        vlm_termination_post_end_steps=int(getattr(cfg.policy, "vlm_termination_post_end_steps", 10)),
                         include_predictor_start_inputs=bool(
                             policy_type == "skill_aux" and getattr(cfg.policy, "train_skill_predictor", False)
                         ),

@@ -4,25 +4,27 @@
 
 # ── Data artifact ─────────────────────────────────────────────────────────────
 target_dataset: abc_sim_all
-abc_source_tasks: [grab_clutter]
+abc_source_tasks: [put_relative]
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
-# skillset_seg_name: seg_abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_gru_iid_constLR_ck100000_gaussian_x0hat_globalmean_100p_abc-standard
+skillset_seg_name: seg_abc_sim_all_task-put_relative_delta-joint_future_only_obs60_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard_imask0
 skillset_name: skillset
 
 # DP/SBD provenance is read from the selected folder's skillset_manifest.json.
 
 # ── Architecture / codebook ──────────────────────────────────────────────────
-fsq_exp: abc_grab_clutter_delta_joint_jit30
+fsq_exp: abc_put_relative_delta_joint_jit30
 fsq_action_space: delta_joint  # absolute_joint | delta_joint (DP와 동일한 joint delta, gripper는 absolute)
 # delta_joint: 첫 action - 시작 state, 이후 action 간 차분. 기존 skillset 재사용.
 # delta를 선택하면 fsq_exp의 _absolute는 _delta_joint로 바뀌어 별도 폴더에 저장.
-fsq_quantizer: {type: fsq, levels: [3, 3, 3, 2]}
+fsq_quantizer: {type: fsq, levels: [3, 3, 3]}
 fsq_hidden_dim: 256
 fsq_num_layers: 2
+# original=공동 인코딩, separate=팔별 인코딩 후 공통 pooling
+# separate_full=팔별 인코딩·pooling 후 결합. 세 방식 모두 하나의 공통 FSQ 사용.
+fsq_encoder_mode: separate_full
 
-# Absolute uses grab_clutter q01/q99; delta uses transformed skill q01/q99.
+# Absolute uses the selected task q01/q99; delta uses transformed skill q01/q99.
 # Both gripper axes [6,13] receive this MSE weight; the indices are taken from
 # the immutable skillset manifest rather than repeated here.
 fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}
@@ -50,7 +52,7 @@ fsq_batch_size: 64
 fsq_num_epochs: 2000
 fsq_samples_per_skill: 1
 fsq_termination_stratified_sampling: false
-fsq_num_workers: 24
+fsq_num_workers: 16 # 24
 fsq_val_num_workers: 0
 fsq_val_every: 25
 fsq_checkpoint_every: 500
@@ -65,7 +67,7 @@ fsq_route_batching: {enabled: false, chunk_size: 27}
 
 # ── Slurm / logging ──────────────────────────────────────────────────────────
 fsq_train_gres: gpu:1
-fsq_train_cpus_per_task: 32
+fsq_train_cpus_per_task: 16 # 32
 fsq_train_mem: 96G
 fsq_train_time: "48:00:00"
 fsq_wandb_project: VAE_train_ABC

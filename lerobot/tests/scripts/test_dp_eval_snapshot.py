@@ -1,5 +1,6 @@
 """An edit during validation must not change the checkpoint actually launched."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,44 @@ import sys
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+@pytest.mark.parametrize("domain", ["abc", "libero"])
+def test_initial_mask_changes_boundary_and_report_only(tmp_path, domain):
+    path = ROOT / "lerobot/skillVLA/abc/configs/train_skills/DP/eval/src/defaults.py"
+    spec = importlib.util.spec_from_file_location("mask_dp_defaults", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps({
+        "n_obs_steps": 60, "horizon": 36, "history_encoder": "transformer",
+        "down_dims": [128, 256, 512], "action_sequence_mode": "future_only",
+    }))
+    cfg = {"project_root": str(tmp_path), "policy_checkpoint": "model",
+           "source_tasks": ["grab_clutter"], "output_name": "mask_comparison"}
+    enabled, on = module.resolve_config(dict(cfg, initial_mask=True), domain=domain)
+    disabled, off = module.resolve_config(dict(cfg, initial_mask=False), domain=domain)
+    assert enabled["boundary_variants"][0]["initial_mask_frames"] == 60
+    assert disabled["boundary_variants"][0]["initial_mask_frames"] == 0
+    assert on["output_suffix"].endswith("_imask60")
+    assert off["output_suffix"].endswith("_imask0")
+    for key in ("probe_variants", "cluster_variants", "output_name"):
+        assert enabled[key] == disabled[key]  # The same GPU/PCA/GMM caches remain usable.
+
+
+def test_large_episode_settings_are_passed_by_file(tmp_path):
+    path = ROOT / "lerobot/skillVLA/abc/configs/train_skills/DP/eval/src/config.py"
+    spec = importlib.util.spec_from_file_location("large_dp_eval_config", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    payload = json.dumps({"project_root": str(tmp_path), "episodes": "x" * 200_000})
+    exports = module.shell_settings({"dp_ablation_settings_json": payload})
+    assert "dp_ablation_settings_json" not in exports
+    saved = Path(exports["dp_ablation_settings_file"])
+    assert saved.read_text() == payload
+    env = dict(os.environ, **{key.upper(): str(value) for key, value in exports.items()})
+    subprocess.run([sys.executable, "-c", "pass"], env=env, check=True)
 
 
 @pytest.mark.parametrize("domain", ["abc", "libero"])

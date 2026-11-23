@@ -6,6 +6,41 @@ import json
 from pathlib import Path
 
 
+def _source_rows(cfg):
+    from lerobot.datasets.abc_native_io import load_abc_native_episodes
+
+    root = Path(cfg["project_root"])
+    dataset_root = Path(str(cfg.get("dataset_root", "dataset_ABC"))).expanduser()
+    dataset = (dataset_root if dataset_root.is_absolute() else root / dataset_root) / cfg["target_dataset"]
+    tasks = cfg["source_tasks"]
+    if not isinstance(tasks, list) or not tasks or any(not str(task).strip() for task in tasks):
+        raise ValueError("source_tasks must be a non-empty list of official ABC task names")
+    rows = load_abc_native_episodes(dataset)
+    missing = set(tasks) - set(rows["source_task"])
+    if missing:
+        raise ValueError(f"Unknown ABC source_tasks: {sorted(missing)}")
+    return rows[rows["source_task"].isin(tasks)]
+
+
+def resolve_task_ids(cfg):
+    """Select all or the first N language prompts from official source tasks."""
+    rows = _source_rows(cfg)
+    ids = sorted({int(task_id) for values in rows["task_indices"] for task_id in values})
+    if not ids:
+        raise ValueError("source_tasks selects no ABC language tasks")
+    count = cfg.get("n_tasks", "all")
+    if isinstance(count, str) and count.strip().lower() == "all":
+        return ids
+    if isinstance(count, bool) or not (
+        isinstance(count, int) or isinstance(count, str) and count.strip().isdigit()
+    ):
+        raise ValueError("n_tasks must be all or a positive integer")
+    count = int(count)
+    if count < 1 or count > len(ids):
+        raise ValueError(f"n_tasks must be between 1 and {len(ids)}, or all")
+    return ids[:count]
+
+
 def _training_pca_episodes(checkpoint, dataset, rows, marker):
     """Resolve the saved DP dataset filters, independently of eval prompts."""
     path = checkpoint / "train_config.json"
@@ -105,8 +140,10 @@ def make_source(cfg: dict, settings: dict) -> dict:
     for task_id in task_ids:
         selected = rows[rows["task_indices"].map(lambda values: task_id in values)]
         count = settings["n_episodes"]
-        if len(selected) < count:
-            raise ValueError(f"Task {task_id} has {len(selected)} episodes in {tasks}; requested {count}")
+        if selected.empty:
+            raise ValueError(f"Task {task_id} has no episodes in {tasks}")
+        # n_episodes is a per-prompt cap: sparse prompts use every available
+        # episode, without duplicating samples or dropping the prompt.
         for row in selected.head(count).to_dict("records"):
             episodes.append({
                 "episode_index": int(row["episode_index"]),

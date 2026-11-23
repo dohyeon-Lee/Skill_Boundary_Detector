@@ -1,0 +1,11 @@
+wandb: [wandb.login()] Loaded credentials for https://api.wandb.ai from /home/dohyeon/.netrc.
+wandb: Currently logged in as: dohyeonlee (dohyeonlee-postech) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: setting up run 1j10hx4m
+wandb: Tracking run with wandb version 0.24.2
+wandb: Run data is saved locally in /data1/dohyeon/Skill_Boundary_Detector/lerobot/wandb/run-20261122_160251-1j10hx4m
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run FSQ3332_contrastiveON_routeON_loss_abc_put_relative_delta_joint_jit30_delta_joint
+wandb: ⭐️ View project at https://wandb.ai/dohyeonlee-postech/VAE_train_ABC
+wandb: 🚀 View run at https://wandb.ai/dohyeonlee-postech/VAE_train_ABC/runs/1j10hx4m
+/data1/dohyeon/Skill_Boundary_Detector/lerobot/skillVLA/libero/configs/train_skills/FSQ/src/FSQ.py:842: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)

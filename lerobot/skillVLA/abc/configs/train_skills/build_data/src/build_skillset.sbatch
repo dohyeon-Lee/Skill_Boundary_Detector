@@ -64,6 +64,8 @@ CURVES_ARG=()
 [ "${CURVES_ONLY:-false}" = true ] && CURVES_ARG=(--curves_only)
 CACHED_ARG=()
 [ "${USE_CACHED_CURVES:-false}" = true ] && CACHED_ARG=(--use_cached_curves)
+INITIAL_MASK_ARG=()
+[ "${SKILLSET_INITIAL_MASK:-true}" = true ] || INITIAL_MASK_ARG=(--initial_mask_frames 0)
 [ "${SKILLSET_GAUSSIAN_INCLUDE_MEAN}" = true ] \
   && GAUSSIAN_MEAN_ARG=(--gaussian-include-mean) \
   || GAUSSIAN_MEAN_ARG=(--no-gaussian-include-mean)
@@ -124,6 +126,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --smooth_window "${SKILLSET_SMOOTH_WINDOW}" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
     --score_power "${SKILLSET_SCORE_POWER}" \
+    "${INITIAL_MASK_ARG[@]}" \
     --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
     --terminal_mask_mode "${SKILLSET_TERMINAL_MASK_MODE}" \
     --terminal_release_pre_offset_frames "${SKILLSET_TERMINAL_RELEASE_PRE_OFFSET_FRAMES}" \

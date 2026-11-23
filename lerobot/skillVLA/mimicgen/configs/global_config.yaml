@@ -1,0 +1,4 @@
+# Shared storage; model checkpoints can reference the existing LIBERO outputs.
+server: auto
+dataset_root: dataset_mimicgen
+outputs_root: outputs_mimicgen

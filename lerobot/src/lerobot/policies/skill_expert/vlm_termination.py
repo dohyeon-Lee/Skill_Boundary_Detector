@@ -3,7 +3,8 @@ import torch
 from torch.nn import functional as F
 
 from lerobot.policies.skillVLA.vlm_termination_supervision import (
-    DISTANCE, TERMINAL, PAST_CODES, PAST_VALID, PAST_UV, PAST_TERMINAL, PAST_DISTANCE, termination_targets,
+    DISTANCE, TERMINAL, PAST_CODES, PAST_VALID, PAST_UV, PAST_UV_VALID,
+    PAST_TERMINAL, PAST_DISTANCE, termination_targets,
 )
 
 
@@ -28,12 +29,17 @@ def vlm_termination_loss(model, config, batch, state):
     rows, slots = batch[PAST_VALID].to(logits.device).bool().nonzero(as_tuple=True)
     probabilities = []
     # Bound the extra prefix batch by the normal VSA batch size. Cached SigLIP
-    # embeddings retain gradients; past conditions never run an Action Expert.
+    # embeddings retain gradients for the legacy head; the detached bottleneck
+    # cuts them at the image cache and each VLM layer. Neither runs an Expert.
     for start in range(0, rows.numel(), state.shape[0]):
         r, s = rows[start:start + state.shape[0]], slots[start:start + state.shape[0]]
         code = batch[PAST_CODES].to(logits.device)[r, s]
         uv = batch[PAST_UV].to(logits.device)[r, s]
-        goal = torch.cat((uv, torch.ones_like(uv[:, :1]), uv.new_zeros(uv.shape[0], 3)), dim=-1)
+        if getattr(config, "bimanual_spatial_auxiliary", False):
+            uv_valid = batch[PAST_UV_VALID].to(logits.device)[r, s]
+            goal = torch.cat((uv.flatten(1), uv_valid.float()), dim=-1)
+        else:
+            goal = torch.cat((uv, torch.ones_like(uv[:, :1]), uv.new_zeros(uv.shape[0], 3)), dim=-1)
         past = model.vlm_termination_from_image_tokens(memory[r], state[r], code, goal)
         extra_target, extra_valid = termination_targets(
             batch[PAST_DISTANCE].to(logits.device)[r, s], sigma=config.vlm_termination_target_sigma,

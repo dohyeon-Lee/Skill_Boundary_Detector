@@ -248,7 +248,7 @@ def configured_file_inputs(config, root=ROOT):
     def walk(value):
         if isinstance(value, dict):
             for k,v in value.items():
-                if k.endswith(('_root', '_root_override')) or any(word in k.lower() for word in ('output','archive')):
+                if k in {'stage1_component', 'skill_aux_component'} or k.endswith(('_root', '_root_override')) or any(word in k.lower() for word in ('output','archive')):
                     continue
                 walk(v)
         elif isinstance(value,list):
@@ -652,7 +652,8 @@ def launch(script, args, root=ROOT, env=None):
             protected = json.loads(protected)
         if not isinstance(protected, list) or any(type(n) is not int or n < 0 for n in protected):
             raise ValueError('protect_checkpoints must be a list of non-negative integers')
-        manifest['training'] = {'checkpoint_sync': True, 'protected': protected}
+        manifest['training'] = {'checkpoint_sync': True, 'protected': protected,
+                                'label': settings.get('run_name', '')}
         for key in ('dp_steps', 'steps', 'fsq_num_epochs'):
             if settings.get(key):
                 manifest['training']['total'] = int(settings[key])

@@ -199,3 +199,11 @@ def test_native_workflow_config_discovery(relative):
     config,resolver,extra=M.config_and_resolver(entry,[],{})
     assert config.is_file(),config
     assert resolver.is_file(),resolver
+
+
+def test_component_selector_is_not_a_directory_input(tmp_path):
+    vsa = tmp_path/'FT/VSA'
+    vsa.mkdir(parents=True)
+    config = vsa/'vsa_ft_config.yaml'
+    config.write_text('stage1_component: VSA\n')
+    assert M.configured_file_inputs(config, tmp_path) == set()

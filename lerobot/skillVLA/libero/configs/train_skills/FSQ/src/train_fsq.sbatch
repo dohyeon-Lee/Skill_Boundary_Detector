@@ -216,6 +216,7 @@ cat > "${FSQ_OUTPUT_DIR}/fsq_meta.json" <<JSON
   "encoder_input_mode": "${FSQ_ENCODER_INPUT_MODE}",
   "encoder_grounding_convention": "${FSQ_ENCODER_GROUNDING_CONVENTION}",
   "encoder_arch": "${FSQ_ENCODER_ARCH}",
+  "encoder_mode": "${FSQ_ENCODER_MODE}",
   "encoder_length_token": ${FSQ_ENCODER_LENGTH_TOKEN},
   "quantizer": "${FSQ_QUANTIZER}",
   "bsq_code_dim": ${BSQ_CODE_DIM},
@@ -343,6 +344,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --pi_base                 "${PI_BASE_MODEL_PATH}" \
     --skill_cond_mode         "${FSQ_SKILL_COND_MODE}" \
     --hidden_dim              "${FSQ_HIDDEN_DIM}" \
+    --action_encoder_mode     "${FSQ_ENCODER_MODE}" \
     --num_layers              "${FSQ_NUM_LAYERS}" \
     --n_control               "${FSQ_N_CONTROL}" \
     --autoencoder_mode        "${FSQ_AUTOENCODER_MODE}" \

@@ -3,21 +3,14 @@ model_defaults:
   pose_source: auto
   expert_xyz_source: auto
 models:
-- label: Term_Token_1_dinoS_freeze
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_vision_only_pi05vlm_vlast18_base
+- label: fullskillL18_Term1_dinoS_freeze
+  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_fullskillL18_vlast9_base
   vsa_checkpoint: '100000'
   predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
   predictor_checkpoint: '100000'
   terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoS_freeze
   terminator_checkpoint: '100000'
-- label: Term_Token_4_dinoS_freeze
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_vanila_vision_only_pi05vlm_vlast18_base
-  vsa_checkpoint: '100000'
-  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
-  predictor_checkpoint: '100000'
-  terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_4_dinoS_freeze
-  terminator_checkpoint: '100000'
-output_name: pt_newSBD_vanila_vision_only_100k_Predmode2PT100k_B200_Term14DinoSPT100k_10eps_th05
+output_name: pt_nonproprio_fullskillL18_100k_Predmode2PT100k_Term1DinoSPT100k_10eps_th05
 resume: true
 target_task: libero_90
 gt_dataset:
@@ -36,7 +29,7 @@ task_ids:
 - 8
 - 9
 eval_num_gpus: 1
-eval_max_workers_per_gpu: 6
+eval_max_workers_per_gpu: 4
 n_episodes: 10
 eval_batch_size: 1
 max_parallel_tasks: 1
@@ -70,6 +63,6 @@ logging:
     project: VLA_stage1_eval
 slurm:
   gres: gpu:1
-  cpus: 48
+  cpus: 16
   memory: 128G
   time: '3:00:00'

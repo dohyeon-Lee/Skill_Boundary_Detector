@@ -1,7 +1,8 @@
 dataset:
   skillvla_root: skillvla
   source: abc_sim_all
-  run: FSQ3332_contrastive_1000_pt
+  # put_relative; absolute_joint / original FSQ, epoch 2000, levels [3, 3, 3, 2].
+  run: FSQ3332_contrastive_2000_pt_put_relative_absolute_joint_jit30
 
 # The build stores the maximum +/-30 state window. Training selects the
 # LIBERO-equivalent ABC runtime range without rebuilding the dataset.

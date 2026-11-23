@@ -247,6 +247,7 @@ def test_report_only_recalibrates_all_episodes_but_renders_selected_subset(tmp_p
             scale = (ep + 1) * (10 if name == "no_gripper" else 1)
             np.savez(cluster, covariance_gated_cosine=np.array([0., 1., 0., 3., 2., 100.]) * scale)
     settings = {"skillset_dir": str(root), "output_dir": str(out), "task_ids": [0],
+        "probe_variants": [{"name": name} for name in ("gripper", "no_gripper")],
         "task_id_space": "suite", "target_task": "libero_90", "n_episodes": 1,
         "threshold_calibration": {"source": "skillset", "expected_episodes": 3},
         "experiments": [{"name": n, "probe": n, "cluster": "k5", "boundary": "global", "metric": "covariance_gated_cosine"}

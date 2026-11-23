@@ -31,7 +31,8 @@ def write(path, value):
 def supported(row):
     return bool(re.fullmatch(r'[a-f0-9]{32}', row.get('run_id', ''))
                 and re.fullmatch(r'[1-9][0-9]*', row.get('job_id', ''))
-                and row.get('status_path') and not row.get('terminal'))
+                and row.get('status_path') and not row.get('terminal')
+                and row.get('state') != 'WAITING_FOR_WORKER')
 
 
 def verify(root, target):

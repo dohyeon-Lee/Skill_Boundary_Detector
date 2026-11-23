@@ -121,6 +121,35 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     )
 
 
+def test_separate_encoder_probe_defaults_to_legacy_and_names_a_new_run(tmp_path):
+    config=_minimal_fsq_config(tmp_path)
+    config.pop('fsq_autoencoder_mode')
+    config['fsq_autoencoder']={'mode':'norm_action','gripper_weight':.1}
+    _write_manifest(tmp_path,config)
+    original=train_settings(config)
+    assert original['fsq_encoder_mode']=='original'
+    config['fsq_encoder_mode']='original'
+    assert train_settings(config)['fsq_run_name']==original['fsq_run_name']
+    for spelling in ('separate','sperate','spaperate'):
+        config['fsq_encoder_mode']=spelling
+        separate=train_settings(config)
+        assert separate['fsq_encoder_mode']=='separate'
+        assert separate['fsq_run_name']==original['fsq_run_name']+'_separate'
+        assert separate['fsq_levels_str']==original['fsq_levels_str']
+    config['fsq_encoder_mode']='separate_full'
+    full=train_settings(config)
+    assert full['fsq_encoder_mode']=='separate_full'
+    assert full['fsq_run_name']==original['fsq_run_name']+'_separate_full'
+    assert full['fsq_levels_str']==original['fsq_levels_str']
+    config['fsq_autoencoder']={'mode':'raw'}
+    with pytest.raises(ValueError,match='separate_full requires'):
+        train_settings(config)
+    config['fsq_autoencoder']={'mode':'norm_action','gripper_weight':.1}
+    config['fsq_encoder_mode']='invalid'
+    with pytest.raises(ValueError,match='fsq_encoder_mode'):
+        train_settings(config)
+
+
 def test_fsq_frame_cache_completed_dir_can_be_injected_by_submitter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

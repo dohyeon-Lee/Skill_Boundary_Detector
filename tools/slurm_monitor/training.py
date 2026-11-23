@@ -66,13 +66,13 @@ def collect(project_root, allocations, known=(), history_days=3):
                 if isinstance(output, str) and Path(output).is_absolute():
                     outputs = [output]
             state = record.get("state")
-            if state not in {"RUNNING", "COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED"}:
+            if state not in {"RUNNING", "WAITING_FOR_WORKER", "COMPLETED", "FAILED", "CANCELLED", "INTERRUPTED"}:
                 continue
             allocation = latest.get(identifier, {})
             resource = small_json(record.get("resource_status_path", ""))
             if not isinstance(resource, dict):
                 resource = {}
-            reason = resource.get("reason", "")
+            reason = resource.get("reason") or record.get("reason", "")
             if state == "RUNNING" and resource.get("state") == "WAITING_FOR_MEMORY":
                 state = "WAITING_FOR_MEMORY"
             if state == "FAILED" and resource.get("state") == "CANCELLED":
@@ -84,13 +84,13 @@ def collect(project_root, allocations, known=(), history_days=3):
             ended = timestamp(record.get("ended_at", ""))
             if state == 'CANCELLED' and not ended and isinstance(stopped, dict) and stopped.get('ended_at'):
                 ended = datetime.fromtimestamp(stopped['ended_at'], timezone.utc).isoformat()
-            if state in {"RUNNING", "WAITING_FOR_MEMORY"} and allocation.get("terminal"):
+            if state in {"RUNNING", "WAITING_FOR_MEMORY", "WAITING_FOR_WORKER"} and allocation.get("terminal"):
                 # Even COMPLETED only proves the allocation ended, not its trainers.
                 state, ended = "INTERRUPTED", allocation.get("ended_at", "")
                 reason = "학습 종료 기록 없이 GPU 할당 종료: " + allocation["state"]
             row = {"kind": "training", "run_id": identity, "job_id": identifier,
                    "job_name": record.get("name") or launch.get("name") or path.parent.name,
-                   "state": state, "terminal": state not in {"RUNNING", "WAITING_FOR_MEMORY"},
+                   "state": state, "terminal": state not in {"RUNNING", "WAITING_FOR_MEMORY", "WAITING_FOR_WORKER"},
                    "submitted_at": timestamp(started), "started_at": timestamp(started), "ended_at": ended,
                    "exit_code": record.get("exit_code"), "outputs": outputs,
                    "work_dir": record.get("work_dir") or launch.get("cwd", ""),
@@ -100,7 +100,17 @@ def collect(project_root, allocations, known=(), history_days=3):
                    "resource_status_path": record.get("resource_status_path", ""),
                    "parent_run_id": record.get("parent_run_id", "")}
             row["training_progress"] = training_progress(row, logs)
-            if launch.get("environment", {}).get("DP_ABLATION_SETTINGS_JSON"):
+            build_env = launch.get("environment", {})
+            if (row["work_dir"].rstrip("/").endswith("/train_skills/build_data")
+                    and (build_env.get("ABC_SINGLE_GPU_BUILD") == "true"
+                         or build_env.get("LIBERO_SINGLE_GPU_BUILD") == "true")
+                    and build_env.get("SKILLSET_DIR")
+                    and (build_env.get("ABC_EXPECTED_EPISODES") or build_env.get("LIBERO_EXPECTED_EPISODES"))):
+                row["sbd_build_launch_path"] = str(manifest)
+            elif rows.get(key, {}).get("sbd_build_launch_path"):
+                row["sbd_build_launch_path"] = rows[key]["sbd_build_launch_path"]
+            if any(launch.get("environment", {}).get(key) for key in
+                   ("DP_ABLATION_SETTINGS_JSON", "DP_ABLATION_SETTINGS_FILE")):
                 row["sbd_eval_launch_path"] = str(manifest)
             elif rows.get(key, {}).get("sbd_eval_launch_path"):
                 row["sbd_eval_launch_path"] = rows[key]["sbd_eval_launch_path"]

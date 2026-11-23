@@ -793,6 +793,10 @@ class ActionSeqEncoder(nn.Module):
     attention, so z is invariant to the batch pad width. Exposes ``z_head`` /
     ``fsq`` under the same names as SplineFSQEncoder so quantizer swaps and
     codebook diagnostics reuse unchanged.
+
+    ``separate`` combines the two private arm encoders at each timestep before
+    common pooling. ``separate_full`` keeps pooling private as well, then
+    combines the two whole-skill summaries before the common latent head/FSQ.
     """
 
     def __init__(
@@ -810,6 +814,7 @@ class ActionSeqEncoder(nn.Module):
         clip_normalized_actions: bool = False,
         action_gripper_weight: float = 1.0,
         action_gripper_indices: list[int] | tuple[int, ...] = (-1,),
+        action_encoder_mode: str = "original",
     ):
         super().__init__()
         if hidden_dim % 2 or hidden_dim % n_heads:
@@ -829,23 +834,61 @@ class ActionSeqEncoder(nn.Module):
         self.action_gripper_indices = _resolved_feature_indices(
             action_gripper_indices, action_dim
         )
-        self.action_proj = nn.Linear(action_dim, hidden_dim)
-        layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=n_heads,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
-        self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        self.pool = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
+        self.action_encoder_mode = str(action_encoder_mode).strip().lower()
+        if self.action_encoder_mode not in {"original", "separate", "separate_full"}:
+            raise ValueError("action_encoder_mode must be original|separate|separate_full.")
+        if self.action_encoder_mode in {"separate", "separate_full"}:
+            if action_dim != 14 or self.action_gripper_indices != (6, 13):
+                raise ValueError("Separate-arm encoding requires ABC 14D actions with grippers [6,13].")
+            if hidden_dim % (2 * n_heads):
+                raise ValueError("Separate-arm hidden_dim must be divisible by 2 * n_heads.")
+            arm_width = hidden_dim // 2
+            self.left_action_proj = nn.Linear(7, arm_width)
+            self.right_action_proj = nn.Linear(7, arm_width)
+            def arm_encoder():
+                layer = nn.TransformerEncoderLayer(
+                    d_model=arm_width, nhead=n_heads, dim_feedforward=arm_width * 4,
+                    dropout=dropout, activation="gelu", batch_first=True, norm_first=True,
+                )
+                return nn.TransformerEncoder(layer, num_layers=n_layers)
+            self.left_encoder = arm_encoder()
+            self.right_encoder = arm_encoder()
+            # separate fuses corresponding timesteps before common pooling;
+            # separate_full fuses independently pooled whole-arm summaries.
+            self.arm_fusion = nn.Sequential(
+                nn.LayerNorm(hidden_dim), nn.Linear(hidden_dim, hidden_dim), nn.GELU(),
+            )
+        else:
+            # Preserve legacy parameter names and initialization order exactly.
+            self.action_proj = nn.Linear(action_dim, hidden_dim)
+            layer = nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=n_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.encoder = nn.TransformerEncoder(layer, num_layers=n_layers)
+        if self.action_encoder_mode == "separate_full":
+            self.left_query = nn.Parameter(torch.zeros(1, 1, arm_width))
+            self.right_query = nn.Parameter(torch.zeros(1, 1, arm_width))
+            self.left_pool = nn.MultiheadAttention(arm_width, n_heads, dropout=dropout, batch_first=True)
+            self.right_pool = nn.MultiheadAttention(arm_width, n_heads, dropout=dropout, batch_first=True)
+            self.left_out_norm = nn.LayerNorm(arm_width)
+            self.right_out_norm = nn.LayerNorm(arm_width)
+        else:
+            self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+            self.pool = nn.MultiheadAttention(hidden_dim, n_heads, dropout=dropout, batch_first=True)
         self.out_norm = nn.LayerNorm(hidden_dim)
         self.z_head = nn.Linear(hidden_dim, len(fsq_levels))
         self.fsq = FSQ(fsq_levels)
-        nn.init.trunc_normal_(self.query, std=0.02)
+        if self.action_encoder_mode == "separate_full":
+            nn.init.trunc_normal_(self.left_query, std=0.02)
+            nn.init.trunc_normal_(self.right_query, std=0.02)
+        else:
+            nn.init.trunc_normal_(self.query, std=0.02)
 
     @staticmethod
     def _sinusoidal_positions(steps: int, dim: int, device: torch.device) -> Tensor:
@@ -872,9 +915,31 @@ class ActionSeqEncoder(nn.Module):
         _ = start_pose, normalized
         bsize, steps, _ = actions.shape
         pad_mask = torch.arange(steps, device=actions.device)[None] >= lengths[:, None]
-        x = self.action_proj(actions)
-        x = x + self._sinusoidal_positions(steps, self.hidden_dim, actions.device)[None].to(x.dtype)
-        x = self.encoder(x, src_key_padding_mask=pad_mask)
+        if self.action_encoder_mode in {"separate", "separate_full"}:
+            left = self.left_action_proj(actions[..., :7])
+            right = self.right_action_proj(actions[..., 7:14])
+            positions = self._sinusoidal_positions(steps, self.hidden_dim // 2, actions.device)[None]
+            left = self.left_encoder(left + positions.to(left.dtype), src_key_padding_mask=pad_mask)
+            right = self.right_encoder(right + positions.to(right.dtype), src_key_padding_mask=pad_mask)
+            if self.action_encoder_mode == "separate_full":
+                left_summary, _ = self.left_pool(
+                    self.left_query.to(left.dtype).expand(bsize, -1, -1),
+                    left, left, key_padding_mask=pad_mask, need_weights=False,
+                )
+                right_summary, _ = self.right_pool(
+                    self.right_query.to(right.dtype).expand(bsize, -1, -1),
+                    right, right, key_padding_mask=pad_mask, need_weights=False,
+                )
+                summary = self.arm_fusion(torch.cat((
+                    self.left_out_norm(left_summary[:, 0]),
+                    self.right_out_norm(right_summary[:, 0]),
+                ), dim=-1))
+                return self.z_head(self.out_norm(summary))
+            x = self.arm_fusion(torch.cat((left, right), dim=-1))
+        else:
+            x = self.action_proj(actions)
+            x = x + self._sinusoidal_positions(steps, self.hidden_dim, actions.device)[None].to(x.dtype)
+            x = self.encoder(x, src_key_padding_mask=pad_mask)
         query = self.query.to(x.dtype).expand(bsize, -1, -1)
         pooled, _ = self.pool(query, x, x, key_padding_mask=pad_mask, need_weights=False)
         return self.z_head(self.out_norm(pooled[:, 0]))
@@ -3171,6 +3236,8 @@ class SplineFSQAEConfig:
     action_dim: int = 7
     action_space: str = "dataset"
     """Raw dataset/absolute_joint targets or DP-style delta_joint action sequences."""
+    action_encoder_mode: str = "original"
+    """original: joint encoder; separate: private encoders; separate_full: private encoders and pooling."""
     enc_dim: int = 8
     state_dim: int = 8
     n_control: int = 30
@@ -3430,6 +3497,11 @@ class SplineFSQAE(nn.Module):
             or not cfg.reconstructor_only or cfg.autoencoder_mode not in {"action", "norm_action"}
         ):
             raise ValueError("delta_joint FSQ requires the ABC 14D action-sequence reconstructor-only preset.")
+        cfg.action_encoder_mode = str(getattr(cfg, "action_encoder_mode", "original")).strip().lower()
+        if cfg.action_encoder_mode not in {"original", "separate", "separate_full"}:
+            raise ValueError("action_encoder_mode must be original|separate|separate_full.")
+        if cfg.action_encoder_mode in {"separate", "separate_full"} and cfg.encoder_arch != "action_seq":
+            raise ValueError("Separate-arm encoding requires an action-sequence autoencoder.")
         if cfg.terminator_termination_only and not cfg.reconstructor_only:
             cfg.terminator_progress = False
             cfg.terminator_termination = True
@@ -3782,6 +3854,7 @@ class SplineFSQAE(nn.Module):
         self.cfg = cfg
         if cfg.encoder_arch == "action_seq":
             self.encoder = ActionSeqEncoder(
+                action_encoder_mode=cfg.action_encoder_mode,
                 action_dim=cfg.action_dim,
                 hidden_dim=cfg.hidden_dim,
                 fsq_levels=cfg.fsq_levels,
@@ -5051,6 +5124,7 @@ class SplineFSQAE(nn.Module):
 # Fields added after v3 checkpoints already existed; loaders backfill defaults
 # so a pickled pre-probe dataclass cfg still builds the exact same model.
 _V3_CFG_BACKFILL = (
+    ("action_encoder_mode", "original"),
     ("encoder_length_token", True),
     ("encoder_arch", "spline"),
     ("autoencoder_mode", "legacy"),
@@ -5350,6 +5424,7 @@ def load_fsq_encoder(path: str | Path, device: str | torch.device = "cpu") -> tu
     cfg = _checkpoint_config(checkpoint)
     if cfg.encoder_arch == "action_seq":
         encoder = ActionSeqEncoder(
+            action_encoder_mode=cfg.action_encoder_mode,
             action_dim=cfg.action_dim,
             hidden_dim=cfg.hidden_dim,
             fsq_levels=cfg.fsq_levels,
@@ -8110,6 +8185,8 @@ def train_spline_fsqae(
     if resume_from:
         checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
         resume_cfg = _checkpoint_config(checkpoint)
+        if resume_cfg.action_encoder_mode != cfg.action_encoder_mode:
+            raise ValueError("Cannot resume FSQ across different encoder modes; use a new run.")
         resume_directional_pmaxes = resolve_boundary_augmentation_pmaxes(
             getattr(resume_cfg, "boundary_aug_pmax", 0),
             early_start_pmax=getattr(

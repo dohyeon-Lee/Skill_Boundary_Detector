@@ -69,6 +69,9 @@ class TrainPipelineConfig(HubMixin):
     dataloader_prefetch_factor: int = 4
     dataloader_pin_memory: bool = False
     dataloader_persistent_workers: bool = False
+    # Explicit spawn avoids inheriting decoder/native-thread locks from a
+    # model-initialized parent. None preserves each dataset's existing default.
+    dataloader_multiprocessing_context: str | None = None
     batch_size: int = 8
     steps: int = 100_000
     eval_freq: int = 20_000
@@ -189,6 +192,8 @@ class TrainPipelineConfig(HubMixin):
             raise ValueError(
                 f"dataloader_timeout_s must be non-negative, got {self.dataloader_timeout_s}."
             )
+        if self.dataloader_multiprocessing_context not in (None, "spawn", "fork", "forkserver"):
+            raise ValueError("dataloader_multiprocessing_context must be spawn|fork|forkserver or None.")
         self.transition_oversampling.validate()
         if self.transition_oversampling.enabled:
             standalone_terminator = (

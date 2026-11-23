@@ -61,6 +61,8 @@ class Args:
     """Optional task-selection stats JSON; defaults to raw_dataset_dir/meta/stats.json."""
     action_space: str = "dataset"
     """dataset/absolute_joint keep raw targets; delta_joint follows DP's joint deltas."""
+    action_encoder_mode: str = "original"
+    """original | separate | separate_full. separate_full also pools each arm independently; one shared FSQ."""
 
     # ── model
     hidden_dim: int = 256
@@ -488,6 +490,7 @@ def main(args: Args) -> None:
     print(
         f"[FSQ] autoencoder mode: {args.autoencoder_mode}; "
         f"encoder arch: {args.encoder_arch}, length token: {args.encoder_length_token}, "
+        f"action encoder mode: {args.action_encoder_mode}, "
         f"start-state conditioning: {args.start_state_conditioning}"
     )
     print(
@@ -696,6 +699,7 @@ def main(args: Args) -> None:
     cfg = SplineFSQAEConfig(
         action_dim=action_dim,
         action_space=args.action_space,
+        action_encoder_mode=args.action_encoder_mode,
         enc_dim=enc_dim,
         state_dim=state_dim,
         n_control=args.n_control,

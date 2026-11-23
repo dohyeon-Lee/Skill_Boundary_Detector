@@ -462,6 +462,8 @@ def _allowed_pi05_missing_key(key: str, config: SkillExpertConfig) -> bool:
         return False
     if config.vlm_termination_enabled and key.startswith("model.vlm_termination_head."):
         return True
+    if config.uses_detached_termination_bottleneck and key.startswith("model.vlm_termination_bottleneck."):
+        return True
     if config.uses_dual_bottleneck and key.startswith("model.lower_"):
         return True
     if config.dual_uses_start_proprio and key.startswith("model.start_proprio_condition."):
@@ -3262,6 +3264,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
     def isolated_main_optimizer_grad_groups(self) -> dict[str, list[nn.Parameter]]:
         """Clip parameter-disjoint auxiliaries independently from the VSA graph."""
         groups: dict[str, list[nn.Parameter]] = {}
+        if self.config.uses_detached_termination_bottleneck:
+            parameters = [p for p in self.model.vlm_termination_bottleneck.parameters() if p.requires_grad]
+            if parameters:
+                groups["vlm_termination"] = parameters
         if (
             self.config.newtask_joint_enabled
             and self.config.newtask_joint_terminator_enabled

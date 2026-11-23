@@ -23,7 +23,7 @@ DEFAULTS = {
 CONTROLS = {
     "sbd_prediction_horizon": 1, "gmm_components": 5, "replan_interval": 8,
     "nms_frames": 45, "smooth_window": 7, "polyorder": 4,
-    "score_power": 1, "peak_curvature_scale": 0,
+    "score_power": 1, "peak_curvature_scale": 0, "initial_mask": True,
 }
 RECIPE_KEYS = {"probe_variants", "cluster_variants", "boundary_variants", "experiments"}
 
@@ -132,6 +132,13 @@ def resolve_config(raw, *, domain="abc"):
         if scope not in {"selected", "source_tasks", "dataset"}:
             raise ValueError("ABC pca_scope must be selected|source_tasks|dataset")
         scope_tag = f"pca_{scope}"
+        if "n_tasks" in cfg:
+            base_name = base_name.removesuffix("_" + scope_tag)
+            selection = cfg["n_tasks"]
+            tag = "all" if isinstance(selection, str) and selection.strip().lower() == "all" else str(_integer(selection, "n_tasks"))
+            task_tag = f"ntasks{tag}"
+            if not base_name.endswith("_" + task_tag):
+                base_name += "_" + task_tag
         if not base_name.endswith("_" + scope_tag):
             base_name += "_" + scope_tag
     cfg["output_name"] = f"{prefix}_{base_name}"
@@ -148,6 +155,10 @@ def resolve_config(raw, *, domain="abc"):
     allowed_centers = {"previous_action", "current_gt", "pure_noise"}
     if center not in allowed_centers:
         raise ValueError(f"{domain.upper()} gaussian_center must be current_gt|previous_action|pure_noise")
+    initial_mask = cfg.get("initial_mask", True)
+    if not isinstance(initial_mask, bool):
+        raise ValueError("initial_mask must be true or false")
+    initial_mask_frames = history if initial_mask else 0
     if RECIPE_KEYS & raw.keys():
         if not RECIPE_KEYS.issubset(raw) or set(CONTROLS) & raw.keys():
             raise ValueError("Use compact SBD controls or a complete legacy recipe, not both")
@@ -160,7 +171,7 @@ def resolve_config(raw, *, domain="abc"):
                 raise ValueError("Long previous_action recipes require a new _hold_future probe name; use compact controls")
         model["sbd_prediction_horizon"] = int(cfg["probe_variants"][0].get("descriptor_temporal_length", maximum))
         for boundary in cfg["boundary_variants"]:
-            boundary["initial_mask_frames"] = history
+            boundary["initial_mask_frames"] = initial_mask_frames
         return cfg, model
 
     domain_controls = {} if domain == "abc" else {"replan_interval": 5, "nms_frames": 15, "score_power": 2}
@@ -197,6 +208,7 @@ def resolve_config(raw, *, domain="abc"):
     # The PCA basis can be shared, but reports from different probe
     # centers must never overwrite each other.
     model["output_suffix"] += f"_{center}"
+    model["output_suffix"] += f"_imask{initial_mask_frames}"
     horizon_tag = f"true_h{length}" if length == maximum else f"future{maximum}_h{length}_descriptor"
     probe_name = f"iid96_r{replan}_{horizon_tag}_{center}"
     if maximum > 1 and center == "previous_action":
@@ -228,11 +240,11 @@ def resolve_config(raw, *, domain="abc"):
         "polyorder": polyorder, "nms_frames": nms, "prominence": 0.0, "terminal_mask_frames": 0,
         "terminal_mask_mode": "abc_terminal_release" if domain == "abc" else "fixed",
         "min_skill_len": 15 if domain == "abc" else 10,
-        "initial_mask_frames": history,
+        "initial_mask_frames": initial_mask_frames,
         "peak_curvature_scale": curvature,
     }]
     if domain == "libero":
-        cfg["boundary_variants"][0]["terminal_mask_frames"] = 10
+        cfg["boundary_variants"][0]["terminal_mask_frames"] = 24
     cfg["experiments"] = [{
         "name": f"{horizon_tag}_{center}_unanchored", "probe": probe_name, "cluster": cluster_name,
         "metric": "cosine" if domain == "abc" else "covariance_gated_cosine", "boundary": boundary_name,

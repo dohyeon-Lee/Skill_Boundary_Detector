@@ -147,7 +147,6 @@ else
     --output_dir="${OUTPUT_DIR}"
     --job_name="${RUN_NAME}"
     --batch_size="${BATCH_SIZE}"
-    --num_workers="${NUM_WORKERS}"
     --steps="${STEPS}"
     --log_freq="${LOG_FREQ}"
     --save_freq="${SAVE_FREQ}"
@@ -161,6 +160,9 @@ fi
 # runs; keep the saved model/optimizer contract unchanged. The shared trainer
 # prunes local checkpoints only after a complete save, or archives verified copies.
 TRAIN_ARGS+=(
+  --num_workers="${NUM_WORKERS}"
+  --dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS:-false}"
+  --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR:-4}"
   --transition_oversampling.enabled="${TRANSITION_OVERSAMPLING_ENABLED:-false}"
   --transition_oversampling.percent="${TRANSITION_OVERSAMPLING_PERCENT:-25}"
   --transition_oversampling.distribution="${TRANSITION_OVERSAMPLING_DISTRIBUTION:-uniform}"
@@ -174,6 +176,9 @@ TRAIN_ARGS+=(
   --keep_checkpoints="${KEEP_CHECKPOINTS:--1}"
   --protect_checkpoints="${PROTECT_CHECKPOINTS:-[]}"
 )
+if [ -n "${DATALOADER_MULTIPROCESSING_CONTEXT:-}" ]; then
+  TRAIN_ARGS+=(--dataloader_multiprocessing_context="${DATALOADER_MULTIPROCESSING_CONTEXT}")
+fi
 
 PYTORCH_ALLOC_CONF=expandable_segments:True accelerate launch --num_processes="${NUM_GPUS}" \
   "${PROJECT_ROOT}/.venv/bin/lerobot-train" "${TRAIN_ARGS[@]}"

@@ -1,7 +1,18 @@
+# Dataset and FSQ come from ../stage1_common_config.yaml:
+# put_relative / absolute_joint / original / epoch 2000 / FSQ3332.
 stage1_common: true
 stage1_component: VSA
 
-run: {suffix: "base"}
+# LIBERO와 같은 독립 termination bottleneck. VLM/Expert로 역전파하지 않으며
+# 본류와 gradient clipping도 분리. 종료 시점·이전 스킬 조건은 GT 기준.
+vlm_termination:
+  enabled: true
+  loss_weight: 1.0
+  target_sigma: 1.0
+  positive_weight: 2.0
+  post_end_steps: 10
+
+run: {suffix: ""}
 
 vision:
   dino_model: models/dinov3-vits16
@@ -10,7 +21,7 @@ vision:
 
 architecture:
   # Same current LIBERO main model; only the explicit ABC interfaces below differ.
-  name: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio
+  name: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach
   expert_variant: gemma_300m
   attention_backend: eager
   max_state_dim: 32

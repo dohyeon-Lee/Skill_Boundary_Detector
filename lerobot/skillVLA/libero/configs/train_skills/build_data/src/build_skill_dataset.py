@@ -136,6 +136,8 @@ class Args:
     """처리할 task index 목록. None이면 전체 task 처리."""
     source_tasks: str = ""
     """Comma-separated ABC official source-task IDs; empty keeps every source task."""
+    episode_ids_path: str = ""
+    """Optional JSON episode shard. Only processing is filtered; PCA still fits the full dataset."""
     # ── Diffusion scheduler ──────────────────────────────────────────────────
     noise_scheduler_type: str = "DDIM"
     num_inference_steps: int = 10
@@ -202,7 +204,7 @@ class Args:
     score_power: float = 1.0
     """Non-negative contrast power applied after SG smoothing."""
     initial_mask_frames: int | None = None
-    """Inherited from checkpoint n_obs_steps; excluded before smoothing/thresholding."""
+    """None inherits checkpoint history; 0 disables the initial mask."""
     terminal_mask_frames: int = 0
     """Tail of the valid detector curve excluded before smoothing/thresholding."""
     terminal_mask_mode: Literal["fixed_frames", "abc_terminal_release"] = "fixed_frames"
@@ -251,7 +253,7 @@ def _threshold_for_episode(
     if args.boundary_threshold_mode == "global_mean" and global_threshold is not None:
         return float(global_threshold)
     if not len(sg_vals):
-        return 0.0
+        return float("nan")
     return float(np.mean(sg_vals)) * args.boundary_threshold_scale
 
 
@@ -645,9 +647,9 @@ def _prepare_boundary_curve(
         valid_count = len(timestamps)
     valid_start = int(np.searchsorted(timestamps, args.initial_mask_frames or 0, side="left"))
     if valid_count <= valid_start:
-        raise ValueError(
-            "Initial/terminal masks leave no detector anchors."
-        )
+        # Same policy as DP/eval: keep the episode and the masks, but do not
+        # fabricate scores or peaks where there are no valid detector anchors.
+        return timestamps, np.full(len(values), np.nan, dtype=np.float64), valid_count
 
     base = _boundary_savgol(
         values[valid_start:valid_count], args.smooth_window, args.savgol_polyorder
@@ -702,6 +704,8 @@ def _detect_boundaries(
         replan_ts, div_cos, args, terminal_mask_start_frame
     )
     valid_start = int(np.searchsorted(timestamps, args.initial_mask_frames or 0, side="left"))
+    if valid_count <= valid_start:
+        return [0, n_frames]
     valid_sg = sg_vals[valid_start:valid_count]
     valid_ts = timestamps[valid_start:valid_count]
     threshold = _threshold_for_episode(valid_sg, args, global_threshold)
@@ -788,7 +792,7 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         valid_ts.tolist(),
         threshold=threshold,
         min_distance=nms_dist,
-        start_margin=max(0, int(replan_ts[0]) + nms_dist - int(valid_ts[0])),
+        start_margin=(max(0, int(replan_ts[0]) + nms_dist - int(valid_ts[0])) if len(valid_ts) else 0),
         include_last_if_peak=_terminal_edge_is_peak(
             div_cos, args, valid_count, terminal_mask_start_frame, valid_start
         ),
@@ -842,6 +846,7 @@ def _save_boundary_curve(curves_dir: Path, ep_id: int, task_id: int, replan_ts,
         replan_ts=replan_ts, div_cos=div_cos, sg_vals=sg_vals,
         threshold_valid_count=np.array(valid_count, dtype=np.int64),
         threshold_valid_start=np.array(valid_start, dtype=np.int64),
+        no_valid_boundary_anchors=np.array(valid_count <= valid_start),
         initial_mask_frames=np.array(args.initial_mask_frames or 0, dtype=np.int64),
         initial_mask_until_frame=np.array(args.initial_mask_frames or 0, dtype=np.int64),
         terminal_mask_frames=np.array(args.terminal_mask_frames, dtype=np.int64),
@@ -1092,15 +1097,16 @@ def main(args: Args) -> None:
                     order_name='savgol_polyorder')
     # Read metadata only, including for CPU-only cached-curve segmentation.
     history = int(json.loads((Path(args.policy_path) / "config.json").read_text())["n_obs_steps"])
-    if history < 1 or (args.initial_mask_frames is not None and args.initial_mask_frames != history):
-        raise ValueError("initial_mask_frames must equal checkpoint n_obs_steps.")
-    args.initial_mask_frames = history
-    print(f"Initial SBD mask: [0, {history}) frames (checkpoint history)")
+    if history < 1 or args.initial_mask_frames not in (None, 0, history):
+        raise ValueError("initial_mask_frames must be 0 or checkpoint n_obs_steps.")
+    if args.initial_mask_frames is None:
+        args.initial_mask_frames = history
+    print(f"Initial SBD mask: [0, {args.initial_mask_frames}) frames (checkpoint history={history})")
     dataset_dir = Path(args.dataset_dir)
     output_dir = Path(args.output_dir)
     if args.use_cached_curves:
         manifest = json.loads((output_dir / "skillset_manifest.json").read_text())
-        if manifest.get("detector", {}).get("initial_mask_frames") != history:
+        if manifest.get("detector", {}).get("initial_mask_frames") != args.initial_mask_frames:
             raise ValueError("Cached skillset predates/differs from the initial history mask; use a separate build output.")
     probe_mode = _infer_probe_mode(args)
     contract = json.loads(args.segmentation_contract_json) if args.segmentation_contract_json else None
@@ -1210,8 +1216,16 @@ def main(args: Args) -> None:
                 {int(e): int(t) for e, t in zip(_df["episode_index"], _df["task_index"])}
             )
 
+    selected_episodes = None
+    if args.episode_ids_path:
+        ids = json.loads(Path(args.episode_ids_path).read_text())["episode_ids"]
+        selected_episodes = set(map(int, ids))
+        if not ids or len(selected_episodes) != len(ids) or not selected_episodes.issubset(_ep_task):
+            raise ValueError("episode_ids_path must contain unique, existing episode IDs.")
+
     def _episodes_for_task(tid: int) -> list[int]:
-        return sorted(ep for ep, ti in _ep_task.items() if ti == tid)
+        return sorted(ep for ep, ti in _ep_task.items() if ti == tid
+                      and (selected_episodes is None or ep in selected_episodes))
 
     video_cols = [c for c in episodes_meta.columns
                   if c.startswith("videos/") and c.endswith("/chunk_index")]
@@ -1474,6 +1488,8 @@ def main(args: Args) -> None:
             continue
         target_lang = task_row.iloc[0]["task"]          # for display / skill metadata
         episode_ids = _episodes_for_task(task_id)        # by task_index, NOT language (see note above)
+        if not episode_ids:
+            continue
         n_total_eps += len(episode_ids)
         print(f"\nTask {task_id}: '{target_lang}' — {len(episode_ids)} episodes")
 

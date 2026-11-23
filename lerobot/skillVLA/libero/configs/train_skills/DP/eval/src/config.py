@@ -38,7 +38,8 @@ def main():
     args = parser.parse_args()
     settings = build_settings(args.config)
     if args.shell:
-        load_workflow("config")._shared_module().print_shell(settings)
+        workflow = load_workflow("config")
+        workflow._shared_module().print_shell(workflow.shell_settings(settings))
     else:
         print(json.dumps(settings, indent=2))
 

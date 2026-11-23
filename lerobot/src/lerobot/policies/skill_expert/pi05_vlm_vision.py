@@ -17,6 +17,7 @@ from .independent_skill_planner import IndependentSkillPlannerExpert
 from .vanila import VanilaSkillExpert
 from .layerwise_cond_bottleneck import _LayerwiseConditionReader, LayerwiseCondBottleneckSkillExpert
 from .wrist_patch_alignment import WristPatchAlignmentHead
+from .detached_termination import DetachedLayerwiseTerminationBottleneck
 
 
 def conditioning_prompts(state, coordinates, uv, valid):
@@ -111,10 +112,24 @@ class Pi05VLMVisionMixin:
         self._final_right_wrist_patch_tokens = None
         self._last_vlm_termination_logits = None
         self._vlm_termination_image_tokens = None
-        if config.vlm_termination_enabled:
+        if config.uses_detached_termination_bottleneck:
+            # Do not change the remaining VSA modules' random initialization.
+            with torch.random.fork_rng(devices=[]):
+                self.vlm_termination_bottleneck = DetachedLayerwiseTerminationBottleneck(
+                    width, len(self.cond_encoder.model.layers),
+                )
+        elif config.vlm_termination_enabled:
             self.vlm_termination_head = nn.Sequential(
                 nn.LayerNorm(width), nn.Linear(width, 256), nn.SiLU(), nn.Linear(256, 1),
             )
+
+    def _apply(self, fn, recurse=True):
+        super()._apply(fn, recurse=recurse)
+        branch = getattr(self, "vlm_termination_bottleneck", None)
+        if branch is not None:
+            # Match the existing narrow VSA readers' FP32 update precision.
+            branch.float()
+        return self
 
     def _condition_tokens(self, images, *, batch_size=None, skill_code=None):
         del batch_size, skill_code
@@ -141,7 +156,9 @@ class Pi05VLMVisionMixin:
             raise ValueError("All VLM cameras must have matching image token shapes.")
         memory = torch.cat(tokens, dim=1)
         if self.config.vlm_termination_enabled and self.training:
-            self._vlm_termination_image_tokens = memory
+            self._vlm_termination_image_tokens = (
+                memory.detach() if self.config.uses_detached_termination_bottleneck else memory
+            )
         return memory
 
     def _project_condition_state(self, state, focus_uv=None, skill_code=None, end_pose=None):
@@ -218,18 +235,40 @@ class Pi05VLMVisionMixin:
         dtype = next(self.vlm_termination_head.parameters()).dtype
         return self.vlm_termination_head(pooled.to(dtype)).float().squeeze(-1)
 
+    def _termination_latent_step(self, index, latent, hidden, valid):
+        branch = self.vlm_termination_bottleneck
+        # Recompute only the private reader, separately from the VLM checkpoint.
+        if self._checkpoint_layer("vlm", index, len(branch.readers)):
+            return torch.utils.checkpoint.checkpoint(
+                branch.step, index, latent, hidden.detach(), valid,
+                use_reentrant=False, preserve_rng_state=True,
+            )
+        return branch.step(index, latent, hidden, valid)
+
+    def _embed_termination_text(self, state, skill_code, end_pose, device):
+        uv, valid_uv, _ = self._split_uv_goal(end_pose)
+        # Match the current VSA prefix exactly: ABC uses 14 real joints,
+        # excluding padding up to max_state_dim in both past and eval routes.
+        prompt_state = (
+            state[:, : int(self.config.skill_plan_state_dim)]
+            if getattr(self.config, "bimanual_spatial_auxiliary", False)
+            else state
+        )
+        return self._embed_condition_text(
+            (prompt_state, self._code_to_zq(skill_code), uv, valid_uv), device,
+        )
+
     def vlm_termination_from_image_tokens(self, image_tokens, state, skill_code, end_pose):
         """Recondition shared image embeddings for post-end skill positives.
 
-        This branch runs only the shared VLM and its termination head, with no
-        Action Expert, bottleneck readers, start-state input or cache mutation.
+        Never runs an Action Expert, VSA bottleneck or start-state input, and
+        never mutates action caches. The detached variant uses private readers.
         """
         if not self.config.vlm_termination_enabled:
             raise RuntimeError("Shared-VLM termination is disabled.")
-        uv, valid_uv, _ = self._split_uv_goal(end_pose)
-        text, text_mask = self._embed_condition_text(
-            (state, self._code_to_zq(skill_code), uv, valid_uv), image_tokens.device,
-        )
+        if self.config.uses_detached_termination_bottleneck:
+            return self._detached_termination_from_image_tokens(image_tokens, state, skill_code, end_pose)
+        text, text_mask = self._embed_termination_text(state, skill_code, end_pose, image_tokens.device)
         hidden = torch.cat((image_tokens, text), dim=1)
         valid = torch.cat((torch.ones(image_tokens.shape[:2], device=hidden.device, dtype=torch.bool), text_mask), dim=1)
         allowed = valid[:, None, None, :].expand(-1, 1, hidden.shape[1], -1)
@@ -247,6 +286,26 @@ class Pi05VLMVisionMixin:
                 hidden = self._vlm_hidden_step(*args)
         return self._vlm_termination_readout(hidden, valid)
 
+    def _detached_termination_from_image_tokens(self, image_tokens, state, skill_code, end_pose):
+        # Past conditions retain their own skill and UV at the same frame.
+        # Extra VLM passes need no shared-trunk activation graph.
+        with torch.no_grad():
+            text, text_mask = self._embed_termination_text(state, skill_code, end_pose, image_tokens.device)
+            hidden = torch.cat((image_tokens.detach(), text), dim=1)
+            valid = torch.cat((torch.ones(image_tokens.shape[:2], device=hidden.device,
+                                         dtype=torch.bool), text_mask), dim=1)
+            allowed = valid[:, None, None, :].expand(-1, 1, hidden.shape[1], -1)
+            mask = torch.where(allowed, 0.0, OPENPI_ATTENTION_MASK_VALUE).to(hidden.dtype)
+            positions = (valid.long().cumsum(1) - 1).clamp_min(0)
+            rotary = self.cond_encoder.model.rotary_emb(hidden, positions)
+        branch = self.vlm_termination_bottleneck
+        latent = branch.initial(hidden.shape[0])
+        for index in range(len(branch.readers)):
+            with torch.no_grad():
+                hidden = self._vlm_hidden_step(index, hidden, mask, positions, rotary)
+            latent = self._termination_latent_step(index, latent, hidden, valid)
+        return branch.readout(latent)
+
     def take_vlm_termination_outputs(self):
         logits, memory = self._last_vlm_termination_logits, self._vlm_termination_image_tokens
         self._last_vlm_termination_logits = self._vlm_termination_image_tokens = None
@@ -263,6 +322,8 @@ class Pi05VLMVisionMixin:
         positions = (valid.long().cumsum(1) - 1).clamp_min(0)
         rotary = self.cond_encoder.model.rotary_emb(hidden, positions)
         latent = self._initial_condition_latent(hidden.shape[0])
+        term_branch = getattr(self, "vlm_termination_bottleneck", None)
+        term_latent = term_branch.initial(hidden.shape[0]) if term_branch is not None else None
         latents = []
         for index in range(len(self.cond_encoder.model.layers)):
             args = (index, hidden, latent, mask, positions, rotary, count)
@@ -272,8 +333,11 @@ class Pi05VLMVisionMixin:
             else:
                 hidden, latent = self._vlm_layer_step(*args)
             latents.append(latent)
+            if term_branch is not None:
+                term_latent = self._termination_latent_step(index, term_latent, hidden, valid)
         if self.config.vlm_termination_enabled:
-            logits = self._vlm_termination_readout(hidden, valid)
+            logits = (term_branch.readout(term_latent) if term_branch is not None
+                      else self._vlm_termination_readout(hidden, valid))
             self._last_vlm_termination_logits = logits if self.training else logits.detach()
         self._on_final_condition_hidden(hidden[:, :count])
         self._on_final_bottleneck_latent(latent)

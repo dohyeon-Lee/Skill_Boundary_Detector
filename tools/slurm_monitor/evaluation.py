@@ -7,9 +7,11 @@ from pathlib import Path
 import re
 
 if __package__:
+    from .sbd_build import progress as build_progress
     from .sbd_evaluation import progress as sbd_progress
     from .slurm import read_log
 else:
+    from sbd_build import progress as build_progress
     from sbd_evaluation import progress as sbd_progress
     from slurm import read_log
 
@@ -110,6 +112,13 @@ class Evaluations:
         if row.get("allocation_only"):
             return {}
         result = {}
+        if row.get("sbd_build_launch_path"):
+            try:
+                progress = build_progress(self, row)
+                return {"evaluation_progress": progress, "outputs": [progress["output_dir"]],
+                        "output_source": "전체 빌드 실행 설정"}
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                return {"evaluation_error": "전체 빌드 진행률을 확인할 수 없습니다. 다음 조회에서 다시 확인합니다."}
         if row.get("sbd_eval_launch_path"):
             try:
                 progress = sbd_progress(self, row, read_log)

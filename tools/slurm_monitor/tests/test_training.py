@@ -56,6 +56,18 @@ def test_timeout_does_not_claim_unfinished_training_completed(monitor):
     assert "TIMEOUT" in monitor.sent[0][1]
 
 
+def test_worker_wait_is_visible_and_not_reported_as_started_or_completed(monitor):
+    key = record(monitor, state='WAITING_FOR_WORKER', reason='worker recovering')
+    monitor.poll()
+    row = next(r for r in monitor.snapshot()['jobs'] if r['key'] == key)
+    assert row['state'] == 'WAITING_FOR_WORKER' and not row['terminal']
+    assert row['reason'] == 'worker recovering' and not row['can_cancel']
+    assert not monitor.deliver_one()
+    monitor.slurm.rows[0].update(state='TIMEOUT', terminal=True, ended_at='2026-11-09T03:36:33')
+    monitor.poll()
+    assert monitor.records[key]['state'] == 'INTERRUPTED'
+
+
 def test_individual_stop_preserves_allocation_other_run_and_suppresses_auto_resume(monitor, monkeypatch):
     import monitor as module
     run = 'a' * 32

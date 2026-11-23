@@ -4,7 +4,7 @@
   "output_dir": "/data1/dohyeon/Skill_Boundary_Detector/lerobot/skillVLA/libero/configs/train_skills/DP/eval/outputs/trans_small_libero90_obs20_future24_tasks0_9_20ep_100k_diff_pca_dataset_24_5_5_15_7_4_1_0_current_gt/src",
   "cache_source_dir": "",
   "cache_source_dirs": [],
-  "policy_checkpoint_override": "/data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/DP/libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_fresh_20261119/checkpoints/100000/pretrained_model",
+  "policy_checkpoint_override": "/data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/DP/libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_fresh/checkpoints/100000/pretrained_model",
   "task_id_space": "suite",
   "target_task": "libero_90",
   "task_ids": [
@@ -126,7 +126,7 @@
     "dataset_dir": "/data1/dohyeon/Skill_Boundary_Detector/dataset_filtered/libero_90_full_full",
     "dataset_marker_sha256": "c56ba44f4bb0bd49db0a76f208edeaedf6d5a4edc18e0ccb96cd36614ed0917a",
     "source_tasks": [],
-    "policy_path": "/data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/DP/libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_fresh_20261119/checkpoints/100000/pretrained_model",
+    "policy_path": "/data1/dohyeon/Skill_Boundary_Detector/outputs_filtered/DP/libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_fresh/checkpoints/100000/pretrained_model",
     "checkpoint_sha256": {
       "config.json": "e50cd4ad3edc0b4395861f01657501835b59ca69b412bba27aed2d5d432e3c09",
       "model.safetensors": "bdcdc7caf926749e5bfed424dd0f6ce05169e322ed20a82169dc766ba0925c2f",

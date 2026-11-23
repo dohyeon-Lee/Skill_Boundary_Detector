@@ -1,17 +1,20 @@
-# FSQ codebook evaluation for the selected ABC grab_clutter checkpoint.
+# ABC put_relative: compare the three completed 2000-epoch FSQ models.
 # Model architecture, quantizer levels, and training skillset come from the checkpoint.
 
 fsq_eval_workspace: lerobot/skillVLA/abc/configs/train_skills/FSQ/eval
-# HTML label follows run_name; output is outputs/<run_name>/epochNNNN/index.html.
+# Each run keeps its own report; the comparison page is under output_name/compare.
 fsq_eval_models:
-  - run_name: FSQ3332_contrastiveON_routeON_loss_abc_grab_clutter_absolute_joint_jit30
+  - run_name: FSQ3332_contrastiveON_routeON_loss_abc_put_relative_absolute_joint_jit30
+  - run_name: FSQ3332_contrastiveON_routeON_loss_abc_put_relative_delta_joint_jit30_delta_joint_separate_full
+  - run_name: FSQ3332_contrastiveON_routeON_loss_abc_put_relative_absolute_joint_jit30_separate_full
 fsq_eval_checkpoint: 2000
+output_name: abc_put_relative_fsq3332_epoch2000
 
 # ABC episodes are read directly from abc_sim_all metadata and official stacked
-# camera videos. task_ids are the 24 language prompts inside grab_clutter.
+# camera videos. Use every training prompt with at least five skill episodes.
 episode_source: dataset
-target_task: grab_clutter
-task_ids: [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82]
+target_task: put_relative
+task_ids: all
 episodes_per_task: 5
 episode_selection: first
 episode_ids: []

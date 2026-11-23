@@ -556,6 +556,33 @@ def test_training_metrics_keep_abbreviations_and_exact_checkpoint_steps():
                                 "INFO step:1K smpl:16K\n") == (1000, 100000, True)
 
 
+def test_fsq_epoch_logs_resolve_output_and_progress_without_loading_checkpoints(tmp_path):
+    output = str(tmp_path / 'FSQ3332_put_relative')
+    text = (f'Output    : {output}\n[FSQ] Loaded 10258 skills\n'
+            '[FSQ-v3]   50/2000 train=0.15 pair-w=0 val=0.14\n'
+            '[FSQ-v3]  170/2000 train=0.14 pair-w=0.1\n')
+    assert slurm.output_paths(text) == [output]
+    row = {**job(), 'job_name': 'ABC_FSQ', 'work_dir': '/repo/train_skills/FSQ',
+           'outputs': slurm.output_paths(text)}
+    progress = slurm.training_progress(row, {'/fsq.out': text})[0]
+    assert (progress['step'], progress['total'], progress['unit']) == (170, 2000, 'epoch')
+    assert progress['output'] == output and progress['approximate'] is False
+    # FSQ model tensors are not LeRobot training-state files. Never use an
+    # unrelated/stale step counter from an output directory as epoch progress.
+    checkpoint = Path(output) / 'checkpoints/last/training_state'
+    checkpoint.mkdir(parents=True)
+    (checkpoint / 'training_step.json').write_text('{"step":100000}')
+    assert slurm.training_progress(row, {'/fsq.out': text})[0]['step'] == 170
+    assert slurm.training_progress({**row, 'job_name': 'FSQ_eval'}, {'/log': text}) == []
+
+
+def test_fsq_initialization_does_not_claim_calibration_is_a_finished_epoch():
+    text = ('schedule : epochs=2000\n[FSQ-v3] trajectories=10258 train=9231 val=1027\n'
+            '[FSQ-v3] z_head init calibration: samples=9231, codebook 7->54 active\n')
+    progress = slurm.training_progress({**job(), 'job_name': 'ABC_FSQ'}, {'/log': text})[0]
+    assert (progress['step'], progress['total'], progress['unit']) == (None, 2000, 'epoch')
+
+
 def test_fresh_pi05_progress_has_target_before_any_checkpoint(tmp_path):
     output = str(tmp_path / 'model')
     row = {**job(), 'job_name': 'pi05_ABC_PT', 'work_dir': '/repo/abc/train_pi05/PT', 'outputs': [output]}

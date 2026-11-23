@@ -9,7 +9,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))
-from train_skills_config import as_bool, as_list, get_value, load_config, print_shell  # noqa: E402
+from train_skills_config import as_bool, as_list, load_config, print_shell  # noqa: E402
+
+
+def get_value(cfg, key, default=None):
+    """DP evaluation uses merged YAML/defaults, never inherited shell settings."""
+    return cfg.get(key, default)
 
 
 _DENOISING_SUMMARY_METRICS = {

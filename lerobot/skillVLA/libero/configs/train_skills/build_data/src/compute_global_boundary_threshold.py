@@ -70,6 +70,7 @@ def main() -> None:
     initial_masks: set[int] = set()
     episode_ids: set[int] = set()
     skipped_episode_ids: set[int] = set()
+    no_anchor_episode_ids: set[int] = set()
     for marker_path in too_short_paths:
         marker = json.loads(marker_path.read_text())
         if marker.get("reason") != "episode_shorter_than_dp_future_horizon":
@@ -95,7 +96,7 @@ def main() -> None:
                 if "threshold_valid_count" in curve
                 else len(values)
             )
-            if not 0 <= valid_start < valid_count <= len(values):
+            if not (0 <= valid_start <= len(values) and 0 <= valid_count <= len(values)):
                 raise RuntimeError(
                     f"Invalid threshold_valid_count={valid_count} for "
                     f"{len(values)} points: {curve_path}"
@@ -103,6 +104,10 @@ def main() -> None:
             if initial_mask > 0:
                 if "replan_ts" not in curve or valid_start != int(np.searchsorted(curve["replan_ts"], initial_mask, side="left")):
                     raise RuntimeError(f"Missing/inconsistent initial mask indices: {curve_path}")
+            no_anchors = valid_count <= valid_start
+            marked_empty = bool(np.asarray(curve["no_valid_boundary_anchors"]).item()) if "no_valid_boundary_anchors" in curve else False
+            if no_anchors != marked_empty or (no_anchors and not np.isnan(values).all()):
+                raise RuntimeError(f"Missing/inconsistent empty-mask marker: {curve_path}")
             values = values[valid_start:valid_count]
         if ep_id in episode_ids:
             raise RuntimeError(f"Duplicate episode curve for ep{ep_id:05d}: {curve_path}")
@@ -110,9 +115,11 @@ def main() -> None:
             raise RuntimeError(
                 f"Episode ep{ep_id:05d} has both a curve and a too-short marker."
             )
-        if values.size == 0 or not np.isfinite(values).all():
+        if (values.size == 0 and not no_anchors) or not np.isfinite(values).all():
             raise RuntimeError(f"Invalid SG curve: {curve_path}")
         episode_ids.add(ep_id)
+        if no_anchors:
+            no_anchor_episode_ids.add(ep_id)
         total += float(values.sum())
         count += int(values.size)
 
@@ -136,6 +143,7 @@ def main() -> None:
         "boundary_threshold_scale": args.threshold_scale,
         "n_episodes": len(episode_ids),
         "n_skipped_too_short": len(skipped_episode_ids),
+        "n_no_valid_boundary_anchors": len(no_anchor_episode_ids),
         "n_replan_points": count,
         "aggregation": "scaled_mean_over_all_episode_sg_replan_points",
         "provenance": {

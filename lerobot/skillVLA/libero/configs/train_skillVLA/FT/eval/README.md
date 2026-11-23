@@ -5,9 +5,10 @@ with results under `outputs/`.
 
 All simulator evaluation configurations share **`ft_eval_config.yaml`**. Set
 `models`, Predictor and Terminator selectors, thresholds, oracle settings and a
-distinct `output_name` there. The current configuration uses the integrated
-termination VSA FT **5k**, the official mode2 UV Predictor FT **20k**, and the
-VSA's own termination signal at threshold **0.3**. It evaluates LIBERO-10
+distinct `output_name` there. The current configuration uses the non-proprio
+fullskillL18 VSA FT **5k** from PT **100k**, the official mode2 UV Predictor FT
+**20k**, and the external Term1 DINO-S Terminator FT **20k** at threshold
+**0.3**. It evaluates LIBERO-10
 Tasks 0–9 with ten episodes per task (**100 episodes**), using the default
 benchmark initial states (**x1**, without an expanded initial-state bank).
 It requests one GPU with two evaluation workers, 16 CPUs, 256 GiB RAM and an

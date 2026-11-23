@@ -27,11 +27,27 @@ def allocation_worker():
 
 
 def dispatch_existing(path, allocation):
+    status_path = path.parent / 'dispatch_status.json'
+    if status_path.exists() and json.loads(status_path.read_text()).get('state') in {
+            'WAITING_FOR_WORKER', 'QUEUED', 'RUNNING'}:
+        raise ValueError('This frozen launch is already queued or running in the original allocation.')
     worker = allocation_worker()
     root = path.parent.parent
-    directory = worker['ensure'](root, allocation, SELF, tmux_command())
-    worker['enqueue'](directory, path)
-    print(f"Queued inside existing Slurm allocation {allocation['JobId']}; no new step or GPU requested.")
+    directory = worker['ensure'](root, allocation, SELF, tmux_command(), allow_wait=True)
+    if not worker['ready'](directory):
+        data = json.loads(path.read_text())
+        record = {"run_id": uuid.uuid4().hex, "name": data['name'],
+                  "job_id": allocation['JobId'], "work_dir": data['cwd'],
+                  "state": "WAITING_FOR_WORKER", "started_at": datetime.now(timezone.utc).isoformat(),
+                  "reason": "기존 할당 실행 관리자 응답 대기. 복구되면 자동 실행됩니다."}
+        private_json(path.parent / 'training_status.json', record)
+    worker['enqueue'](directory, path, allow_unready=True)
+    dispatch = json.loads((path.parent / 'dispatch_status.json').read_text())
+    if dispatch['state'] == 'WAITING_FOR_WORKER':
+        print(f"Saved inside existing Slurm allocation {allocation['JobId']}; waiting for its worker to recover.")
+        print("Training has not started. It will start automatically when the worker responds; no new step or GPU requested.")
+    else:
+        print(f"Queued inside existing Slurm allocation {allocation['JobId']}; no new step or GPU requested.")
     print(f"Record: {path}")
     print(f"Console: {path.parent / 'srun_console.log'}")
     return 0
@@ -344,7 +360,13 @@ def run_training(path):
                       (Path(environment["SBD_SRUN_SESSIONS_DIR"]).parent / "training_events"
                        if environment.get("SBD_SRUN_SESSIONS_DIR") else REPO / ".cache/training_events"))
     event_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    run_id = uuid.uuid4().hex
+    waiting = {}
+    try:
+        waiting = json.loads((path.parent / 'training_status.json').read_text())
+    except (OSError, ValueError):
+        pass
+    run_id = (waiting['run_id'] if waiting.get('state') == 'WAITING_FOR_WORKER'
+              else uuid.uuid4().hex)
     environment.update(SBD_TRAINING_EVENTS_DIR=str(event_root), SBD_TRAINING_PARENT_ID=run_id,
         SBD_TRAINING_STATUS_PATH=str(path.parent / "training_status.json"),
         SBD_GPU_GUARD_ORDER_NS=str(time.time_ns()))

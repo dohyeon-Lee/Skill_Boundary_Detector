@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 from lerobot.configs.uv_fullskill import (
     DUAL_BOTTLENECK_NAMES,
+    DUAL_BOTTLENECK_TERM_DETACH_LABEL,
     VANILA_LABELS,
     VANILA_REVISIONS,
     UV_BSPLINE_DIFFAUX3_NAMES,
@@ -902,6 +903,10 @@ def build_settings(config: dict) -> dict:
     if unknown_vlm_term:
         raise ValueError(f"Unknown vlm_termination fields: {sorted(unknown_vlm_term)}")
     vlm_termination_enabled = as_bool(vlm_term.get("enabled", False))
+    if architecture_label == DUAL_BOTTLENECK_TERM_DETACH_LABEL:
+        if "enabled" in vlm_term and not vlm_termination_enabled:
+            raise ValueError("The termbn_detach architecture requires vlm_termination.enabled=true.")
+        vlm_termination_enabled = True
     vlm_termination_loss_weight = float(vlm_term.get("loss_weight", 1.0))
     vlm_termination_target_sigma = float(vlm_term.get("target_sigma", 1.0))
     vlm_termination_positive_weight = float(vlm_term.get("positive_weight", 2.0))

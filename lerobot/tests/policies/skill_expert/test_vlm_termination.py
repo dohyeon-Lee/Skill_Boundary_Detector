@@ -4,7 +4,7 @@ import pytest
 from types import SimpleNamespace
 from dataclasses import replace
 
-from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NOPROPRIO_LABEL
+from lerobot.configs.uv_fullskill import DUAL_BOTTLENECK_NOPROPRIO_LABEL, DUAL_BOTTLENECK_TERM_DETACH_LABEL
 from lerobot.policies.skill_expert.modeling_skill_expert import _allowed_pi05_missing_key
 from test_pi05_vlm_vsa import tiny_vlm_model
 from lerobot.policies.skillVLA.vlm_termination_supervision import (
@@ -79,11 +79,12 @@ def test_termination_loss_ignores_expired_holds_and_weights_only_terminal_object
 
 @pytest.mark.parametrize('finetune', [False, True])
 @pytest.mark.parametrize('term_weight', [0.0, 1.0])
-def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, finetune, term_weight):
+@pytest.mark.parametrize('detached', [False, True])
+def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, finetune, term_weight, detached):
     from lerobot.policies.skill_expert.modeling_skill_expert import SkillExpertPolicy, apply_newtask_ft_freeze
     from lerobot.configs.policies import PreTrainedConfig
     from test_uv_gt_xyz import goal_batch
-    model = tiny_vlm_model(monkeypatch, DUAL_BOTTLENECK_NOPROPRIO_LABEL,
+    model = tiny_vlm_model(monkeypatch, DUAL_BOTTLENECK_TERM_DETACH_LABEL if detached else DUAL_BOTTLENECK_NOPROPRIO_LABEL,
                            vlm_termination_enabled=True, device="cpu",
                            newtask_ft_enabled=finetune, newtask_ft_freeze_expert=finetune,
                            newtask_ft_skill_flow_loss=False,
@@ -124,15 +125,20 @@ def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, fi
         assert observed == []  # No previous-skill termination forward when loss is off.
         assert metrics['vlm_termination/weight'] == 0
     loss.backward()
+    head = model.vlm_termination_bottleneck.head if detached else model.vlm_termination_head
     if term_weight:
-        assert model.vlm_termination_head[-1].weight.grad.abs().sum() > 0
+        assert head[-1].weight.grad.abs().sum() > 0
     else:
-        assert all(p.grad is None for p in model.vlm_termination_head.parameters())
+        assert all(p.grad is None for p in head.parameters())
     if finetune:
         assert all(not p.requires_grad and p.grad is None for p in model.gemma_expert.parameters())
         assert model.cond_encoder.model.layers[0].self_attn.q_proj.weight.grad.abs().sum() > 0
     optimizer_ids = {id(p) for group in policy.get_optim_params() for p in group['params']}
-    assert all(id(p) in optimizer_ids for p in model.vlm_termination_head.parameters())
+    term_module = model.vlm_termination_bottleneck if detached else head
+    assert all(id(p) in optimizer_ids for p in term_module.parameters())
+    if detached:
+        isolated = policy.isolated_main_optimizer_grad_groups()
+        assert {id(p) for p in isolated['vlm_termination']} == {id(p) for p in term_module.parameters()}
     # Tiny fixtures shrink the otherwise fixed bottleneck geometry after
     # validation. Serialize the production geometry for the config roundtrip.
     saved = replace(policy.config, visual_bottleneck_width=256, visual_bridge_heads=8)
@@ -140,6 +146,7 @@ def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, fi
     restored = PreTrainedConfig.from_pretrained(tmp_path)
     assert restored.vlm_termination_enabled and restored.vlm_termination_post_end_steps == 10
     assert restored.vlm_termination_loss_weight == term_weight
+    assert restored.uses_detached_termination_bottleneck == detached
     # The deployed head consumes current cameras/state/skill/UV only.
     batch.pop('skill_start_state')
     probability = policy.predict_termination_probability(batch)

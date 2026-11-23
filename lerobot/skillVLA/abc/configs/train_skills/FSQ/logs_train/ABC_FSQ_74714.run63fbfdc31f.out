@@ -1,0 +1,71 @@
+Cleared unavailable inherited localhost proxy variables: HTTP_PROXY http_proxy HTTPS_PROXY https_proxy
+Preparing/reusing put_relative native source statistics (delta_joint)...
+START ABC FSQ
+Node      : node200
+Skills    : /data1/dohyeon/Skill_Boundary_Detector/dataset_ABC/FSQ_dataset/abc_sim_all/FSQ_inputs/seg_abc_sim_all_task-put_relative_delta-joint_future_only_obs60_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard_imask0/skillset/skills
+Stats     : /data1/dohyeon/Skill_Boundary_Detector/dataset_ABC/abc_sim_all/meta/selection_stats/task-put_relative-aa109e9a6abf.json
+Action    : delta_joint 14D
+Grippers  : 6 13 (weight=0.1)
+Output    : /data1/dohyeon/Skill_Boundary_Detector/outputs_ABC/FSQ/FSQ333_contrastiveON_routeON_loss_abc_put_relative_delta_joint_jit30_delta_joint_separate_full
+schedule  : epochs=2000
+Sun Nov 22 18:41:18 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA B200                    On  |   00000000:17:00.0 Off |                    0 |
+| N/A   43C    P0            477W / 1000W |  106315MiB / 183359MiB |     94%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A          529812      C   ...ary_Detector/.venv/bin/python      99830MiB |
+|    0   N/A  N/A         1949864      C   python                                 4262MiB |
+|    0   N/A  N/A         2139960      C   ...v-0833cce93775353b/bin/python       2186MiB |
++-----------------------------------------------------------------------------------------+
+[FSQ] Loaded 10258 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset_ABC/FSQ_dataset/abc_sim_all/FSQ_inputs/seg_abc_sim_all_task-put_relative_delta-joint_future_only_obs60_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard_imask0/skillset/skills
+[FSQ] Skill lengths — min:22 max:480 mean:127.2
+[FSQ] autoencoder mode: norm_action; encoder arch: action_seq, length token: False, action encoder mode: separate_full, start-state conditioning: none
+[FSQ] z_head init calibration: enabled (gain=1, samples=all training)
+[FSQ] pair loss: contrastive (weight=0.1, inv_temperature=5.0, warmup=on, recon-only=50 epochs, ramp=50 epochs, boundary=one-of-enabled-start/end, pmax(early_start/late_start/early_end/late_end)=30/30/30/30, distribution=half_normal, preserve_gripper=False)
+[FSQ] joint decoder-aware routing: enabled (all codes, detached distortion, inv_temperature=5)
+[FSQ] delta-joint q01/q99 fitted to transformed skills; grippers stay absolute
+[FSQ] encoder input mode: zero_grounded
+[FSQ] encoder grounding convention: trajectory_mean_xyz_v1
+[FSQ] reconstructor output mode: zero_grounded
+[FSQ] autoencoder gripper MSE weight: 0.1 on axes [6, 13]
+[FSQ] encoder_min: [-1.1738 -1.5865 -1.6367 -1.6136 -1.5661 -2.099   0.     -1.4554 -0.0124
+ -0.0048 -1.6106 -1.2241 -1.8913  0.    ]
+[FSQ] encoder_max: [1.2545 1.5707 1.7966 1.5974 1.1588 1.729  1.     1.6225 3.0198 2.8149
+ 1.5931 1.566  2.098  1.    ]
+[FSQ] state q01/q99: [-1.2160e+00  1.8110e-01  1.4700e-01 -1.1833e+00 -7.5490e-01 -1.4689e+00
+  2.5560e-01 -3.0300e-01  1.0000e-04  1.4100e-01 -1.2052e+00 -6.5000e-01
+ -6.4890e-01  2.4810e-01] / [0.2565 2.492  2.2991 1.3554 0.7593 0.6981 1.     1.2129 2.4704 2.2792
+ 1.2438 0.696  1.3377 1.    ]
+[FSQ] action-sequence convention: q01/q99 -> [-1, 1], clipped; gripper_weight=0.1
+[FSQ] action q01/q99: [-0.0285 -0.0458 -0.0433 -0.0663 -0.0397 -0.0406  0.     -0.0328 -0.0445
+ -0.0417 -0.0654 -0.0347 -0.0316  0.    ] / [0.0312 0.0408 0.0343 0.065  0.0383 0.0377 0.9977 0.0283 0.0388 0.0345
+ 0.0658 0.0367 0.033  0.9976]
+[FSQ] state_min:  [-1.6068e+00 -6.0000e-04 -8.6000e-03 -1.6136e+00 -1.5661e+00 -2.0990e+00
+  0.0000e+00 -1.4554e+00 -1.2400e-02 -4.8000e-03 -1.6106e+00 -1.2241e+00
+ -1.8913e+00  0.0000e+00]
+[FSQ] state_max:  [0.9906 3.0526 2.7286 1.5974 1.1588 1.729  1.     1.6225 3.0198 2.8149
+ 1.5931 1.566  2.098  1.    ]
+[FSQ] length_min/max: 22 / 480
+[FSQ-v3] trajectories=10258 train=9231 val=1027 fp=f7bd117ddcc3
+[FSQ-v3] pair warm-up: enabled; reconstruction-only epochs=50, ramp epochs=50, target weight=0.1
+[FSQ-v3] contrastive adjacent negatives: 9229/9231 anchors eligible (99.98%)
+[FSQ-v3] data workers: train=16 val=0; validation every=25
+[FSQ-v3] gradient checkpointing: disabled
+[FSQ-v3] z_head init calibration: samples=9231, gain=1, pre mean=[0.0566, 0.2611, 0.1009], pre std=[0.1169, 0.2304, 0.1347], codebook 2->27 active, dominant 89.0%->11.2%
+[FSQ-v3]    1/2000 train=0.2897 pair-w=0
+[FSQ-v3]   10/2000 train=0.1429 pair-w=0
+[FSQ-v3]   20/2000 train=0.1328 pair-w=0
+[FSQ-v3]   25/2000 train=0.1309 pair-w=0 val=0.1248 action=0.0620 prog=0.0000 end=0.0000 select=0.0620 code-retain=baseline(3/27 active) boundary-margin=71.5% p10=37.6% near=1.7% axis-near=0.6%

@@ -1,15 +1,27 @@
+# LIBERO 표준 nonproprio 9+9 VSA + detach된 termination 전용 bottleneck
+# VLM 각 층 → 전용 reader 18층 → 종료 확률. Action Expert 연결 없음.
+# 데이터셋·transition randomization은 ../stage1_common_config.yaml을 따름.
 stage1_common: true
 stage1_component: VSA
+
 run:
   suffix: base
-vision:
-  dino_model: models/dinov3-vits16
-  image_size: 224
-  freeze: false
+
+
+# Termination 실험 설정
+# 기존 스킬 랜덤화·이전 스킬 UV·종료 후 10스텝 정답 규칙 유지.
+# 전용 분기만 학습하며, 본류와 gradient clipping도 분리.
+vlm_termination:
+  enabled: true
+  loss_weight: 1.0         # VLM에는 역전파하지 않음. 가중치는 폴더명에 자동 반영.
+  target_sigma: 1.0
+  positive_weight: 2.0
+  post_end_steps: 10       # 스킬 종료 후 추가 양성 구간
+
+
+# termbn_detach: 토큰 8개·폭 256·VLM과 같은 층 수의 독립 bottleneck.
 architecture:
-  name:
-  - vanila_vision_only_pi05vlm
-  - UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_wovis
+  name: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach
   end_pose_mode: xyz
   expert_variant: gemma_300m
   attention_backend: eager
@@ -19,10 +31,26 @@ architecture:
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 9
   spatial_loss_weight: 0.1
+
+vision:
+  dino_model: models/dinov3-vits16
+  image_size: 224
+  freeze: false
+
+execution:
+  action_steps: 5
+
+
+# Action·full-skill 학습 (기존 통합 모델과 동일)
+action_conditioning:
+  training_skill_source: gt
+
 mask_actions_after_skill_end: true
-cumulative_xyz_loss:
-  enabled: false
-  weight: 0.5
+
+bspline:
+  tokens: 30
+  weight: 1.0
+
 skill_flow:
   weight: 1.0
   chunk_multiplier: 3
@@ -33,51 +61,48 @@ skill_flow:
     timesteps: 2
     ranking: main
     fp32: true
-action_conditioning:
-  training_skill_source: gt
-bspline:
-  tokens: 30
-  weight: 1.0
-execution:
-  action_steps: 5
+
+# 학습·저장
 training:
   keep_checkpoints: 1
-  protect_checkpoints:
-  - 100000
+  protect_checkpoints: [50000, 100000]
+
   dataloader:
     batch_size: 16
     workers: 8
     prefetch_factor: 4
     gpus: 1
+
   optimizer:
     base_lr: 2.5e-05
     dino_lr_scale: 1.0
-    muon: false
+
   gradient_checkpointing:
     action_expert: false
     skill_planner: false
     vlm: false
     vision: false
+
   schedule:
     steps: 100000
     lr_mode: warmup_constant
     warmup_steps: 1000
     log_every: 100
     save_every: 10000
+
   vsa_debug:
     every: 0
     initial: []
+
+
+# 로깅·실행 자원
 logging:
   wandb:
     enable: true
     project: VLA_stage1
+
 slurm:
   gres: gpu:1
-  cpus: 16
+  cpus: 64
   memory: 256G
   time: '48:00:00'
-transition_oversampling:
-  enabled: false
-  percent: 25
-  distribution: uniform
-  weight: 2.0

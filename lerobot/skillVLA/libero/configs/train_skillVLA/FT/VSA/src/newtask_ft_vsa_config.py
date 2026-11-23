@@ -348,6 +348,14 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     warmup_steps = int(_at(config, "training", "schedule", "warmup_steps", default=500))
     decay_steps = int(_at(config, "training", "schedule", "lr_decay_steps", default=steps))
     batch_size = int(_at(config, "training", "dataloader", "batch_size", default=32))
+    num_workers = int(_at(config, "training", "dataloader", "workers", default=8))
+    persistent_workers = as_bool(_at(config, "training", "dataloader", "persistent_workers", default=False))
+    worker_context = str(_at(config, "training", "dataloader", "multiprocessing_context", default="") or "").strip()
+    prefetch_factor = int(_at(config, "training", "dataloader", "prefetch_factor", default=4))
+    if worker_context not in {"", "spawn", "fork", "forkserver"}:
+        raise ValueError("training.dataloader.multiprocessing_context must be spawn|fork|forkserver.")
+    if num_workers < 0 or prefetch_factor < 1 or (persistent_workers and num_workers == 0):
+        raise ValueError("Invalid FT dataloader settings; persistent_workers requires workers > 0.")
     num_gpus = int(_at(config, "training", "dataloader", "gpus", default=1))
     if min(steps, batch_size, num_gpus, decay_steps) <= 0 or warmup_steps < 0:
         raise ValueError("Invalid training schedule/dataloader values.")
@@ -454,7 +462,10 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "vsa_debug_schedule": "[" + ",".join(str(v) for v in debug_schedule) + "]",
         "lr": float(_at(config, "training", "optimizer", "base_lr", default=2.5e-5)) * num_gpus,
         "batch_size": batch_size,
-        "num_workers": int(_at(config, "training", "dataloader", "workers", default=8)),
+        "num_workers": num_workers,
+        "dataloader_persistent_workers": persistent_workers,
+        "dataloader_multiprocessing_context": worker_context,
+        "dataloader_prefetch_factor": prefetch_factor,
         "num_gpus": num_gpus,
         "steps": steps,
         "scheduler_mode": scheduler_mode,

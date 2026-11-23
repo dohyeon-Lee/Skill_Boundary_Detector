@@ -1,11 +1,11 @@
-# Full grab_clutter build matching current DP/eval/eval_config.yaml:
+# Full put_relative build matching current DP/eval/eval_config.yaml:
 # Transformer small, obs60/future36, current_gt, 36/15/5/45/7/4/1, curvature off.
-# All grab_clutter episodes; no evaluation-only 5-episode limit.
+# All put_relative episodes; no evaluation-only task/episode limits.
 target_dataset: abc_sim_all
-abc_source_tasks: [grab_clutter]
+abc_source_tasks: [put_relative]
 
 # Same checkpoint selected in DP/eval/eval_config.yaml.
-dp_run_name: abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_transformer_constLR_small
+dp_run_name: abc_sim_all_task-put_relative_delta-joint_future_only_obs60_future36_transformer_constLR_small
 dp_checkpoint: "100000"
 dp_n_obs_steps: 60
 dp_future_action_horizon: 36
@@ -24,6 +24,7 @@ skillset_name: skillset
 #   libero_standard: power2, SG 7/4, ABC release/home-return terminal mask
 #   abc_standard:    power1, SG 7/4, detected terminal release minus 8 frames
 skillset_sbd_profile: abc_standard
+initial_mask: false  # true=checkpoint history 길이만큼 제외, false=초반 마스크 끔
 
 # Final SBD detector, adapted from 20 Hz LIBERO to 30 Hz ABC time intervals.
 skillset_mode: gaussian_x0hat
@@ -39,7 +40,7 @@ skillset_min_skill_len: 15
 # Exact probe/GMM recipe from the saved eval: full future36, 14D std PCA
 # including grippers, current GT action sequence, no centering of
 # fitted GMM modes, and ordinary weighted cosine (without covariance gating).
-# The selected DP was trained on all grab_clutter episodes, so the full-build
+# The selected DP was trained on all put_relative episodes, so the full-build
 # task PCA covers the same episodes as eval's pca_scope: dataset.
 skillset_gaussian_center: current_gt
 skillset_probe_count: 96
@@ -64,8 +65,8 @@ skillset_boundary_threshold_scale: 1.0
 skillset_wandb_project: ""
 
 # One GPU; episodes are automatically balanced across this many workers.
-skillset_single_gpu_workers: 24
-skillset_cpus_per_task: 24
+skillset_single_gpu_workers: 16
+skillset_cpus_per_task: 16
 skillset_mem: 96G
 skillset_time: "24:00:00"
 slurm_gres: gpu:1

@@ -6,6 +6,7 @@ gaussian_center: current_gt  # previous_action | current_gt | pure_noise (SBD=st
 pca_scope: dataset        # dataset=체크포인트의 DP 학습 범위(task·episode 샘플링 반영), selected=평가 episode만. PCA 학습은 CPU.
 
 # CPU only
+initial_mask: false       # true=초반 DP history 길이만큼 제외, false=초반 마스크 끔
 gmm_components: 5         # GMM 클러스터 개수
 nms_frames: 45            # 경계 후보 간 최소 간격 (원본 프레임 수)
 smooth_window: 7          # SG 스무딩: replan 점 개수. 양의 홀수만 허용, 1은 스무딩 끔
@@ -13,21 +14,26 @@ polyorder: 4              # SG 스무딩 다항식 차수
 score_power: 1            # 점수 지수: 1=ABC standard, 2=LIBERO standard. 양의 실수
 peak_curvature_scale: 0   # 0=끄기. 1=전체 후보 피크 평균 곡률 미만 제외, 0.5=평균의 50% 미만 제외. CPU only.
 
-# 모델·평가 데이터 선택
-dp_run_name: abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_transformer_constLR_small
-# dp_run_name: abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_transformer_constLR
-# dp_run_name: abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future1_transformer_constLR
-# dp_run_name: abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_gru_iid_constLR
-# dp_run_name: abc_sim_all_group_ABCVLA_easy_task_1k_eps-sele866ce01_delta-joint_future_only_obs60_future36_gru_iid_constLR
-# dp_run_name: abc_sim_all_group_ABCVLA_easy_task_1k_eps-sele866ce01_delta-joint_future_only_obs60_future36_transformer_constLR
+# 실행 자원 (셸 환경변수보다 YAML 우선)
+eval_workers: 4           # 병렬 episode 워커 수
+eval_cpus_per_task: 16    # 평가 전체 CPU 예산
+
 dp_checkpoint: 100000     # global outputs_root/DP/<모델명>/checkpoints/<번호>/pretrained_model
 target_dataset: abc_sim_all
-source_tasks: [grab_clutter]
-task_ids: [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82]
-n_episodes: 5             # language task마다 사용할 episode 개수
 
-# 기본 이름. 앞에 trans/GRUiid/GRUepi와 small/base, 뒤에 하이퍼파라미터가 자동으로 붙음.
-# DP 모델이나 평가 episode 선택을 바꿀 때는 이 기본 이름도 변경.
-output_name: abc_grab_clutter_obs60_future36_all_tasks_5ep_100k
-# output_name: abc_easy1k_grab_clutter_obs60_future36_all_tasks_5ep_100k
-# 세부 기본값: src/defaults.py. 실제 적용값은 outputs/<이름>/src/evaluation_settings.json.
+# 모델·평가 데이터 선택
+# dp_run_name: abc_sim_all_task-sim_put_the_plastic_bottles_in_the_bin_delta-joint_future_only_obs60_future36_transformer_constLR_small_yonsei
+# source_tasks: [sim_put_the_plastic_bottles_in_the_bin]
+# n_tasks: all              # all=전체 language task, 숫자=ID 순서대로 앞에서 N개
+# n_episodes: 100             # language task마다 최대 5개. 부족하면 있는 만큼 사용.
+# output_name: abc_sim_put_the_plastic_bottles_in_the_bin_obs60_future36_5ep_100k  # n_tasks 값도 폴더명에 자동 반영
+
+dp_run_name: abc_sim_all_task-put_relative_delta-joint_future_only_obs60_future36_transformer_constLR_small
+source_tasks: [put_relative]
+n_tasks: 100              # all=전체 language task, 숫자=ID 순서대로 앞에서 N개
+n_episodes: 5             # language task마다 최대 5개. 부족하면 있는 만큼 사용.
+output_name: abc_put_relative_obs60_future36_5ep_100k  # n_tasks 값도 폴더명에 자동 반영
+
+# dp_run_name: abc_sim_all_task-grab_clutter_delta-joint_future_only_obs60_future36_transformer_constLR_small
+# n_tasks: all              # all=전체 language task, 숫자=ID 순서대로 앞에서 N개
+# n_episodes: 5             # language task마다 최대 5개. 부족하면 있는 만큼 사용.

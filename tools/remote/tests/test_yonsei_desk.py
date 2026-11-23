@@ -256,6 +256,7 @@ def test_training_progress_exact_outbox_and_legacy_log_fallback(tmp_path):
     project = work/'project'
     logs = project/'DP/logs'
     logs.mkdir(parents=True)
+    (work/'jobs.jsonl').write_text('{"job_id":"123"}\n')
     manifest = {'cwd': str(project/'DP'), 'script':'DP/submit_train_dp.sh',
                 'training':{'total':100000}}
     (logs/'ABC_DP_123.err').write_text("{'steps': 100000}\nstep: 1.2K smpl: 1200\n")
@@ -280,6 +281,7 @@ def test_training_preparing_and_fsq_epoch_counters(tmp_path):
     project = work/'project'
     logs = project/'FSQ/logs'
     logs.mkdir(parents=True)
+    (work/'jobs.jsonl').write_text('{"job_id":"123"}\n')
     manifest = {'cwd':str(project/'FSQ'), 'script':'FSQ/submit_train_fsq.sh',
                 'training':{'total':2000,'unit':'epoch'}}
     (logs/'FSQ_123.out').write_text('Preparing dataset')
@@ -289,3 +291,36 @@ def test_training_preparing_and_fsq_epoch_counters(tmp_path):
     (logs/'FSQ_123.out').write_text('[FSQ-v3] 50/2000 train loss=0.3')
     item, = probe.training_progress(work, manifest)
     assert (item['unit'], item['step'], item['total'], item['percent']) == ('epoch',50,2000,2.5)
+
+
+def test_training_ignores_unrelated_old_logs_and_coalesces_current_streams(tmp_path):
+    work = tmp_path/'launch'
+    project = work/'project'
+    logs = project/'FT/VSA/logs'
+    logs.mkdir(parents=True)
+    (work/'jobs.jsonl').write_text('{"job_id":"2848722"}\n')
+    manifest = {'cwd':str(project/'FT/VSA'), 'script':'FT/VSA/submit_train.sh',
+                'created_at':time.time()-10, 'training':{'total':20000}}
+    # A pending launch may see old shared logs, including recently copied ones.
+    (logs/'newtask_ft_vsa_2675083.err').write_text('schedule: steps=10000\nCheckpoint policy after step 10000')
+    item, = probe.training_progress(work, manifest)
+    assert item['step'] is None and item['percent'] is None
+    assert item['total'] == 20000
+    (logs/'newtask_ft_vsa_2848722.err').write_text('step:1.2K smpl:1M')
+    (logs/'newtask_ft_vsa_2848722.out').write_text('Checkpoint policy after step 1000')
+    item, = probe.training_progress(work, manifest)
+    assert (item['step'], item['total'], item['percent']) == (1200,20000,6)
+    assert item['output'] == 'newtask_ft_vsa_2848722'
+    # A matching historical job-id alone is insufficient if Slurm IDs get reused.
+    manifest['created_at'] = time.time()+10
+    item, = probe.training_progress(work, manifest)
+    assert item['step'] is None
+
+
+def test_training_never_scans_shared_logs_without_this_launch_job_identity(tmp_path):
+    work = tmp_path/'launch'
+    logs = work/'project/DP/logs'
+    logs.mkdir(parents=True)
+    (logs/'DP_123.err').write_text('step:100K smpl:1M')
+    item, = probe.training_progress(work, {'script':'DP/submit_train.sh', 'training':{'total':20000}})
+    assert item['step'] is None and item['percent'] is None

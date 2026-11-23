@@ -21,6 +21,7 @@ from lerobot.configs.uv_fullskill import (
     DUAL_BOTTLENECK_NOPROPRIO_LABEL,
     DUAL_BOTTLENECK_NOPROPRIO_LAST_LABEL,
     DUAL_BOTTLENECK_NOPROPRIO_WOVIS_LABEL,
+    DUAL_BOTTLENECK_TERM_DETACH_LABEL,
     VANILA_LABELS,
     VANILA_REVISIONS,
     VANILA_LEGACY_REVISIONS,
@@ -2468,11 +2469,15 @@ class SkillExpertConfig(PreTrainedConfig):
         if self.train_terminator:
             if not str(self.fsq_path or "").strip():
                 raise ValueError("Historical own terminator requires fsq_path.")
+        if self.uses_detached_termination_bottleneck:
+            self.vlm_termination_enabled = True
         if self.vlm_termination_enabled:
             if not self.uses_dual_bottleneck or self.dual_uses_start_proprio:
                 raise ValueError("VLM termination requires a dual bottleneck without skill-start proprio.")
-            if self.bimanual_spatial_auxiliary or self.newtask_joint_enabled:
-                raise ValueError("Shared-VLM termination currently supports standalone LIBERO VSA training.")
+            if self.newtask_joint_enabled:
+                raise ValueError("Shared-VLM termination requires standalone VSA training.")
+            if self.bimanual_spatial_auxiliary and not self.uses_detached_termination_bottleneck:
+                raise ValueError("ABC integrated termination requires the termbn_detach architecture.")
             if self.training_skill_source != "gt" or self.skill_flow_latent_best_of_n_enabled:
                 raise ValueError("VLM termination requires GT transition-selected skills and one action-flow candidate.")
             for name in ("loss_weight", "target_sigma", "positive_weight"):
@@ -2529,7 +2534,12 @@ class SkillExpertConfig(PreTrainedConfig):
         return self.architecture_label in (
             DUAL_BOTTLENECK_NOPROPRIO_LABEL, DUAL_BOTTLENECK_NOPROPRIO_LAST_LABEL,
             DUAL_BOTTLENECK_NOPROPRIO_WOVIS_LABEL,
+            DUAL_BOTTLENECK_TERM_DETACH_LABEL,
         )
+
+    @property
+    def uses_detached_termination_bottleneck(self) -> bool:
+        return self.architecture_label == DUAL_BOTTLENECK_TERM_DETACH_LABEL
 
     @property
     def dual_uses_start_proprio(self) -> bool:

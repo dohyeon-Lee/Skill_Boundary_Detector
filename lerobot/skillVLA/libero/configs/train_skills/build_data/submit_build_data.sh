@@ -51,6 +51,55 @@ eval "${RESOLVED_SETTINGS}"
 cd "${SCRIPT_DIR}"
 mkdir -p logs "${FSQ_INPUTS_DIR}"
 
+# One supervisor owns every phase; no Slurm arrays, dependencies or extra GPUs.
+# In particular --JOB_ID must not pass --parsable to submit-existing.
+if [ "${SKILLSET_SINGLE_GPU_WORKERS}" -gt 0 ]; then
+  if [ "${CURVES_ONLY:-false}" != true ] && [ -f "${SKILLSET_DONE_PATH}" ]; then
+    echo "Skillset already complete: ${SKILLSET_DONE_PATH}"
+    exit 0
+  fi
+  [ -d "${RAW_DATASET_DIR}" ] || { echo "Dataset not found: ${RAW_DATASET_DIR}" >&2; exit 1; }
+  [ -d "${DP_POLICY_PATH}" ] || { echo "DP checkpoint not found: ${DP_POLICY_PATH}" >&2; exit 1; }
+  METADATA_EXPORTS="$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}" <<'PY'
+import json, shlex, sys
+from pathlib import Path
+import pandas as pd
+root = Path(sys.argv[1]) / "meta"
+tasks = pd.read_parquet(root / "tasks.parquet").reset_index()
+ids = sorted(int(value) for value in tasks["task_index"].unique())
+parts = sorted((root / "episodes").rglob("file-*.parquet"))
+count = sum(len(pd.read_parquet(part, columns=["episode_index"])) for part in parts)
+if not ids or not count:
+    raise ValueError("Source dataset has no tasks/episodes")
+print("export LIBERO_TASK_INDICES_JSON=" + shlex.quote(json.dumps(ids)))
+print("export LIBERO_EXPECTED_EPISODES=" + str(count))
+PY
+)"
+  eval "${METADATA_EXPORTS}"
+  export LIBERO_BUILD_DIR="${SCRIPT_DIR}"
+  export LIBERO_BUILD_ENV="$(dirname "${CONFIG_PATH}")/libero_build_env.sh"
+  printf '%s\n' "${RESOLVED_SETTINGS}" > "${LIBERO_BUILD_ENV}"
+  export TRAIN_SKILLS_CONFIG="${CONFIG_PATH}" TRAIN_DATA="${TARGET_DATASET}"
+  export LIBERO_SINGLE_GPU_BUILD=true
+  GPU_ARGS=(--partition="${SLURM_PARTITION}" --qos="${SLURM_QOS}"
+    --gres="${SLURM_GRES}" --cpus-per-task="${SKILLSET_CPUS_PER_TASK}"
+    --mem="${SKILLSET_MEM}" --time="${SKILLSET_TIME}"
+    --output=logs/%x_%j.out --error=logs/%x_%j.err)
+  [ -z "${SLURM_NODELIST}" ] || GPU_ARGS+=(--nodelist="${SLURM_NODELIST}")
+  [ -z "${SLURM_EXCLUDE_NODES}" ] || GPU_ARGS+=(--exclude="${SLURM_EXCLUDE_NODES}")
+  echo "LIBERO SBD: ${LIBERO_EXPECTED_EPISODES} episodes → ${SKILLSET_DIR}"
+  echo "One GPU / ${SKILLSET_SINGLE_GPU_WORKERS} workers / ${SKILLSET_CPUS_PER_TASK} CPUs"
+  echo "Pipeline: curves → global mean → cached segmentation → episode verification"
+  if [ "$(submit_job_scheduler)" = slurm ] && [ "$(submit_job_slurm_mode)" != sbatch ]; then
+    submit_job "${GPU_ARGS[@]}" "${BUILD_SRC_DIR}/build_single_gpu.sbatch"
+  else
+    BUILD_JOB="$(submit_job --parsable "${GPU_ARGS[@]}" "${BUILD_SRC_DIR}/build_single_gpu.sbatch")"
+    echo "Pipeline job: ${BUILD_JOB}"
+    [ -z "${PRINT_LAST_JOB:-}" ] || echo "LAST_JOB=${BUILD_JOB}"
+  fi
+  exit 0
+fi
+
 IFS=',' read -r -a PARTITIONS <<< "${SLURM_PARTITIONS}"
 IFS=',' read -r -a EXCLUDE_NODES <<< "${SLURM_EXCLUDE_NODES:-}"
 FIRST_PART="${PARTITIONS[0]}"

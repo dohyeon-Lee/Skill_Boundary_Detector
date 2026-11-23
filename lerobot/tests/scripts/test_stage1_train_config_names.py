@@ -42,6 +42,17 @@ def test_vlm_termination_and_layerwise_experiments_have_distinct_saved_contracts
     assert len({x["pt_run_name"] for x in (baseline, head, layers, last)}) == 4
     term["vlm_termination"]["post_end_steps"] = 5
     assert build_settings(term)["pt_run_name"] != head["pt_run_name"]
+    detached = copy.deepcopy(config)
+    detached['architecture']['name'] += '_termbn_detach'
+    detached_head = build_settings(detached)
+    assert detached_head['vlm_termination_enabled']
+    assert detached_head['vlm_termination_loss_weight'] == 1.0
+    assert '_noproprio_termbn_detach_' in detached_head['pt_run_name']
+    assert detached_head['pt_run_name'] not in {x['pt_run_name'] for x in (baseline, head, layers, last)}
+    assert detached_head['dual_fullskill_readout'] == 'middle'
+    detached['vlm_termination'] = {'enabled': False}
+    with pytest.raises(ValueError, match='termbn_detach'):
+        build_settings(detached)
 
 
 def _config(tmp_path: Path, architecture: str = "arch0") -> dict:

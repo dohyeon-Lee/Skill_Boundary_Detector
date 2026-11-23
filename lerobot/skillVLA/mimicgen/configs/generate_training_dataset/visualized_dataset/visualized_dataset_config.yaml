@@ -1,0 +1,17 @@
+# ./visualize_training_dataset.sh — no venv activation, CPU only.
+dataset: coffee_d0_full_full
+dataset_root_override: ""     # MimicGen global dataset_root
+
+visualize:
+  task_grouping: language_prompt
+  task: all
+  samples: 5
+  sampling: first              # first | random
+  seed: 0
+  cameras: [observation.images.image, observation.images.wrist_image]
+
+  output: outputs/coffee_d0/index.html
+  force: false                # reuse previously encoded previews
+  ffmpeg: auto                 # PATH, then the bundled imageio-ffmpeg executable
+  crf: 23
+  preset: veryfast

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import pytest
 
 SRC = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs/train_skills/FSQ/src"
 sys.path.insert(0, str(SRC))
@@ -40,14 +41,17 @@ def test_shifted_boundary_reanchors_first_delta_to_its_current_state():
     np.testing.assert_array_equal(shifted[:, [6, 13]], actions[2:5, [6, 13]])
 
 
-def test_delta_training_pairs_loss_and_saved_encoder_share_one_convention(tmp_path, monkeypatch):
+@pytest.mark.parametrize('encoder_mode', ['original', 'separate', 'separate_full'])
+def test_delta_training_pairs_loss_and_saved_encoder_share_one_convention(tmp_path, monkeypatch, encoder_mode):
     cfg = fsq.SplineFSQAEConfig(
         action_space="delta_joint", action_dim=14, enc_dim=14, state_dim=14,
+        action_encoder_mode=encoder_mode,
         encoder_arch="action_seq", reconstructor_arch="action_seq_transformer",
         autoencoder_mode="norm_action", reconstructor_only=True,
         reconstructor_start_state=False, encoder_input_mode="zero_grounded",
         reconstructor_output_mode="zero_grounded", terminator_progress=False,
-        terminator_termination=False, hidden_dim=32, num_layers=1, fsq_levels=[3]*4,
+        terminator_termination=False, hidden_dim=32, num_layers=1, fsq_levels=[3,3,3,2],
+        route_loss=True,
         max_action_dim=14, max_state_dim=14, chunk_size=1, samples_per_skill=1,
         n_control=6, length_min=1, length_max=6, pair_loss="contrastive",
         boundary_aug_pmax=1, action_gripper_indices=[6, 13], action_gripper_weight=.1,
@@ -82,13 +86,70 @@ def test_delta_training_pairs_loss_and_saved_encoder_share_one_convention(tmp_pa
         action_seq=batch["encoder_action_seq"], augmented_action_seq=batch["augmented_action_seq"],
         augmented_lengths=batch["augmented_length"], negative_action_seq=batch["negative_action_seq"],
         negative_lengths=batch["negative_length"])
-    loss, _ = fsq.fsq_reconstruction_loss(output, batch, cfg)
+    loss, metrics = fsq.fsq_reconstruction_loss(output, batch, cfg)
     assert torch.isfinite(loss)
+    assert metrics['termination'] == 0
     loss.backward()
-    assert model.encoder.action_proj.weight.grad is not None
+    if encoder_mode == 'original':
+        assert model.encoder.action_proj.weight.grad is not None
+    else:
+        for layer in (model.encoder.left_action_proj, model.encoder.right_action_proj, model.encoder.arm_fusion[1]):
+            assert layer.weight.grad is not None and layer.weight.grad.abs().sum() > 0
+        if encoder_mode == 'separate_full':
+            for pool in (model.encoder.left_pool, model.encoder.right_pool):
+                assert pool.in_proj_weight.grad is not None and pool.in_proj_weight.grad.abs().sum() > 0
+            for query in (model.encoder.left_query, model.encoder.right_query):
+                assert query.grad is not None and query.grad.abs().sum() > 0
     path = tmp_path / "delta.pt"
+    if encoder_mode == 'original':
+        # Pre-option pickle: absence must preserve the original architecture.
+        del vars(cfg)['action_encoder_mode']
     torch.save({"cfg": cfg, "model_state": model.state_dict()}, path)
     encoder, saved = fsq.load_fsq_encoder(path, "cpu")
     assert saved.action_space == "delta_joint"
+    assert saved.action_encoder_mode == encoder_mode
     target = prepare_fsq_actions(actions[0], states[0], "delta_joint", [6, 13])
     np.testing.assert_allclose(encoder._prepare_actions_numpy(target), item["encoder_action_seq"][:4])
+    model.eval()
+    with torch.no_grad():
+        x=batch['encoder_action_seq']; lengths=batch['length']
+        torch.testing.assert_close(encoder.encode_continuous(x,lengths), model.encoder.encode_continuous(x,lengths))
+
+
+@pytest.mark.parametrize('encoder_mode', ['separate', 'separate_full'])
+def test_separate_arms_remain_private_until_fusion_and_ignore_padding(encoder_mode):
+    torch.manual_seed(27)
+    encoder=fsq.ActionSeqEncoder(action_dim=14,hidden_dim=32,fsq_levels=[3,3,3,2],n_layers=1,
+        n_heads=4,dropout=0,action_gripper_indices=[6,13],action_encoder_mode=encoder_mode)
+    encoder.eval()
+    actions=torch.randn(2,6,14,requires_grad=True); lengths=torch.tensor([6,3])
+    left=[];right=[];fused=[]
+    hooks=[encoder.left_encoder.register_forward_hook(lambda m,a,o:left.append(o.detach().clone())),
+           encoder.right_encoder.register_forward_hook(lambda m,a,o:right.append(o.detach().clone())),
+           encoder.arm_fusion.register_forward_hook(lambda m,a,o:fused.append(o.detach().clone()))]
+    left_summaries=[];right_summaries=[]
+    if encoder_mode=='separate_full':
+        hooks += [encoder.left_out_norm.register_forward_hook(lambda m,a,o:left_summaries.append(o.detach().clone())),
+                  encoder.right_out_norm.register_forward_hook(lambda m,a,o:right_summaries.append(o.detach().clone()))]
+        assert not hasattr(encoder,'pool')
+    original=encoder.encode_continuous(actions,lengths)
+    changed=actions.detach().clone();changed[...,7:]+=1
+    encoder.encode_continuous(changed,lengths)
+    torch.testing.assert_close(left[0],left[1],rtol=0,atol=0)
+    assert not torch.allclose(right[0],right[1]) and not torch.allclose(fused[0],fused[1])
+    if encoder_mode=='separate_full':
+        assert fused[0].shape==(2,32)  # The first fusion sees whole-skill summaries.
+        torch.testing.assert_close(left_summaries[0],left_summaries[1],rtol=0,atol=0)
+        assert not torch.allclose(right_summaries[0],right_summaries[1])
+    else:
+        assert fused[0].shape==(2,6,32)  # Both arms meet at the same original frame.
+    for hook in hooks:hook.remove()
+    padded=torch.cat((actions,torch.randn(2,4,14)*100),dim=1)
+    torch.testing.assert_close(encoder.encode_continuous(padded,lengths),original,atol=1e-6,rtol=1e-5)
+    original.square().mean().backward()
+    assert actions.grad[0,:,:7].abs().sum()>0 and actions.grad[0,:,7:].abs().sum()>0
+    assert not actions.grad[1,3:].any()
+    assert encoder.fsq.codebook_size==54 and original.shape==(2,4)
+    with pytest.raises(ValueError,match='14D'):
+        fsq.ActionSeqEncoder(action_dim=7,hidden_dim=32,fsq_levels=[3]*3,n_layers=1,n_heads=4,
+                             dropout=0,action_encoder_mode=encoder_mode)

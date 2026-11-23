@@ -1,0 +1,113 @@
+Cleared unavailable inherited localhost proxy variables: HTTP_PROXY http_proxy HTTPS_PROXY https_proxy
+Preparing/reusing put_relative native source statistics (delta_joint)...
+START ABC FSQ
+Node      : node200
+Skills    : /data1/dohyeon/Skill_Boundary_Detector/dataset_ABC/FSQ_dataset/abc_sim_all/FSQ_inputs/seg_abc_sim_all_task-put_relative_delta-joint_future_only_obs60_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard_imask0/skillset/skills
+Stats     : /data1/dohyeon/Skill_Boundary_Detector/dataset_ABC/abc_sim_all/meta/selection_stats/task-put_relative-aa109e9a6abf.json
+Action    : delta_joint 14D
+Grippers  : 6 13 (weight=0.1)
+Output    : /data1/dohyeon/Skill_Boundary_Detector/outputs_ABC/FSQ/FSQ3332_contrastiveON_routeON_loss_abc_put_relative_delta_joint_jit30_delta_joint_separate
+schedule  : epochs=2000
+Sun Nov 22 16:52:15 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA B200                    On  |   00000000:17:00.0 Off |                    0 |
+| N/A   45C    P0            605W / 1000W |   99844MiB / 183359MiB |     96%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A          529812      C   ...ary_Detector/.venv/bin/python      99830MiB |
++-----------------------------------------------------------------------------------------+
+[FSQ] Loaded 10258 skills from /data1/dohyeon/Skill_Boundary_Detector/dataset_ABC/FSQ_dataset/abc_sim_all/FSQ_inputs/seg_abc_sim_all_task-put_relative_delta-joint_future_only_obs60_future36_transformer_constLR_small_ck100000_gaussian_x0hat_globalmean_100p_abc-standard_imask0/skillset/skills
+[FSQ] Skill lengths — min:22 max:480 mean:127.2
+[FSQ] autoencoder mode: norm_action; encoder arch: action_seq, length token: False, action encoder mode: separate, start-state conditioning: none
+[FSQ] z_head init calibration: enabled (gain=1, samples=all training)
+[FSQ] pair loss: contrastive (weight=0.1, inv_temperature=5.0, warmup=on, recon-only=50 epochs, ramp=50 epochs, boundary=one-of-enabled-start/end, pmax(early_start/late_start/early_end/late_end)=30/30/30/30, distribution=half_normal, preserve_gripper=False)
+[FSQ] joint decoder-aware routing: enabled (all codes, detached distortion, inv_temperature=5)
+[FSQ] delta-joint q01/q99 fitted to transformed skills; grippers stay absolute
+[FSQ] encoder input mode: zero_grounded
+[FSQ] encoder grounding convention: trajectory_mean_xyz_v1
+[FSQ] reconstructor output mode: zero_grounded
+[FSQ] autoencoder gripper MSE weight: 0.1 on axes [6, 13]
+[FSQ] encoder_min: [-1.1738 -1.5865 -1.6367 -1.6136 -1.5661 -2.099   0.     -1.4554 -0.0124
+ -0.0048 -1.6106 -1.2241 -1.8913  0.    ]
+[FSQ] encoder_max: [1.2545 1.5707 1.7966 1.5974 1.1588 1.729  1.     1.6225 3.0198 2.8149
+ 1.5931 1.566  2.098  1.    ]
+[FSQ] state q01/q99: [-1.2160e+00  1.8110e-01  1.4700e-01 -1.1833e+00 -7.5490e-01 -1.4689e+00
+  2.5560e-01 -3.0300e-01  1.0000e-04  1.4100e-01 -1.2052e+00 -6.5000e-01
+ -6.4890e-01  2.4810e-01] / [0.2565 2.492  2.2991 1.3554 0.7593 0.6981 1.     1.2129 2.4704 2.2792
+ 1.2438 0.696  1.3377 1.    ]
+[FSQ] action-sequence convention: q01/q99 -> [-1, 1], clipped; gripper_weight=0.1
+[FSQ] action q01/q99: [-0.0285 -0.0458 -0.0433 -0.0663 -0.0397 -0.0406  0.     -0.0328 -0.0445
+ -0.0417 -0.0654 -0.0347 -0.0316  0.    ] / [0.0312 0.0408 0.0343 0.065  0.0383 0.0377 0.9977 0.0283 0.0388 0.0345
+ 0.0658 0.0367 0.033  0.9976]
+[FSQ] state_min:  [-1.6068e+00 -6.0000e-04 -8.6000e-03 -1.6136e+00 -1.5661e+00 -2.0990e+00
+  0.0000e+00 -1.4554e+00 -1.2400e-02 -4.8000e-03 -1.6106e+00 -1.2241e+00
+ -1.8913e+00  0.0000e+00]
+[FSQ] state_max:  [0.9906 3.0526 2.7286 1.5974 1.1588 1.729  1.     1.6225 3.0198 2.8149
+ 1.5931 1.566  2.098  1.    ]
+[FSQ] length_min/max: 22 / 480
+[FSQ-v3] trajectories=10258 train=9231 val=1027 fp=f7bd117ddcc3
+[FSQ-v3] pair warm-up: enabled; reconstruction-only epochs=50, ramp epochs=50, target weight=0.1
+[FSQ-v3] contrastive adjacent negatives: 9229/9231 anchors eligible (99.98%)
+[FSQ-v3] data workers: train=16 val=0; validation every=25
+[FSQ-v3] gradient checkpointing: disabled
+[FSQ-v3] z_head init calibration: samples=9231, gain=1, pre mean=[0.8067, 0.5448, 0.0932, -0.2427], pre std=[0.1006, 0.2261, 0.2622, 0.202], codebook 10->53 active, dominant 46.3%->8.1%
+[FSQ-v3]    1/2000 train=0.2889 pair-w=0
+[FSQ-v3]   10/2000 train=0.1443 pair-w=0
+[FSQ-v3]   20/2000 train=0.1330 pair-w=0
+[FSQ-v3]   25/2000 train=0.1308 pair-w=0 val=0.1242 action=0.0617 prog=0.0000 end=0.0000 select=0.0617 code-retain=baseline(4/54 active) boundary-margin=64.9% p10=27.3% near=3.1% axis-near=0.8%
+[FSQ-v3]   30/2000 train=0.1294 pair-w=0
+[FSQ-v3]   40/2000 train=0.1273 pair-w=0
+[FSQ-v3]   50/2000 train=0.1253 pair-w=0 val=0.1213 action=0.0602 prog=0.0000 end=0.0000 select=0.0602 code-retain(25->50)=89.2% changed=10.8% axis-changed=2.7% matched=89.2% boundary-margin=67.4% p10=26.9% near=3.6% axis-near=0.9%
+[FSQ-v3]   60/2000 train=0.1275 pair-w=0.02
+[FSQ-v3]   70/2000 train=0.1301 pair-w=0.04
+[FSQ-v3]   75/2000 train=0.1312 pair-w=0.05 val=0.1200 action=0.0596 prog=0.0000 end=0.0000 select=0.0596 code-retain(50->75)=95.7% changed=4.3% axis-changed=1.1% matched=95.7% boundary-margin=75.1% p10=37.6% near=2.0% axis-near=0.5%
+[FSQ-v3]   80/2000 train=0.1325 pair-w=0.06
+[FSQ-v3]   90/2000 train=0.1351 pair-w=0.08
+[FSQ-v3]  100/2000 train=0.1374 pair-w=0.1 val=0.1197 action=0.0595 prog=0.0000 end=0.0000 select=0.0595 code-retain(75->100)=98.7% changed=1.3% axis-changed=0.3% matched=98.7% boundary-margin=78.5% p10=43.4% near=1.8% axis-near=0.5%
+[FSQ-v3]  110/2000 train=0.1370 pair-w=0.1
+[FSQ-v3]  120/2000 train=0.1366 pair-w=0.1
+[FSQ-v3]  125/2000 train=0.1363 pair-w=0.1 val=0.1196 action=0.0595 prog=0.0000 end=0.0000 select=0.0595 code-retain(100->125)=98.1% changed=1.9% axis-changed=0.5% matched=98.1% boundary-margin=81.6% p10=48.6% near=1.6% axis-near=0.4%
+[FSQ-v3]  130/2000 train=0.1365 pair-w=0.1
+[FSQ-v3]  140/2000 train=0.1312 pair-w=0.1
+[FSQ-v3]  150/2000 train=0.1299 pair-w=0.1 val=0.1163 action=0.0578 prog=0.0000 end=0.0000 select=0.0578 code-retain(125->150)=81.9% changed=18.1% axis-changed=4.6% matched=81.9% boundary-margin=82.2% p10=51.4% near=1.3% axis-near=0.3%
+[FSQ-v3]  160/2000 train=0.1292 pair-w=0.1
+[FSQ-v3]  170/2000 train=0.1289 pair-w=0.1
+[FSQ-v3]  175/2000 train=0.1288 pair-w=0.1 val=0.1158 action=0.0575 prog=0.0000 end=0.0000 select=0.0575 code-retain(150->175)=98.2% changed=1.8% axis-changed=0.4% matched=98.2% boundary-margin=85.7% p10=60.2% near=1.1% axis-near=0.3%
+[FSQ-v3]  180/2000 train=0.1284 pair-w=0.1
+[FSQ-v3]  190/2000 train=0.1282 pair-w=0.1
+[FSQ-v3]  200/2000 train=0.1279 pair-w=0.1 val=0.1156 action=0.0574 prog=0.0000 end=0.0000 select=0.0574 code-retain(175->200)=99.3% changed=0.7% axis-changed=0.2% matched=99.3% boundary-margin=85.8% p10=62.3% near=0.9% axis-near=0.2%
+[FSQ-v3]  210/2000 train=0.1276 pair-w=0.1
+[FSQ-v3]  220/2000 train=0.1273 pair-w=0.1
+[FSQ-v3]  225/2000 train=0.1273 pair-w=0.1 val=0.1155 action=0.0574 prog=0.0000 end=0.0000 select=0.0574 code-retain(200->225)=99.0% changed=1.0% axis-changed=0.2% matched=99.0% boundary-margin=87.8% p10=66.5% near=0.7% axis-near=0.2%
+[FSQ-v3]  230/2000 train=0.1274 pair-w=0.1
+[FSQ-v3]  240/2000 train=0.1271 pair-w=0.1
+[FSQ-v3]  250/2000 train=0.1269 pair-w=0.1 val=0.1155 action=0.0574 prog=0.0000 end=0.0000 select=0.0574 code-retain(225->250)=99.1% changed=0.9% axis-changed=0.2% matched=99.1% boundary-margin=86.2% p10=63.7% near=0.9% axis-near=0.2%
+[FSQ-v3]  260/2000 train=0.1268 pair-w=0.1
+[FSQ-v3]  270/2000 train=0.1267 pair-w=0.1
+[FSQ-v3]  275/2000 train=0.1267 pair-w=0.1 val=0.1153 action=0.0573 prog=0.0000 end=0.0000 select=0.0573 code-retain(250->275)=99.3% changed=0.7% axis-changed=0.2% matched=99.3% boundary-margin=89.4% p10=71.7% near=0.7% axis-near=0.2%
+[FSQ-v3]  280/2000 train=0.1266 pair-w=0.1
+[FSQ-v3]  290/2000 train=0.1265 pair-w=0.1
+[FSQ-v3]  300/2000 train=0.1267 pair-w=0.1 val=0.1153 action=0.0573 prog=0.0000 end=0.0000 select=0.0573 code-retain(275->300)=99.2% changed=0.8% axis-changed=0.2% matched=99.2% boundary-margin=88.2% p10=68.6% near=0.8% axis-near=0.2%
+[FSQ-v3]  310/2000 train=0.1261 pair-w=0.1
+[FSQ-v3]  320/2000 train=0.1261 pair-w=0.1
+[FSQ-v3]  325/2000 train=0.1260 pair-w=0.1 val=0.1153 action=0.0574 prog=0.0000 end=0.0000 select=0.0574 code-retain(300->325)=99.4% changed=0.6% axis-changed=0.1% matched=99.4% boundary-margin=90.3% p10=73.8% near=0.6% axis-near=0.2%
+[FSQ-v3]  330/2000 train=0.1262 pair-w=0.1
+[FSQ-v3]  340/2000 train=0.1260 pair-w=0.1
+[FSQ-v3]  350/2000 train=0.1259 pair-w=0.1 val=0.1153 action=0.0574 prog=0.0000 end=0.0000 select=0.0574 code-retain(325->350)=98.5% changed=1.5% axis-changed=0.4% matched=98.5% boundary-margin=88.3% p10=69.1% near=0.6% axis-near=0.2%
+[FSQ-v3]  360/2000 train=0.1258 pair-w=0.1
+[FSQ-v3]  370/2000 train=0.1257 pair-w=0.1
+[FSQ-v3]  375/2000 train=0.1256 pair-w=0.1 val=0.1152 action=0.0573 prog=0.0000 end=0.0000 select=0.0573 code-retain(350->375)=99.4% changed=0.6% axis-changed=0.1% matched=99.4% boundary-margin=91.1% p10=76.8% near=0.5% axis-near=0.1%
+[FSQ-v3]  380/2000 train=0.1254 pair-w=0.1
+[FSQ-v3]  390/2000 train=0.1255 pair-w=0.1

@@ -16,7 +16,7 @@ dp_lr_scheduler: constant
 
 # A separate output folder: no initialization from the original model.
 # Re-running this YAML later resumes its own last checkpoint automatically.
-dp_policy_name: "{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}_{dp_action_sequence_mode}_obs{dp_n_obs_steps}_future{dp_future_action_horizon}{dp_history_encoder_suffix}{dp_lr_scheduler_suffix}{dp_unet_suffix}_fresh_20261119"
+dp_policy_name: "{target_dataset}{dp_vision_suffix}{dp_proprio_grounding_suffix}_{dp_action_sequence_mode}_obs{dp_n_obs_steps}_future{dp_future_action_horizon}{dp_history_encoder_suffix}{dp_lr_scheduler_suffix}{dp_unet_suffix}_fresh"
 dp_checkpoint: "100000"
 dp_overwrite_output: false
 train_DP: true

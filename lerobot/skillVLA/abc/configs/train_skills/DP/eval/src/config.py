@@ -80,6 +80,9 @@ def build_settings(config_path: str, *, analysis_domain="abc", eval_dir_override
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     defaults = _load_module(_SOURCE_DIR / "defaults.py", "sbd_compact_defaults")
     cfg, model = defaults.resolve_config(shared.load_config(config_path), domain=analysis_domain)
+    if analysis_domain == "abc" and ("n_tasks" in cfg or cfg.get("task_ids") is None):
+        source = _load_module(_SOURCE_DIR / "dataset_source.py", "sbd_abc_source")
+        cfg["task_ids"] = source.resolve_task_ids(cfg)
     standalone = shared.as_bool(shared.get_value(cfg, "standalone", False))
     if not standalone:
         raise ValueError("DP/eval requires standalone: true")
@@ -151,6 +154,26 @@ def build_settings(config_path: str, *, analysis_domain="abc", eval_dir_override
     return settings
 
 
+def shell_settings(settings):
+    """Keep episode manifests out of execve's per-environment-value limit."""
+    import hashlib
+    import os
+    import tempfile
+
+    exports = dict(settings)
+    payload = exports.pop("dp_ablation_settings_json")
+    root = Path(json.loads(payload)["project_root"]) / ".cache/dp_eval_settings"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / (hashlib.sha256(payload.encode()).hexdigest() + ".json")
+    if not path.is_file():
+        with tempfile.NamedTemporaryFile(mode="w", dir=root, delete=False) as stream:
+            stream.write(payload)
+            temporary = stream.name
+        os.replace(temporary, path)
+    exports["dp_ablation_settings_file"] = str(path)
+    return exports
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -159,7 +182,7 @@ def main() -> None:
     shared = _shared_module()
     settings = build_settings(args.config)
     if args.shell:
-        shared.print_shell(settings)
+        shared.print_shell(shell_settings(settings))
     else:
         print(json.dumps(settings, indent=2))
 

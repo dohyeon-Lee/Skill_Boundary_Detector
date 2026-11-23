@@ -121,13 +121,14 @@ class _ABCSpatialStore:
 
     def _flat_skill(self, episode_id: int, rank: int, expected_start: int) -> int:
         flat = self.by_episode[int(episode_id)][int(rank)]
-        if (
-            int(self.skill_index[flat]) != int(rank)
-            or int(self.frame_start[flat]) != int(expected_start)
-        ):
+        # Annotations use the rank among retained skills. The spatial artifact
+        # preserves source SBD indices, which can have gaps after short skills
+        # are filtered. Match the same sorted episode/start identity as ISS.
+        if int(self.frame_start[flat]) != int(expected_start):
             raise ValueError(
                 "ABC spatial/annotation mismatch: "
-                f"episode={episode_id}, rank={rank}, start={expected_start}."
+                f"episode={episode_id}, rank={rank}, "
+                f"spatial={int(self.frame_start[flat])}, annotation={expected_start}."
             )
         return flat
 
@@ -196,6 +197,8 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
         bspline_skill_state_tokens: int = 0,
         include_predictor_start_inputs: bool = False,
         terminator_post_end_steps: int = 0,
+        vlm_termination_enabled: bool = False,
+        vlm_termination_post_end_steps: int = 10,
         **kwargs,
     ) -> None:
         if float(jitter_pmax_percent) != 0.0:
@@ -244,6 +247,10 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
         self._bspline_cache: dict[tuple[int, int, int], torch.Tensor] = {}
         self.include_predictor_start_inputs = bool(include_predictor_start_inputs)
         self.terminator_post_end_steps = int(terminator_post_end_steps)
+        self._vlm_termination_enabled = bool(vlm_termination_enabled)
+        self._vlm_termination_post_end_steps = int(vlm_termination_post_end_steps)
+        if self._vlm_termination_post_end_steps < 0:
+            raise ValueError("vlm_termination_post_end_steps must be non-negative.")
 
     @property
     def jitter_directional_pmaxes(self) -> dict[str, int]:
@@ -388,6 +395,10 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
         )
         if effective_de_override is not None:
             item[SKILL_EFFECTIVE_DE] = torch.tensor(effective_de_override, dtype=torch.long)
+        if self._vlm_termination_enabled:
+            self._add_vlm_termination_targets(
+                item, episode_id, current_frame, kp, starts, lengths, codes, int(row["length"])
+            )
         progress = (current_frame - gt_start) / max(int(lengths[kp]) - 1, 1)
         item[SKILL_PROGRESS] = torch.tensor(
             float(np.clip(progress, 0, 1)), dtype=torch.float32
@@ -447,3 +458,46 @@ class ABCNativeSkillVLADataset(ABCNativeDataset):
             position = self._spatial.episode_position[episode_id]
             item["terminator_top_camera_projection"] = torch.from_numpy(self._spatial.top_projection[position].copy())
         return item
+
+    def _add_vlm_termination_targets(self, item, episode, frame, selected, starts, lengths, codes, episode_length):
+        """Reuse LIBERO's GT endpoints for the jitter-selected skill and past conditions.
+
+        Each extra condition retains its own two top-view UVs and arm validity.
+        These targets use the existing spatial sidecar, so no data rebuild or
+        extra video decode is needed, and VSA frame sampling stays unchanged.
+        """
+        from .vlm_termination_supervision import (
+            DISTANCE, TERMINAL, PAST_CODES, PAST_VALID, PAST_UV, PAST_UV_VALID,
+            PAST_TERMINAL, PAST_DISTANCE, termination_conditions,
+        )
+        distance, terminal, indices = termination_conditions(
+            frame, selected, starts, lengths, codes, self._vlm_termination_post_end_steps,
+            episode_length=episode_length,
+        )
+        slots = len(indices)
+        past_codes = torch.zeros(slots, dtype=torch.long)
+        valid = torch.zeros(slots, dtype=torch.bool)
+        uv = torch.zeros(slots, 2, 2)
+        uv_valid = torch.zeros(slots, 2, dtype=torch.bool)
+        past_terminal = torch.zeros(slots, dtype=torch.bool)
+        past_distance = torch.zeros(slots, dtype=torch.long)
+        for slot, rank in enumerate(indices):
+            if rank < 0:
+                continue
+            start = int(starts[rank])
+            target = self._spatial.targets(episode, int(rank), start, frame)
+            point = torch.as_tensor(target["uv"][:2]).float()
+            finite = torch.isfinite(point).all(dim=-1)
+            past_codes[slot] = int(codes[rank])
+            valid[slot] = True
+            uv[slot] = torch.where(finite[:, None], point, torch.zeros_like(point)).clamp(-1, 1)
+            uv_valid[slot] = torch.as_tensor(target["valid"][:2]).bool() & finite
+            endpoint = start + int(lengths[rank]) - 1
+            past_distance[slot] = endpoint - frame
+            past_terminal[slot] = frame == endpoint == episode_length - 1
+        item.update({
+            DISTANCE: torch.tensor(distance, dtype=torch.long),
+            TERMINAL: torch.tensor(terminal), PAST_CODES: past_codes, PAST_VALID: valid,
+            PAST_UV: uv, PAST_UV_VALID: uv_valid, PAST_TERMINAL: past_terminal,
+            PAST_DISTANCE: past_distance,
+        })

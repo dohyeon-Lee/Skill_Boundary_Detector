@@ -90,7 +90,9 @@ def test_visual_policy_loads_only_its_selected_input():
     assert dino_tokens is None
 
 
-def test_cached_curve_mode_does_not_load_policy(monkeypatch, tmp_path):
+@pytest.mark.parametrize("initial_mask", [None, 0])
+@pytest.mark.parametrize("sharded", [False, True])
+def test_cached_curve_mode_does_not_load_policy(monkeypatch, tmp_path, initial_mask, sharded):
     dataset_dir = tmp_path / "dataset"
     output_dir = tmp_path / "skillset"
     (dataset_dir / "meta").mkdir(parents=True)
@@ -99,7 +101,10 @@ def test_cached_curve_mode_does_not_load_policy(monkeypatch, tmp_path):
     pd.DataFrame({"task_index": [0], "task": ["demo"]}).to_parquet(
         dataset_dir / "meta" / "tasks.parquet"
     )
-    (output_dir / "skillset_manifest.json").write_text('{"detector": {"initial_mask_frames": 20}}')
+    import json
+    mask_frames = 20 if initial_mask is None else initial_mask
+    (output_dir / "skillset_manifest.json").write_text(
+        json.dumps({"detector": {"initial_mask_frames": mask_frames}}))
 
     monkeypatch.setattr(
         build_skill_dataset,
@@ -117,16 +122,32 @@ def test_cached_curve_mode_does_not_load_policy(monkeypatch, tmp_path):
     policy = tmp_path / "metadata-only-policy"
     policy.mkdir()
     (policy / "config.json").write_text('{"n_obs_steps": 20}')
-    build_skill_dataset.main(
-        Args(
+    args = Args(
             dataset_dir=str(dataset_dir),
             policy_path=str(policy),
             output_dir=str(output_dir),
             task_ids=[0],
             use_cached_curves=True,
             boundary_threshold_mode="episode_mean",
+            initial_mask_frames=initial_mask,
         )
-    )
+    if sharded:
+        chunk = dataset_dir / 'data/chunk-000'; chunk.mkdir()
+        pd.DataFrame({'episode_index': [1, 2], 'task_index': [0, 0]}).to_parquet(chunk / 'file-000.parquet')
+        monkeypatch.setattr(build_skill_dataset, 'load_episodes_meta', lambda _: pd.DataFrame({'episode_index': [1, 2]}))
+        assigned = tmp_path / 'assigned.json'; assigned.write_text('{"episode_ids":[2]}')
+        args.episode_ids_path = str(assigned)
+        skills = output_dir / 'skills/task00'; skills.mkdir(parents=True)
+        (skills / 'ep00002_task00.done').touch()
+        calls = []
+        def load_assigned(dataset_dir, episode_ids):
+            calls.append(episode_ids)
+            return pd.DataFrame()  # The already-completed episode is skipped before reading frames.
+        monkeypatch.setattr(build_skill_dataset, 'load_data', load_assigned)
+    build_skill_dataset.main(args)
+    assert args.initial_mask_frames == mask_frames
+    if sharded:
+        assert calls == [[2]]
 
 
 def test_aligned_action_chunk_includes_history_and_copy_pads_episode_start():
@@ -137,6 +158,26 @@ def test_aligned_action_chunk_includes_history_and_copy_pads_episode_start():
 
     np.testing.assert_array_equal(middle[:, 0], [0, 1, 2, 3])
     np.testing.assert_array_equal(start[:, 0], [0, 0, 0, 1])
+
+
+@pytest.mark.parametrize('last_anchor', [40, 30])
+def test_overlapping_masks_keep_episode_without_fake_peaks_or_smoothing(tmp_path, monkeypatch, last_anchor):
+    args = Args(initial_mask_frames=20, terminal_mask_frames=24, smooth_window=7,
+                savgol_polyorder=4, score_power=1, boundary_threshold_mode='global_mean',
+                curves_only=True)
+    ts = np.arange(0, last_anchor + 1, 5)
+    scores = np.arange(len(ts), dtype=float)
+    def fail(*a, **k): raise AssertionError('No valid points must not be smoothed')
+    monkeypatch.setattr(build_skill_dataset, '_boundary_savgol', fail)
+    boundaries = build_skill_dataset._detect_boundaries(ts, scores, 66, args)
+    assert boundaries == [0, 66]
+    build_skill_dataset._save_boundary_curve(tmp_path, 3152, 61, ts, scores, boundaries, 66, args)
+    with np.load(tmp_path / 'ep0003152.npz') as curve:
+        assert bool(curve['no_valid_boundary_anchors'])
+        assert np.isnan(curve['sg_vals']).all() and np.isnan(curve['threshold_val'])
+        assert not len(curve['peak_ts'])
+        np.testing.assert_array_equal(curve['boundaries'], [0, 66])
+    assert build_skill_dataset._detect_boundaries(ts, scores, 66, args, global_threshold=2.) == [0, 66]
 
 
 def test_replan_anchors_exclude_incomplete_future_tail():

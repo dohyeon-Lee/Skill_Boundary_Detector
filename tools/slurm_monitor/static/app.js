@@ -88,7 +88,7 @@ function updateCard(card, job) {
     `개별 ${job.evaluation_progress?"평가":"학습"} · GPU 할당 #${job.job_id} (${job.allocation_state}) · 시작 ${date(job.started_at)}`:
     `GPU 할당 #${job.job_id} · ${job.job_name} · 경과 ${job.elapsed || "—"} / 제한 ${job.time_limit || "—"}`;
   card.querySelector(".armed-label").textContent=training?`이 ${job.evaluation_progress?"평가":"학습"} 종료 시 이 지시를 Codex에 자동 전송`:"GPU 할당 종료 시 이 지시를 Codex에 자동 전송";
-  badge(card.querySelector(".state"),job.state==="WAITING_FOR_MEMORY"?"VRAM 대기":job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"||job.state==="WAITING_FOR_MEMORY"?"amber":"blue");
+  badge(card.querySelector(".state"),job.state==="WAITING_FOR_MEMORY"?"VRAM 대기":job.state==="WAITING_FOR_WORKER"?"실행 관리자 응답 대기":job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"||["WAITING_FOR_MEMORY","WAITING_FOR_WORKER"].includes(job.state)?"amber":"blue");
   card.querySelector(".location").textContent=job.terminal?`종료 ${date(job.ended_at)} · exit ${job.exit_code ?? "—"}${job.reason?" · "+job.reason:""}`:job.reason || "";
   const cancelStatus=job.cancel?.status || "";
   const cancelButton=card.querySelector(".cancel");
@@ -148,10 +148,11 @@ function renderEvaluation(card,job) {
     container.querySelector(".evaluation-summary").textContent="평가 진행 상황 · 확인 중";
     add(body,"p",job.evaluation_error,"muted");return;
   }
-  if(progress.kind==="sbd") {
+  if(progress.kind==="sbd"||progress.kind==="sbd_build") {
     const final=progress.phase==="final";
-    container.querySelector(".evaluation-summary").textContent=`DP eval · ${progress.phase_label}${final?"":` · ${pct(progress.percent)}`}`;
-    add(body,"p",`평가 ${progress.episodes}개 에피소드 · 캐시 재사용 포함 · 단계별 진행률`,"muted");
+    const build=progress.kind==="sbd_build";
+    container.querySelector(".evaluation-summary").textContent=`${build?"SBD 전체 빌드":"DP eval"} · ${progress.phase_label}${final?"":` · ${pct(progress.percent)}`}`;
+    add(body,"p",`${build?"전체 빌드":"평가"} ${progress.episodes}개 에피소드${build?` · 워커 ${progress.workers}개`:""} · 캐시 재사용 포함 · 단계별 진행률`,"muted");
     if(progress.cache_conflict)add(body,"p","기존 캐시의 모델·에피소드 설정이 달라 재사용할 수 없습니다.","eval-warning");
     for(const stage of progress.stages) {
       const status=stage.state==="done"?"완료":stage.state==="running"?"진행 중":"대기";

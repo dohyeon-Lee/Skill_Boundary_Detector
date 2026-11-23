@@ -1244,7 +1244,9 @@ def train(
         ),
         "timeout": cfg.dataloader_timeout_s if cfg.num_workers > 0 else 0,
     }
-    worker_context = getattr(dataset, "dataloader_multiprocessing_context", None)
+    worker_context = cfg.dataloader_multiprocessing_context or getattr(
+        dataset, "dataloader_multiprocessing_context", None
+    )
     if cfg.num_workers > 0 and worker_context:
         dataloader_common["multiprocessing_context"] = worker_context
         if is_main_process:

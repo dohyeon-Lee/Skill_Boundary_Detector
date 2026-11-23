@@ -52,4 +52,11 @@ echo "  action  : ${FSQ_ACTION_SPACE} ${FSQ_ACTION_DIM}D; grippers=[${FSQ_ACTION
 echo "  output  : ${FSQ_OUTPUT_DIR}"
 echo "  slurm   : partition=${FSQ_TRAIN_PARTITION} qos=${FSQ_TRAIN_QOS} gres=${FSQ_TRAIN_GRES}"
 
-ABC_FSQ_CONFIG="${CONFIG_PATH}" submit_job "${SBATCH_ARGS[@]}" "${SCRIPT_DIR}/src/train_fsq.sbatch"
+# Existing allocations run Bash directly from disk. Freeze the script bytes
+# alongside the YAML so edits during a long training cannot corrupt Bash's
+# read position when control returns from Python.
+FSQ_EXEC_SCRIPT="$(dirname "${CONFIG_PATH}")/train_fsq.sbatch"
+cp -- "${SCRIPT_DIR}/src/train_fsq.sbatch" "${FSQ_EXEC_SCRIPT}"
+bash -n "${FSQ_EXEC_SCRIPT}"
+
+ABC_FSQ_CONFIG="${CONFIG_PATH}" submit_job "${SBATCH_ARGS[@]}" "${FSQ_EXEC_SCRIPT}"

@@ -59,6 +59,27 @@ if [ "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" = "global_mean" ] && [ ! -f "${EFFECT
   exit 1
 fi
 
+# A one-GPU supervisor may finish only after every expected episode/task pair
+# has its completion marker, including filtered and too-short episodes.
+if [ "${LIBERO_SINGLE_GPU_BUILD:-false}" = true ]; then
+  "${BOOTSTRAP_PYTHON}" - "${PROJECT_ROOT}" "${RAW_DATASET_DIR}" "${SKILLSET_DIR}" "${LIBERO_EXPECTED_EPISODES}" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "lerobot/skillVLA/libero/configs/train_skillVLA/build_data/src"))
+from verify_skillset import task_to_episodes
+mapping = task_to_episodes(Path(sys.argv[2]), None)
+root = Path(sys.argv[3]) / "skills"
+expected = {(ep, task) for task, episodes in mapping.items() for ep in episodes}
+if len(expected) != int(sys.argv[4]):
+    raise RuntimeError("Dataset episode/task mapping changed since submission.")
+missing = [(ep, task) for ep, task in expected
+           if not (root / f"task{task:02d}" / f"ep{ep:05d}_task{task:02d}.done").is_file()]
+if missing:
+    raise RuntimeError(f"Incomplete LIBERO skillset: {len(missing)}/{len(expected)} missing episodes; {missing[:10]}")
+print(f"Verified all {len(expected)} episode completion records.")
+PY
+fi
+
 N_SKILLS=$(find "${SKILLSET_DIR}/skills" -name '*.npz' | wc -l)
 if [ "${N_SKILLS}" -eq 0 ]; then
   echo "No skill npz files found under ${SKILLSET_DIR}/skills" >&2
@@ -69,6 +90,7 @@ mkdir -p "${SKILLSET_DIR}"
 {
   echo "dataset=${TARGET_DATASET}"
   echo "skills=${N_SKILLS}"
+  [ -z "${LIBERO_EXPECTED_EPISODES:-}" ] || echo "episodes=${LIBERO_EXPECTED_EPISODES}"
   echo "skillset_mode=${SKILLSET_MODE}"
   echo "manifest=${SKILLSET_DIR}/skillset_manifest.json"
   echo "boundary_threshold_mode=${SKILLSET_BOUNDARY_THRESHOLD_MODE}"

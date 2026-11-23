@@ -1,0 +1,15 @@
+# Python 3.12 / Linux x86_64. Coffee simulator only; no VLA weights or training stack.
+# robosuite 1.5 changes the controller API used by MimicGen and this dataset.
+robosuite==1.4.1
+mujoco==3.6.0
+numpy==2.2.6
+numba==0.65.0
+scipy==1.17.1
+h5py==3.14.0
+opencv-python==4.13.0.92
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+gdown==5.2.0
+chardet==5.2.0
+huggingface-hub==1.8.0
+six==1.17.0

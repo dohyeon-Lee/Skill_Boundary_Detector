@@ -59,6 +59,7 @@ echo "  DP         : ${DP_POLICY_PATH}"
 echo "  output     : ${SKILLSET_DIR}"
 echo "  detector   : ${SKILLSET_MODE}, ${SKILLSET_ACTION_MODE} 14D, continuous grippers [6,13]"
 echo "  SBD profile: ${SKILLSET_SBD_PROFILE} (power=${SKILLSET_SCORE_POWER}, SG=${SKILLSET_SMOOTH_WINDOW}/${SKILLSET_SAVGOL_POLYORDER})"
+echo "  initial mask: ${SKILLSET_INITIAL_MASK} (true=DP history, false=disabled)"
 echo "  timing     : replan=${SKILLSET_REPLAN_INTERVAL}, nms=${SKILLSET_NMS_DIST}, terminal=${SKILLSET_TERMINAL_MASK_MODE}/pre${SKILLSET_TERMINAL_RELEASE_PRE_OFFSET_FRAMES} @ 30 Hz"
 
 export ABC_EXPECTED_EPISODES ABC_TASK_INDICES_JSON ABC_SOURCE_TASKS_CSV

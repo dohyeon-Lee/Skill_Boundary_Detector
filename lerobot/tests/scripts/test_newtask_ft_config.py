@@ -61,6 +61,22 @@ def _checkpoint(root: Path, group: str, run: str, config: dict) -> Path:
     return path
 
 
+def test_vsa_dataloader_spawn_settings(tmp_path):
+    config = _vsa_setup(tmp_path)
+    config.setdefault("training", {})["dataloader"] = {
+        "workers": 4, "persistent_workers": True,
+        "multiprocessing_context": "spawn", "prefetch_factor": 2,
+    }
+    settings = VSA.build_settings(config)
+    assert settings["num_workers"] == 4
+    assert settings["dataloader_persistent_workers"] is True
+    assert settings["dataloader_multiprocessing_context"] == "spawn"
+    assert settings["dataloader_prefetch_factor"] == 2
+    config["training"]["dataloader"]["workers"] = 0
+    with pytest.raises(ValueError, match="persistent_workers requires"):
+        VSA.build_settings(config)
+
+
 def _vsa_setup(tmp_path: Path, *, label="arch13_skill", **dataset_kwargs) -> dict:
     pt_run = _dataset(tmp_path, "pt_source", "FSQ333_pt")
     _dataset(tmp_path, "new_task", "FSQ333_ft", **dataset_kwargs)
