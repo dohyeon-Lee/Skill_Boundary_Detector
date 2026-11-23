@@ -15,15 +15,19 @@ def model_root(cfg, override=None):
 
 
 def expand_warm_start(cfg, resolve_checkpoint):
-    """Warm-start storage can differ from the new run's global output storage."""
+    """Resolve the active component only; other shared FT references may be remote."""
     warm = cfg.get('warm_start')
     if not isinstance(warm, dict):
         return cfg
     cfg = deepcopy(cfg)
     warm = cfg['warm_start']
     outputs = model_root(cfg, warm.get('outputs_root'))
+    active = cfg.get('stage1_component')
     for key, component in [('vsa_checkpoint', 'VSA'), ('predictor_checkpoint', 'Predictor'),
                            ('terminator_checkpoint', 'Terminator')]:
+        if active in {'VSA', 'Predictor', 'Terminator'} and component != active:
+            warm.pop(key, None)
+            continue
         selector = warm.get(key)
         if isinstance(selector, dict) and 'run' in selector:
             warm[key] = str(resolve_checkpoint(outputs, component, selector, field='warm_start.' + key))

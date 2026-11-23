@@ -96,3 +96,22 @@ def test_coffee_yaml_is_authoritative_over_stale_workflow_exports(monkeypatch):
     cfg = {'workflow_domain': 'mimicgen', 'dp_checkpoint': '010000'}
     assert config_module.get_value(cfg, 'dp_checkpoint') == '010000'
     assert config_module.get_value(cfg, 'dp_run_name', 'current') == 'current'
+
+
+@pytest.mark.parametrize('component,key', [('VSA','vsa_checkpoint'),
+    ('Predictor','predictor_checkpoint'), ('Terminator','terminator_checkpoint')])
+def test_coffee_ft_needs_only_the_active_components_checkpoint(component, key):
+    paths = load('lerobot/skillVLA/mimicgen/configs/src/model_paths.py', 'coffee_warm_start_test')
+    warm = {name: {'run': name, 'checkpoint': 100000}
+            for name in ['vsa_checkpoint', 'predictor_checkpoint', 'terminator_checkpoint']}
+    cfg = {'project_root': '/remote', 'outputs_root': 'outputs_mimicgen',
+           'stage1_component': component, 'warm_start': {**warm, 'outputs_root': 'outputs_filtered'}}
+    def resolve(root, selected, selector, field):
+        if selected != component:
+            raise FileNotFoundError('Only the selected checkpoint was transferred')
+        assert root == Path('/remote/outputs_filtered')
+        return root / selected / 'pretrained_model'
+    resolved = paths.expand_warm_start(cfg, resolve)
+    assert set(resolved['warm_start']) == {'outputs_root', key}
+    assert isinstance(resolved['warm_start'][key], str)
+    assert isinstance(cfg['warm_start'][key], dict)  # Shared source config stays intact.
