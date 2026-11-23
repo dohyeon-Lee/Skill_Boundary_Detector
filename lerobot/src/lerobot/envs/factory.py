@@ -20,11 +20,11 @@ import gymnasium as gym
 from gymnasium.envs.registration import registry as gym_registry
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.envs.configs import AlohaEnv, EnvConfig, HubEnvConfig, IsaaclabArenaEnv, LiberoEnv, PushtEnv
+from lerobot.envs.configs import AlohaEnv, EnvConfig, HubEnvConfig, IsaaclabArenaEnv, LiberoEnv, MimicGenEnv, PushtEnv
 from lerobot.envs.utils import _call_make_env, _download_hub_file, _import_hub_module, _normalize_hub_result
 from lerobot.policies.xvla.configuration_xvla import XVLAConfig
 from lerobot.processor import ProcessorStep
-from lerobot.processor.env_processor import IsaaclabArenaProcessorStep, LiberoProcessorStep
+from lerobot.processor.env_processor import IsaaclabArenaProcessorStep, LiberoProcessorStep, MimicGenProcessorStep
 from lerobot.processor.pipeline import PolicyProcessorPipeline
 
 
@@ -33,6 +33,8 @@ def make_env_config(env_type: str, **kwargs) -> EnvConfig:
         return AlohaEnv(**kwargs)
     elif env_type == "pusht":
         return PushtEnv(**kwargs)
+    elif env_type == "mimicgen":
+        return MimicGenEnv(**kwargs)
     elif env_type == "libero":
         return LiberoEnv(**kwargs)
     else:
@@ -70,7 +72,9 @@ def make_env_pre_post_processors(
         return make_xvla_libero_pre_post_processors()
 
     # For LIBERO environments, add the LiberoProcessorStep to preprocessor
-    if isinstance(env_cfg, LiberoEnv) or "libero" in env_cfg.type:
+    if isinstance(env_cfg, MimicGenEnv):
+        preprocessor_steps.append(MimicGenProcessorStep())
+    elif isinstance(env_cfg, LiberoEnv) or "libero" in env_cfg.type:
         preprocessor_steps.append(LiberoProcessorStep())
 
     # For Isaaclab Arena environments, add the IsaaclabArenaProcessorStep
@@ -165,7 +169,10 @@ def make_env(
 
     env_cls = gym.vector.AsyncVectorEnv if use_async_envs else gym.vector.SyncVectorEnv
 
-    if "libero" in cfg.type:
+    if cfg.type == "mimicgen":
+        from lerobot.envs.mimicgen import create_mimicgen_envs
+        return create_mimicgen_envs(cfg, n_envs, env_cls)
+    elif "libero" in cfg.type:
         from lerobot.envs.libero import create_libero_envs
 
         if cfg.task is None:

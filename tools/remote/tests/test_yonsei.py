@@ -67,6 +67,15 @@ def test_inputs_select_checkpoint_and_dataset_not_output_or_whole_roots(tmp_path
     assert not M.configured_file_inputs(cfg,tmp_path)
 
 
+def test_skillvla_inputs_include_required_iss_beside_the_dataset(tmp_path):
+    run = tmp_path / 'dataset_mimicgen/skillvla/coffee/run'
+    dataset = run / 'skillvla'
+    dataset.mkdir(parents=True)
+    iss = run / 'skill_initial_state.npz'
+    iss.touch()
+    assert set(M.input_paths({'skillvla_dataset_dir': str(dataset)}, tmp_path)) == {dataset, iss}
+
+
 def test_all_skillvla_shells_dispatch_early_and_parse():
     paths=subprocess.check_output(['rg','--files','lerobot/skillVLA','-g','*.sh'],cwd=M.ROOT,text=True).splitlines()
     for rel in paths:

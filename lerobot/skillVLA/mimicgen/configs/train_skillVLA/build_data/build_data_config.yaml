@@ -1,0 +1,36 @@
+# Coffee 데이터와 빌드 모드
+target_dataset: coffee_d0_full_full
+skillvla_data_mode: ft  # pt | ft | ft_own | ft_epi. 앞단계 SBD에도 자동 적용.
+# SBD가 없으면 같은 GPU에서 자동 빌드. DP/검출기/워커는 train_skills/build_data YAML 사용.
+# 해당 recipe도 제출 시 함께 고정하며, target_dataset·mode·PT 참조는 이 YAML이 우선.
+
+# FSQ — 기존 LIBERO PT·FT가 사용한 모델 (폴더명 _new가 기존 버전)
+fsq_outputs_root: outputs_filtered
+fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
+fsq_checkpoint: 2000
+
+# FT용 코드 보정 — 기존 LIBERO PT에서 지원된 코드 사용
+fsq_snap_to_supported: true
+fsq_snap_min_code_freq: 10
+fsq_snap_reference:
+  dataset_root: dataset_filtered
+  source: libero_90_full_full
+  run: FSQ333_contrastive_2000_pt_grounded
+
+# 빌드 결과 — dataset_root는 global을 따름
+dataset_run: FSQ333_libero2000_{skillvla_data_mode}_coffee_d0
+proprio_grounding: episode_start_xyz
+fsq_levels: [3, 3, 3]
+
+# 스킬 길이 / jitter 저장 범위 — 기존 LIBERO 계약
+max_length: 500
+jitter_max_steps: 20
+jitter_max_percent: 30
+
+# 실행 자원
+device: cuda
+slurm:
+  gres: gpu:1
+  cpus: 8
+  memory: 64G
+  time: '24:00:00'

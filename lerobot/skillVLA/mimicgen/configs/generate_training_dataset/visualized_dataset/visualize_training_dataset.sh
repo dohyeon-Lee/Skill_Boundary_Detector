@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"

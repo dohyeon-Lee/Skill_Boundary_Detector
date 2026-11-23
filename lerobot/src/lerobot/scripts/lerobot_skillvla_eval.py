@@ -1430,8 +1430,7 @@ def _fullskill_overlay_pixels(
         )
         if plans[0] is None:
             return None, None
-        sim = env.envs[batch_index].unwrapped._env.env.sim
-        transform = agent_view_transform(sim, height=height, width=width)
+        transform = _environment_top_camera_transform(env, batch_index, height=height, width=width)
         # The trace already contains world XYZ, so no second grounding offset.
         return tuple(
             marks_in_agent_view(transform, plan.reshape(-1, 3), None, height=height, width=width)
@@ -1441,6 +1440,22 @@ def _fullskill_overlay_pixels(
     except Exception as error:  # noqa: BLE001
         logging.warning("Fullskill video overlay unavailable for episode %d: %s", batch_index, error)
         return None, None
+
+
+def _environment_wrist_mirror_x(env, batch_index):
+    sub_envs = getattr(env, "envs", ())
+    if batch_index >= len(sub_envs):
+        return True
+    return getattr(sub_envs[batch_index].unwrapped, "wrist_camera_mirror_x", True)
+
+
+def _environment_top_camera_transform(env, batch_index, *, height, width):
+    base = env.envs[batch_index].unwrapped
+    calibrated = getattr(base, "camera_transform", None)
+    if callable(calibrated):
+        return calibrated(height=height, width=width)
+    from goal_overlay import agent_view_transform
+    return agent_view_transform(base._env.env.sim, height=height, width=width)
 
 
 def _bottleneck_overlay_pixels(
@@ -1459,8 +1474,7 @@ def _bottleneck_overlay_pixels(
     for values in overlays.values():
         if "xyz_world" in values:
             try:
-                sim = env.envs[batch_index].unwrapped._env.env.sim
-                transform = agent_view_transform(sim, height=height, width=width)
+                transform = _environment_top_camera_transform(env, batch_index, height=height, width=width)
                 values["xyz_pixels"] = marks_in_agent_view(
                     transform, values["xyz_world"], None, height=height, width=width,
                 ).pixels
@@ -1480,6 +1494,7 @@ def _bottleneck_overlay_pixels(
                     pixels[valid] = marks_in_wrist_view(
                         poses[steps[valid].astype(int), batch_index], goals,
                         height=height, width=width,
+                        mirror_x=_environment_wrist_mirror_x(env, batch_index),
                     ).pixels
                 values["wrist_xyz_pixels"] = pixels
             except Exception as error:
@@ -1536,19 +1551,19 @@ def _goal_overlay_pixels(
         if poses.ndim == 3 and poses.shape[0] and batch_index < poses.shape[1]:
             steps = np.minimum(np.arange(len(goals)) * stride, poses.shape[0] - 1)
             wrist = marks_in_wrist_view(
-                poses[steps, batch_index], goals, height=height, width=width
+                poses[steps, batch_index], goals, height=height, width=width,
+                mirror_x=_environment_wrist_mirror_x(env, batch_index)
             ).pixels
     except Exception as error:  # noqa: BLE001
         logging.warning("Wrist goal overlay unavailable for episode %d: %s", batch_index, error)
 
     agent = None
     try:
-        sim = env.envs[batch_index].unwrapped._env.env.sim
         grounding = policy.get_grounding_offset()
         if grounding is not None and np.asarray(grounding).ndim > 1:
             grounding = np.asarray(grounding)[batch_index]
         agent = marks_in_agent_view(
-            agent_view_transform(sim, height=height, width=width),
+            _environment_top_camera_transform(env, batch_index, height=height, width=width),
             goals,
             grounding,
             height=height,

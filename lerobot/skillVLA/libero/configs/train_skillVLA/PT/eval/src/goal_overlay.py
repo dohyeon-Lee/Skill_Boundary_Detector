@@ -258,7 +258,7 @@ def marks_in_agent_view(
 
 
 def marks_in_wrist_view(
-    states: np.ndarray, goals: np.ndarray, *, height: int, width: int
+    states: np.ndarray, goals: np.ndarray, *, height: int, width: int, mirror_x: bool = True
 ) -> GoalMarks:
     """Project goals into the gripper camera from each frame's EEF pose.
 
@@ -273,7 +273,7 @@ def marks_in_wrist_view(
         torch.as_tensor(states[:, :3], dtype=torch.float32),
         torch.as_tensor(states[:, 3:6], dtype=torch.float32),
         torch.as_tensor(np.asarray(goals, dtype=np.float64)[:, :3], dtype=torch.float32),
-        WristCamera(),
+        WristCamera(mirror_x=mirror_x),
         height=height,
         width=width,
     )

@@ -1,0 +1,62 @@
+# 공통 설정 / 학습 종류
+newtask_ft_common: true
+stage1_component: VSA
+
+# 실험 이름
+run:
+  suffix: ''
+
+# FT 학습 대상 / loss
+adaptation:
+  freeze_expert: true
+  skill_flow_loss: true
+  visual_aux_loss: true
+  termination_loss: false
+
+# 스킬 전환 randomization
+transition_oversampling:
+  enabled: false
+
+# 학습 / 체크포인트 저장
+training:
+  dataloader:
+    batch_size: 16
+    workers: 8
+    persistent_workers: true
+    multiprocessing_context: spawn
+    gpus: 1
+
+  optimizer:
+    base_lr: 2.5e-05
+
+  gradient_checkpointing:
+    vlm: true
+    vision: false
+    action_expert: false
+  checkpoint_archive: ''
+  keep_checkpoints: 1
+  protect_checkpoints: [3000, 5000, 10000, 20000]
+
+  schedule:
+    steps: 20000
+    lr_mode: warmup_constant
+    warmup_steps: 500
+    log_every: 100
+    save_every: 10000
+
+  vsa_debug:
+    every: 2000
+    initial: [1, 100]
+
+# 로깅 / 저장 관리
+logging:
+  wandb:
+    enable: true
+    project: VLA_NewTask_FT
+
+# 실행 자원
+slurm:
+  gres: gpu:1
+  cpus: 16
+  memory: 128G
+  time: '24:00:00'

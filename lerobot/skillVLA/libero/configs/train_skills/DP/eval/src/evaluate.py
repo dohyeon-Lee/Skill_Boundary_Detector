@@ -142,8 +142,8 @@ def _selected_episode_ids(
         raise ValueError("n_episodes must be positive")
     manifest_path = Path(skillset_dir) / "skillset_manifest.json"
     manifest = _load_manifest(Path(skillset_dir)) if manifest_path.is_file() else {}
-    if manifest.get("evaluation_source") in {"abc_native_subset", "libero_subset"}:
-        if manifest.get("evaluation_source") == "libero_subset":
+    if manifest.get("evaluation_source") in {"abc_native_subset", "libero_subset", "mimicgen_subset"}:
+        if manifest.get("evaluation_source") in {"libero_subset", "mimicgen_subset"}:
             return [episode for task in task_ids for episode in [
                 int(row["episode_index"]) for row in manifest["evaluation_episodes"]
                 if int(row["selection_task_id"]) == task
@@ -181,7 +181,7 @@ def _report_references(skillset_dir: Path, episode_ids: list[int], manifest: dic
     grippers = action.get("gripper_indices", [])
     threshold = float(action.get("gripper_threshold", 0.0))
     previous_cuts, gripper_events = {}, {}
-    if manifest.get("evaluation_source") in {"abc_native_subset", "libero_subset"}:
+    if manifest.get("evaluation_source") in {"abc_native_subset", "libero_subset", "mimicgen_subset"}:
         from build_skill_dataset import _iter_state_action_episodes
 
         dataset = _portable_path(manifest["dataset_dir"], "dataset_ABC")

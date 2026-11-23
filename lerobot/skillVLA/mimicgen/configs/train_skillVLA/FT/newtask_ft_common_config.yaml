@@ -1,0 +1,34 @@
+# 데이터 / 초기 체크포인트
+dataset:
+  skillvla_root: skillvla
+  source: coffee_d0_full_full
+  run: FSQ333_libero2000_ft_coffee_d0
+  n_episodes: 1  # all=전체, 10=episode ID 순서로 앞의 10개. 세 모델 공통.
+
+warm_start:
+  outputs_root: outputs_filtered
+
+  vsa_checkpoint:
+    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base
+    checkpoint: 100000
+
+  predictor_checkpoint:
+    run: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+    checkpoint: 100000
+
+  terminator_checkpoint:
+    run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoS_freeze
+    checkpoint: 100000
+
+# 스킬 전환 randomization
+transition_randomization:
+  enabled: true
+  percent: 25
+  distribution: half_normal
+  preserve_gripper: true
+transition_oversampling:
+  enabled: false
+
+# FSQ 호환성 검증
+fsq:
+  verify_source: true

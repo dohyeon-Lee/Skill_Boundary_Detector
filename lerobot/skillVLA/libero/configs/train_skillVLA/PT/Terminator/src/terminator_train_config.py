@@ -29,6 +29,7 @@ from train_skills_config import (  # noqa: E402
     resolve_run_checkpoint,
     resolve_skillvla_dataset_run,
     resolve_transition_randomization,
+    resolve_training_episodes,
     stage1_run_dirs,
 )
 
@@ -772,6 +773,15 @@ def _rebased_fsq_run_dir(fsq_path: str, dataset_run_dir: Path) -> Path | None:
     recorded = Path(fsq_path).parent
     if exists_here(recorded, "dir"):
         return recorded
+    # A Coffee FT dataset and its LIBERO PT checkpoint have different dataset roots.
+    # Recover the recorded root under this checkout before the same-domain fallback.
+    project = next((p for p in dataset_run_dir.parents if (p / "lerobot/skillVLA").is_dir()), None)
+    if project is not None:
+        for index, part in enumerate(recorded.parts):
+            if part.startswith("dataset"):
+                candidate = project.joinpath(*recorded.parts[index:])
+                if exists_here(candidate, "dir"):
+                    return candidate
     skillvla_root = dataset_run_dir.parent.parent
     if len(recorded.parts) < 2:
         return None
@@ -1177,6 +1187,7 @@ def build_settings(
         / "skillvla"
     )
     dataset = _dataset_contract(dataset_dir, run_tag)
+    episodes = resolve_training_episodes(config, dataset_dir)
     bimanual = dataset["bimanual"]
     if bimanual:
         if initialization_mode != "pt":
@@ -1667,6 +1678,8 @@ def build_settings(
         config.get("transition_oversampling") if train_terminator and not train_predictor else None
     )
     run_name += oversampling.suffix
+    if episodes is not None:
+        run_name += f'_ep{len(episodes)}'
     transition_jitter = (
         resolve_transition_randomization(config, dataset)
         if train_predictor
@@ -1693,6 +1706,7 @@ def build_settings(
         "runpod_watchdog_enabled": as_bool(_at(config, "runpod_watchdog", "enabled", default=False)),
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
+        "dataset_episodes": json.dumps(episodes, separators=(',', ':')),
         "dataset_relabeled": dataset_relabeled,
         "dataset_relabel_ignored_for_predictor": bool(
             predictor_requested and requested_relabel not in (None, "", False)

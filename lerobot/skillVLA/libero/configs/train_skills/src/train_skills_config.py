@@ -96,9 +96,14 @@ def _load_global(path: Path) -> dict[str, Any]:
 def _merge_global(config_path: Path, cfg: dict[str, Any]) -> dict[str, Any]:
     """Merge the nearest global_config.yaml as a base (module cfg keys win)."""
     gpath = _find_global(config_path.parent)
-    if gpath is None or gpath.resolve() == config_path.resolve():
-        return cfg
-    return {**_load_global(gpath), **cfg}
+    if gpath is not None and gpath.resolve() != config_path.resolve():
+        cfg = {**_load_global(gpath), **cfg}
+    if cfg.get("workflow_domain") == "mimicgen":
+        paths = Path(cfg["project_root"]) / "lerobot/skillVLA/mimicgen/configs/src/model_paths.py"
+        cfg = runpy.run_path(str(paths))["expand_warm_start"](cfg, resolve_run_checkpoint)
+        modes = paths.with_name("data_modes.py")
+        cfg = runpy.run_path(str(modes))["configure_data_mode"](cfg)
+    return cfg
 
 
 def load_config(path: Path | str | None = None) -> dict[str, Any]:
@@ -143,6 +148,32 @@ def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
         return result
 
     return _merge_global(config_path, merge(_read_yaml(common_path), component))
+
+
+def resolve_training_episodes(config: dict, dataset_dir: Path) -> list[int] | None:
+    """Select the first N actual episode IDs; omission/all keeps the whole dataset."""
+    value = config.get('dataset', {}).get('n_episodes', 'all')
+    if isinstance(value, str) and value.strip().lower() == 'all':
+        return None
+    if isinstance(value, bool) or not (
+        isinstance(value, int) or isinstance(value, str) and value.strip().isdigit()
+    ):
+        raise ValueError('dataset.n_episodes must be all or a positive integer')
+    count = int(value)
+    if count < 1:
+        raise ValueError('dataset.n_episodes must be all or a positive integer')
+    import pandas as pd
+
+    files = sorted((Path(dataset_dir) / 'meta/episodes').rglob('*.parquet'))
+    if not files:
+        raise FileNotFoundError(f'No episode metadata under {dataset_dir}/meta/episodes')
+    ids = sorted(int(ep) for path in files
+                 for ep in pd.read_parquet(path, columns=['episode_index'])['episode_index'])
+    if len(ids) != len(set(ids)) or any(ep < 0 for ep in ids):
+        raise ValueError('Episode metadata contains duplicate or negative episode IDs')
+    if count > len(ids):
+        raise ValueError(f'dataset.n_episodes={count} exceeds the {len(ids)} available episodes')
+    return ids[:count]
 
 
 def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[Path, ...]:
@@ -218,6 +249,9 @@ def resolve_run_checkpoint(
 
 
 def get_value(cfg: dict[str, Any], key: str, default: Any = None, env: str | None = None) -> Any:
+    if cfg.get("workflow_domain") == "mimicgen":
+        # Explicit Coffee configs must not inherit another domain's resolved exports.
+        return cfg.get(key, default)
     env_key = env or key.upper()
     if env_key in os.environ:
         return os.environ[env_key]
@@ -271,7 +305,7 @@ def relocate_workflow_path(project_root: Path, path: Path) -> Path:
     parts = path.parts
     for index in range(len(parts) - 2):
         if (parts[index] == "lerobot" and parts[index + 1] in {"examples", "skillVLA"}
-                and parts[index + 2] in {"abc", "libero", "analysis"}):
+                and parts[index + 2] in {"abc", "libero", "mimicgen", "analysis"}):
             suffix = parts[index + 2:]
             canonical = project_root.joinpath("lerobot", "skillVLA", *suffix)
             legacy = project_root.joinpath("lerobot", "examples", *suffix)
@@ -710,6 +744,8 @@ def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "skillset_gaussian_sampling": str(
             get_value(cfg, "skillset_gaussian_sampling", "iid")
         ),
+        "skillset_gaussian_center": str(get_value(cfg, "skillset_gaussian_center", "current_gt")),
+        "skillset_initial_mask": as_bool(get_value(cfg, "initial_mask", True)),
         "skillset_gaussian_include_mean": as_bool(
             get_value(cfg, "skillset_gaussian_include_mean", not final_gaussian)
         ),
@@ -885,7 +921,8 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
     )
     dataset_root = root / dataset_root_name
     outputs_root = root / str(get_value(cfg, "outputs_root", "outputs"))
-    dp_outputs_root = outputs_root / "DP"
+    dp_model_root = Path(resolve_path(root, get_value(cfg, "dp_outputs_root", str(outputs_root))))
+    dp_outputs_root = Path(resolve_path(root, get_value(cfg, "dp_checkpoint_root", str(dp_model_root / "DP"))))
     raw_dataset_dir = dataset_root / target_dataset
 
     dp_n_obs_steps = int(get_value(cfg, "dp_n_obs_steps", 10))
@@ -1120,7 +1157,7 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
         "raw_dataset_dir": raw_dataset_dir,
         "dp_base_config": root / "lerobot" / dp_base_config,
         "dp_policy": dp_policy,
-        "dp_output_dir": dp_outputs_root / dp_policy,
+        "dp_output_dir": outputs_root / "DP" / dp_policy,
         "dp_policy_path": (
             dp_outputs_root
             / dp_policy
@@ -2354,7 +2391,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
         "pi_base_model_path": root / "models" / "pi05_base",
         "dp_base_config": root / "lerobot" / str(get_value(cfg, "dp_base_config")),
         "dp_policy": dp_policy,
-        "dp_output_dir": dp_outputs_root / dp_policy,
+        "dp_output_dir": outputs_root / "DP" / dp_policy,
         "dp_policy_path": dp_outputs_root / dp_policy / "checkpoints" / dp_checkpoint / "pretrained_model",
         "dp_checkpoint": dp_checkpoint,
         "dp_vision": dp_vision,

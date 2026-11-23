@@ -1,5 +1,6 @@
 # ./visualize_training_dataset.sh — no venv activation, CPU only.
 dataset: coffee_d0_full_full
+
 dataset_root_override: ""     # MimicGen global dataset_root
 
 visualize:

@@ -118,7 +118,10 @@ def project_into_wrist(
         x, y = x * scale, y * scale
     fx, fy, cx, cy = camera.intrinsics(height=height, width=width)
     column, row = fx * x + cx, fy * y + cy
-    if camera.mirror_x:
+    if isinstance(camera.mirror_x, Tensor):
+        mirror = camera.mirror_x.to(device=column.device, dtype=torch.bool).reshape(-1)
+        column = torch.where(mirror, (width - 1) - column, column)
+    elif camera.mirror_x:
         column = (width - 1) - column
     return torch.stack([column, row], dim=-1), depth
 
@@ -182,3 +185,11 @@ def soft_targets(label: Tensor, *, grid: int, sigma: float) -> Tensor:
     column_weight = torch.exp(-((axis[None, :] - cell_column[:, None]) ** 2) / (2.0 * sigma**2))
     weights = (row_weight[:, :, None] * column_weight[:, None, :]).reshape(-1, grid * grid)
     return weights / weights.sum(dim=-1, keepdim=True)
+
+
+def camera_for_batch(batch: dict, *, repeat: int = 1) -> WristCamera:
+    """Read the dataset orientation, retaining historical LIBERO defaults."""
+    mirror = batch.get("observation.wrist_camera_mirror_x", True)
+    if isinstance(mirror, Tensor) and repeat > 1:
+        mirror = mirror.repeat_interleave(repeat, dim=0)
+    return WristCamera(mirror_x=mirror)

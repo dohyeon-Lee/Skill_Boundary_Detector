@@ -158,8 +158,8 @@ def render_video_report(settings, episode_rows, task_groups, manifest):
             if rendered_episodes % 5 == 0 or rendered_episodes == total_episodes:
                 print(f"[SBD video] episodes={rendered_episodes}/{total_episodes}", flush=True)
         print(f"[video report] task {task_id}: {len(episodes)} episodes", flush=True)
-    domain = "LIBERO" if manifest.get("evaluation_source") == "libero_subset" else "ABC"
-    task_label = settings.get("target_task", "") if domain == "LIBERO" else ', '.join(manifest['source_tasks'])
+    domain = {"libero_subset": "LIBERO", "mimicgen_subset": "MimicGen"}.get(manifest.get("evaluation_source"), "ABC")
+    task_label = settings.get("target_task", "") if domain != "ABC" else ', '.join(manifest['source_tasks'])
     title = f"{domain} {task_label} · obs{policy['n_obs_steps']} / future{policy['horizon']} · NMS "
     title += ", ".join(str(item.get("nms_frames", 0)) for item in boundaries.values())
     save_gallery(root, title, cards)

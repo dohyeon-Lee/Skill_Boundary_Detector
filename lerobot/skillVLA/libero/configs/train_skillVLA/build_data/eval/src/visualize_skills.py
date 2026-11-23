@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import argparse
-import base64
 from collections import defaultdict
+import hashlib
 import html
-from io import BytesIO
 import json
 from pathlib import Path
 import sys
@@ -72,34 +71,57 @@ def image_requests(raw: Path, info: dict, metadata: pd.DataFrame, latents: dict,
     return episodes, requests
 
 
-def decode_images(requests: dict, width: int) -> dict:
-    import cv2
+def decode_images(requests: dict, width: int, output: Path) -> dict:
+    import av
 
     images = {}
+    directory = output / 'src/images'
+    directory.mkdir(parents=True, exist_ok=True)
     for path, wanted in requests.items():
-        cap = cv2.VideoCapture(str(path))
-        try:
-            if not cap.isOpened():
-                raise RuntimeError(f"Cannot open top-view video: {path}")
+        last_frame = max(wanted)
+        video_id = hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:16]
+        with av.open(str(path)) as container:
+            stream = container.streams.video[0]
+            # PyAV supplies a software AV1 decoder for Coffee's videos too.
+            stream.codec_context.thread_count = 2
             found = set()
-            for index in range(max(wanted) + 1):
-                ok, frame = cap.read()
-                if not ok:
+            for index, frame in enumerate(container.decode(stream)):
+                if index > last_frame:
                     break
                 if index not in wanted:
                     continue
-                image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                image = frame.to_image()
                 image.thumbnail((width, width), Image.Resampling.LANCZOS)
-                buffer = BytesIO()
-                image.save(buffer, format="JPEG", quality=90)
-                images[(str(path), index)] = "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+                target = directory / f'{video_id}_w{width}_f{index:07d}.jpg'
+                temporary = target.with_suffix('.tmp')
+                image.save(temporary, format="JPEG", quality=90)
+                temporary.replace(target)
+                images[(str(path), index)] = target.relative_to(output).as_posix()
                 found.add(index)
             if found != wanted:
-                raise RuntimeError(f"Missing video frames in {path}: {sorted(wanted - found)}")
-        finally:
-            cap.release()
+                missing = sorted(wanted - found)
+                raise RuntimeError(f"Missing {len(missing)} video frames in {path}: {missing[:20]}")
         print(f"Decoded {len(wanted)} boundary frames: {path.name}", flush=True)
     return images
+
+
+def episode_controls(ids: list[int]) -> str:
+    return ('<label>에피소드 <select id="episode">' + ''.join(
+        f'<option value="ep{ep}">Episode {ep}</option>' for ep in ids
+    ) + '</select></label><div id="episode-view"></div>')
+
+
+def episode_script() -> str:
+    # Template images stay inert until the selected episode enters the DOM.
+    return """<script>
+const selector = document.getElementById('episode');
+function showEpisode() {
+  const template = document.getElementById('template-' + selector.value);
+  document.getElementById('episode-view').replaceChildren(template.content.cloneNode(true));
+}
+selector.addEventListener('change', showEpisode);
+if (selector.options.length) showEpisode();
+</script>"""
 
 
 def render(run: Path, episodes: list[dict], images: dict) -> str:
@@ -119,12 +141,9 @@ select{background:#25354c;color:white;border:1px solid #52677e;padding:8px;borde
              f"<p>{esc(str(run))}</p><p>{len(episodes)} episodes · {count} skills · Top view</p>",
              "<p>구간은 [start, end)이며, 종료 이미지는 학습 목표와 동일하게 min(end, 마지막 프레임)을 표시합니다. "
              "따라서 전환 지점의 종료 이미지와 다음 스킬 시작 이미지는 같습니다.</p>",
-             '<label>에피소드 <select id="episode"><option value="all">전체</option>']
+             episode_controls([ep['episode_id'] for ep in episodes])]
     for ep in episodes:
-        parts.append(f'<option value="ep{ep["episode_id"]}">Episode {ep["episode_id"]}</option>')
-    parts.append('</select></label>')
-    for ep in episodes:
-        parts.append(f'<details open id="ep{ep["episode_id"]}"><summary>Episode {ep["episode_id"]} · '
+        parts.append(f'<template id="template-ep{ep["episode_id"]}"><details open id="ep{ep["episode_id"]}"><summary>Episode {ep["episode_id"]} · '
                      f'{len(ep["skills"])} skills · {ep["length"]} frames</summary><p class="task">{esc(ep["task"])}</p>')
         for skill in ep["skills"]:
             parts.append(f'<article><b>Skill {skill["skill_index"]}</b> '
@@ -136,10 +155,8 @@ select{background:#25354c;color:white;border:1px solid #52677e;padding:8px;borde
                 parts.append(f'<figure><figcaption>{title} · frame {frame}</figcaption>'
                              f'<img loading="lazy" src="{image}" alt="{title} frame {frame}"></figure>')
             parts.append('</div></article>')
-        parts.append('</details>')
-    parts.append("""<script>document.getElementById('episode').onchange=function(){
-document.querySelectorAll('details').forEach(e=>{e.hidden=this.value!=='all'&&e.id!==this.value;});
-};</script></html>""")
+        parts.append('</details></template>')
+    parts.append(episode_script() + '</html>')
     return "\n".join(parts)
 
 
@@ -172,17 +189,14 @@ select{background:#25354c;color:white;padding:8px;border:1px solid #52677e;borde
     for i, run in enumerate(runs):
         count = sum(len(ep["skills"]) for ep in groups[i])
         parts.append(f'<p>{"왼쪽" if i == 0 else "오른쪽"}: <b>{esc(labels[i])}</b> · {count} skills · {esc(run.name)}</p>')
-    parts.append('<label>에피소드 <select id="episode"><option value="all">전체</option>')
-    for ep_id in maps[0]:
-        parts.append(f'<option value="ep{ep_id}">Episode {ep_id}</option>')
-    parts.append('</select></label>')
+    parts.append(episode_controls(list(maps[0])))
     for ep_id, left in maps[0].items():
         right = maps[1][ep_id]
         if any(left[key] != right[key] for key in ("length", "video", "task")):
             raise ValueError(f"Episode {ep_id}: comparison source images/tasks differ")
         boundaries = [{s["frame_end"] for s in ep["skills"][:-1]} for ep in (left, right)]
         difference = sorted(boundaries[0] ^ boundaries[1])
-        parts.append(f'<details open id="ep{ep_id}"><summary>Episode {ep_id} · '
+        parts.append(f'<template id="template-ep{ep_id}"><details open id="ep{ep_id}"><summary>Episode {ep_id} · '
                      f'{len(left["skills"])} vs {len(right["skills"])} skills · {left["length"]} frames</summary>'
                      f'<p>{esc(left["task"])}</p><p>서로 다른 내부 경계: '
                      f'{", ".join(map(str, difference)) if difference else "없음"}</p><div class="columns">')
@@ -204,21 +218,20 @@ select{background:#25354c;color:white;padding:8px;border:1px solid #52677e;borde
                                  f'<img loading="lazy" src="{images[(ep["video"], skill[key])]}" alt="{title} frame {frame}"></figure>')
                 parts.append('</div></article>')
             parts.append('</section>')
-        parts.append('</div></details>')
-    parts.append("""<script>document.getElementById('episode').onchange=function(){
-document.querySelectorAll('details').forEach(e=>{e.hidden=this.value!=='all'&&e.id!==this.value;});
-};</script></main></html>""")
+        parts.append('</div></details></template>')
+    parts.append(episode_script() + '</main></html>')
     return "\n".join(parts)
 
 
-def main() -> None:
+def main(*, settings_loader=None, default_config: Path | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=BUILD / "eval/visualize_config.yaml")
+    parser.add_argument("--config", type=Path, default=default_config or BUILD / "eval/visualize_config.yaml")
     args = parser.parse_args()
     config_path = args.config.resolve()
     config = yaml.safe_load(config_path.read_text()) or {}
     build_config = resolve(config_path.parent, config.get("build_config", "../train_skillVLA_config.yaml"))
-    settings = build_settings(load_config(build_config))
+    settings = (settings_loader(build_config) if settings_loader is not None
+                else build_settings(load_config(build_config)))
     run = Path(settings["skillvla_run_dir"])
     override = str(config.get("dataset_run", "") or "").strip()
     if override:
@@ -259,17 +272,17 @@ def main() -> None:
             requests[video].update(frames)
     if not requests:
         raise ValueError("Selected episodes contain no skills")
-    images = decode_images(requests, width)
     output = resolve(config_path.parent, config.get("output_dir", "outputs")) / raw.name / run.name
     output.mkdir(parents=True, exist_ok=True)
+    images = decode_images(requests, width, output)
     manifest = {"dataset": str(run), "raw_dataset": str(raw), "camera": CAMERA,
                 "endpoint_convention": "min(frame_end, episode_length - 1)",
                 "episodes": episodes}
-    reports = [("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)),
+    reports = [("src/manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)),
                ("index.html", render(run, episodes, images))]
     if compare_run is not None:
         reports.append(("comparison.html", render_comparison([run, compare_run], [episodes, compare_episodes], images)))
-        reports.append(("comparison_manifest.json", json.dumps(
+        reports.append(("src/comparison_manifest.json", json.dumps(
             {"left": manifest, "right": {**manifest, "dataset": str(compare_run), "episodes": compare_episodes}},
             ensure_ascii=False, indent=2)))
     for filename, content in reports:
@@ -277,6 +290,10 @@ def main() -> None:
         temporary = target.with_suffix(target.suffix + ".tmp")
         temporary.write_text(content, encoding="utf-8")
         temporary.replace(target)
+    for old_name in ('manifest.json', 'comparison_manifest.json'):
+        # These generated manifests moved into src with the image assets.
+        if (output / 'src' / old_name).is_file():
+            (output / old_name).unlink(missing_ok=True)
     print(f"Report: {output / 'index.html'}", flush=True)
     if compare_run is not None:
         print(f"Comparison: {output / 'comparison.html'}", flush=True)

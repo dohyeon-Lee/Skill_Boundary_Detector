@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import zipfile
 
 
 def progress(reader, row):
     launch = reader.read_json(row["sbd_build_launch_path"], 4 * 1024 * 1024)
     env = launch["environment"]
+    pipeline = launch.get("kind") == "skillvla_build"
     libero = env.get("LIBERO_SINGLE_GPU_BUILD") == "true"
     total = int(env["LIBERO_EXPECTED_EPISODES" if libero else "ABC_EXPECTED_EPISODES"])
     if total < 1:
@@ -96,22 +98,35 @@ def progress(reader, row):
     if compatible and curves_done == total and env.get("SKILLSET_BOUNDARY_THRESHOLD_MODE") == "episode_mean":
         threshold_done = True
     verified = compatible and eligible(reader.safe(env["SKILLSET_DONE_PATH"]))
-    final = row.get("state") == "COMPLETED" and verified and threshold_done and segments_done == total
+    sbd_done = verified and threshold_done and segments_done == total
+    final = row.get("state") == "COMPLETED" and sbd_done
+    fsq_done = dataset_done = False
+    if pipeline:
+        output = reader.safe(launch["output_dir"])
+        latent = reader.safe(launch["fsq_latents_path"])
+        fsq_done = eligible(latent) and zipfile.is_zipfile(latent)
+        fsq_done = fsq_done or (eligible(output / "skill_latents.npz") and zipfile.is_zipfile(output / "skill_latents.npz"))
+        dataset_done = eligible(output / ".complete")
+        final = final and fsq_done and dataset_done
     stages = []
     for name, label, done, target in (
         ("curves", "DP 곡선·GMM 생성", curves_done, total),
         ("threshold", "전역 평균 임계값 계산", int(threshold_done), 1),
         ("segment", "스킬 분할 저장", segments_done, total),
-        ("verify", "전체 빌드 최종 검증", int(final), 1),
+        ("verify", "SBD 전체 검증" if pipeline else "전체 빌드 최종 검증", int(sbd_done if pipeline else final), 1),
     ):
         stages.append({"name": name, "label": label, "completed": done, "total": target,
                        "percent": 100 * done / target, "state": "done" if done == target else "pending"})
+    if pipeline:
+        for name, label, done in [("fsq", "FSQ 스킬 인코딩", fsq_done), ("dataset", "SkillVLA·ISS·UV 생성", dataset_done)]:
+            stages.append({"name": name, "label": label, "completed": int(done), "total": 1,
+                           "percent": 100 * int(done), "state": "done" if done else "pending"})
     active = next((stage for stage in stages if stage["state"] != "done"), stages[-1])
     if not final:
         active["state"] = "running" if not row.get("terminal") else "pending"
-    return {"kind": "sbd_build", "phase": "final" if final else active["name"],
+    return {"kind": "sbd_build", "pipeline": pipeline, "phase": "final" if final else active["name"],
             "phase_label": "전체 빌드 완료" if final else active["label"],
             "percent": 100 if final else active["percent"], "stages": stages,
             "episodes": total, "workers": int(env.get("SKILLSET_SINGLE_GPU_WORKERS", 1)),
             "source_tasks": tasks, "cache_conflict": not compatible, "updated_at": updated,
-            "output_dir": str(root)}
+            "output_dir": str(output if pipeline else root)}

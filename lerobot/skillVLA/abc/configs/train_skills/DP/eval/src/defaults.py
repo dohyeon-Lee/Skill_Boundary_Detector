@@ -48,7 +48,7 @@ def resolve_checkpoint(cfg):
     if run:
         if Path(run).name != run or run in {".", ".."}:
             raise ValueError("dp_run_name must be the model folder name under outputs_root/DP")
-        outputs = str(cfg.get("outputs_root", "") or "").strip()
+        outputs = str(cfg.get("dp_outputs_root", cfg.get("outputs_root", "")) or "").strip()
         if not outputs:
             raise ValueError("outputs_root must be defined in global_config.yaml")
         outputs = Path(outputs).expanduser()
@@ -104,7 +104,7 @@ def resolve_config(raw, *, domain="abc"):
         raise ValueError("advanced must be a mapping")
     if set(advanced) & (set(CONTROLS) | RECIPE_KEYS):
         raise ValueError("Keep SBD controls at the top level; do not put variant lists in advanced")
-    if domain not in {"abc", "libero"}:
+    if domain not in {"abc", "libero", "mimicgen"}:
         raise ValueError("SBD domain must be abc|libero")
     domain_defaults = {} if domain == "abc" else {
         "target_dataset": "libero_90_full_full", "source_tasks": [],
@@ -243,7 +243,7 @@ def resolve_config(raw, *, domain="abc"):
         "initial_mask_frames": initial_mask_frames,
         "peak_curvature_scale": curvature,
     }]
-    if domain == "libero":
+    if domain in {"libero", "mimicgen"}:
         cfg["boundary_variants"][0]["terminal_mask_frames"] = 24
     cfg["experiments"] = [{
         "name": f"{horizon_tag}_{center}_unanchored", "probe": probe_name, "cluster": cluster_name,

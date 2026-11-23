@@ -3360,6 +3360,10 @@ def _make_lazy_envs(
     are resident at a time. init_state_arrays is filled by the episode-exact
     oracle stage before any factory runs and is read at env-creation time.
     """
+    if cfg.env.type == "mimicgen":
+        if init_state_arrays or init_model_body_poses:
+            raise ValueError("MimicGen does not support LIBERO exact reset state banks")
+        return {cfg.env.task: {0: _lazy_env_factory(cfg, cfg.env.task, 0, {}, None)}}
     from lerobot.envs.libero import _get_suite, _select_task_ids
 
     suite_names = [s.strip() for s in str(cfg.env.task).split(",") if s.strip()]
@@ -4958,7 +4962,13 @@ def eval_main(cfg: EvalPipelineConfig):
         env_preprocessor, env_postprocessor = make_env_pre_post_processors(
             env_cfg=cfg.env, policy_cfg=cfg.policy
         )
-        task_descriptions = _libero_task_descriptions(cfg.env.task)
+        if cfg.env.type == "mimicgen":
+            from lerobot.envs.mimicgen import INSTRUCTION
+            if any(spec.get("eval_init_states_path") or spec.get("initial_state_bank") for spec in specs):
+                raise ValueError("MimicGen Coffee requires ordinary seeded resets, not demo-exact resets")
+            task_descriptions = {0: INSTRUCTION}
+        else:
+            task_descriptions = _libero_task_descriptions(cfg.env.task)
         episode_exact = all(spec.get("eval_init_states_path") for spec in specs)
         oracle_maps = (
             _shared_bank_maps(envs, specs, cfg.eval.n_episodes, init_state_arrays, init_model_body_poses)

@@ -1,0 +1,66 @@
+# 빌드 대상
+target_dataset: coffee_d0_full_full
+
+# SkillVLA 데이터 용도 — 후속 SkillVLA 빌드와 같은 값 사용
+skillvla_data_mode: ft  # pt | ft | ft_own | ft_epi. ft=기준 PT의 평균 임계값 재사용.
+skillvla_pt_reference:
+  dataset_root: dataset_filtered
+  source: libero_90_full_full
+  run: FSQ333_contrastive_2000_pt_grounded
+
+# 기존 LIBERO PT·FT용 DP — outputs_root가 global과 다를 때만 따로 지정
+dp_outputs_root: outputs_filtered
+dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small
+dp_checkpoint: '010000'
+
+# GPU 부분: DP 추론 / SBD 계산 간격
+skillset_mode: gaussian_x0hat
+skillset_dn_step: 7
+skillset_replan_interval: 5
+
+# CPU 부분: 점수·경계 후처리
+initial_mask: false  # 기존 LIBERO PT·FT 빌드: 초반 제외 없음. true면 DP history 20프레임 제외.
+skillset_n_gmm: 5
+skillset_nms_dist: 15
+skillset_smooth_window: 7
+skillset_savgol_polyorder: 4
+skillset_score_power: 2
+skillset_terminal_mask_frames: 24
+skillset_min_skill_len: 10
+skillset_min_skills: 1
+skillset_boundary_threshold_scale: 1.0
+
+# Probe / PCA 세부 설정
+skillset_probe_count: 96
+skillset_probe_generation: scheduler_gaussian
+skillset_gaussian_center: current_gt
+skillset_gaussian_sampling: iid
+skillset_gaussian_include_mean: false
+skillset_gaussian_seed: 42
+skillset_denoise_steps: 1
+skillset_denoise_output: pred_original_sample
+skillset_pca_variance: 0.95
+skillset_pca_stride: 3
+skillset_score_metric: covariance_gated_cosine
+skillset_gmm_covariance: diag
+skillset_gmm_n_init: 10
+skillset_gmm_max_iter: 300
+skillset_gmm_weighted: true
+skillset_action_mode: dataset
+skillset_gripper_mode: discrete
+skillset_gripper_indices: [-1]
+
+# 저장 이름 — dataset_root는 global을 따름
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+skillset_output_suffix: '{skillvla_data_mode}_coffee_currentgt_h24_r5_k5_nms15_sg7p4_pow2_imask0_tm24'
+
+# 실행 자원
+slurm_gres: gpu:1
+skillset_wandb_project: ''
+skillset_single_gpu_workers: 4
+skillset_cpus_per_task: 8
+skillset_mem: 64G
+skillset_time: '8:00:00'
+skillset_tasks_per_job: 5

@@ -73,7 +73,7 @@ def build_settings(
 ) -> dict:
     cfg = load_config(path) if config_override is None else config_override
     root = Path(str(get_value(cfg, "project_root"))).expanduser().resolve()
-    if analysis_domain not in {"libero", "abc"}:
+    if analysis_domain not in {"libero", "abc", "mimicgen"}:
         raise ValueError(
             "analysis_domain must be libero|abc, got "
             f"{analysis_domain!r}"

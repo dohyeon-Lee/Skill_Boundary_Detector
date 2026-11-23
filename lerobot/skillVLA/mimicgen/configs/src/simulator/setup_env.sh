@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SkillVLA remote dispatch (direct execution only).
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../../remote.sh"
+fi
 # Isolated Coffee simulator. Training checkpoints and datasets are separate.
 set -euo pipefail
 

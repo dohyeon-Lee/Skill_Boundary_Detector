@@ -1,0 +1,62 @@
+# 입력 skillset — dataset_root는 global을 따름
+target_dataset: coffee_d0_full_full
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small_ck010000_gaussian_x0hat_globalref_100p_ft_coffee_currentgt_h24_r5_k5_nms15_sg7p4_pow2_imask0_tm24
+skillset_name: skillset
+
+# 실험 이름 / 코드북 / 모델 크기
+fsq_exp: coffee_d0
+fsq_quantizer:
+  type: fsq
+  levels: [3, 3, 3]
+fsq_hidden_dim: 256
+fsq_num_layers: 2
+
+# 인코더 / 디코더 구조
+fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}
+fsq_start_state_conditioning: none
+fsq_terminator: {architecture: default, termination: false}
+fsq_decoder_reconstructor: true
+
+# 코드 초기화 / loss
+fsq_init_calibration: {enabled: true, gain: 1.0, samples: 0}
+fsq_pair_loss: {type: contrastive, weight: 0.1, inv_temperature: 5.0}
+fsq_route_loss: {enabled: true}
+fsq_action_loss: {weight: 1.0}
+fsq_end_loss: {weight: 0.1, target_sigma: 2.0, positive_weight: 2.0}
+fsq_pair_warmup: {enabled: true, epochs: 50, ramp_epochs: 50}
+
+# Boundary jitter — step과 percent 중 하나만 사용
+fsq_boundary_aug_pmax_step: 10
+fsq_boundary_aug_pmax_percent: 0
+
+# 학습 / 검증 / 저장
+fsq_lr: 3.0e-06
+fsq_lr_schedule: constant
+fsq_batch_size: 64
+fsq_num_epochs: 2000
+fsq_samples_per_skill: 3
+fsq_termination_stratified_sampling: false
+fsq_num_workers: 8
+fsq_val_num_workers: 0
+fsq_val_every: 25
+fsq_checkpoint_every: 100
+fsq_save_best_model: false
+fsq_gradient_checkpointing: false
+
+# 실행 최적화
+fsq_frame_cache_enabled: false
+fsq_frame_cache_stage_local: true
+fsq_frame_cache_cpus_per_task: 32
+fsq_frame_cache_workers: 24
+fsq_frame_cache_decoder_threads: 1
+fsq_dino_features: {enabled: false, batch_size: 256}
+fsq_route_batching: {enabled: false, chunk_size: 27}
+
+# 자원 / 로깅
+fsq_train_gres: gpu:1
+fsq_train_cpus_per_task: 8
+fsq_train_mem: 96G
+fsq_train_time: '48:00:00'
+fsq_wandb_project: VAE_train

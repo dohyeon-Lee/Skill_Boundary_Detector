@@ -69,3 +69,22 @@ def test_invalid_selection_fails_clearly(skillset, space, count):
     root, _ = skillset
     with pytest.raises(ValueError):
         MODULE._selected_episode_ids(root, task_ids=[0], task_id_space=space, target_task="libero_90", n_episodes=count)
+
+
+def test_coffee_partial_build_selects_manifest_episodes_without_existing_skills(tmp_path):
+    # A fresh Coffee run has no segmented skills to index yet. The same selected
+    # episodes must reach both threshold calibration and report task grouping.
+    (tmp_path / "skillset_manifest.json").write_text(json.dumps({
+        "evaluation_source": "mimicgen_subset",
+        "evaluation_episodes": [
+            {"episode_index": ep, "task_index": 0, "selection_task_id": 0, "length": 100}
+            for ep in range(5)
+        ],
+    }))
+    settings = {"task_ids": [0], "task_id_space": "dataset", "target_task": "Coffee_D0", "n_episodes": 5,
+                "threshold_calibration": {"source": "selected", "expected_episodes": 5}}
+    selected = MODULE._selected_episode_ids(
+        tmp_path, **{key: settings[key] for key in ["task_ids", "task_id_space", "target_task", "n_episodes"]})
+    assert selected == list(range(5))
+    assert MODULE._threshold_calibration_episode_ids(settings, tmp_path, selected) == selected
+    assert MODULE._selected_task_episode_groups(settings, tmp_path, selected) == {0: selected}

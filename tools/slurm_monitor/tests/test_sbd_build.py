@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from evaluation import Evaluations
@@ -101,3 +102,35 @@ def test_libero_build_uses_its_frozen_episode_count_and_history_mask(tmp_path):
     progress = Evaluations(tmp_path).enrich(row)['evaluation_progress']
     assert not progress['cache_conflict'] and progress['episodes'] == 3
     assert progress['stages'][0]['completed'] == 1
+
+
+def test_skillvla_pipeline_reports_sbd_then_fsq_and_dataset_stages(tmp_path):
+    row, output, launch = attempt(tmp_path)
+    final_output = tmp_path / 'coffee_skillvla'
+    final_output.mkdir()
+    latent = tmp_path / 'latent.npz'
+    path = launch.with_name('sbd_build_progress.json')
+    path.write_text(json.dumps({**json.loads(launch.read_text()), 'kind': 'skillvla_build', 'run_id': 'build',
+                                'output_dir': str(final_output), 'fsq_latents_path': str(latent)}))
+    status = launch.with_name('training_status.json')
+    record = json.loads(status.read_text())
+    record['work_dir'] = str(tmp_path / 'mimicgen/configs/train_skillVLA/build_data')
+    status.write_text(json.dumps(record))
+    row = training.collect(tmp_path, [])['training:build']
+    assert row['sbd_build_launch_path'] == str(path)
+    reader = Evaluations(tmp_path)
+    assert reader.enrich(row)['evaluation_progress']['pipeline']
+    (output / 'skills/task112').mkdir(parents=True)
+    for episode in range(3):
+        (output / 'curves' / f'ep{episode:07d}.npz').touch()
+        (output / 'skills/task112' / f'ep{episode:05d}_task112.done').touch()
+    (output / 'global_boundary_threshold.json').write_text('{"n_episodes":3}')
+    (output / '.complete').touch()
+    assert reader.enrich(row)['evaluation_progress']['phase'] == 'fsq'
+    with zipfile.ZipFile(latent, 'w') as archive:
+        archive.writestr('tokens.npy', b'fixture')
+    assert reader.enrich(row)['evaluation_progress']['phase'] == 'dataset'
+    (final_output / '.complete').touch()
+    row.update(state='COMPLETED', terminal=True)
+    progress = reader.enrich(row)['evaluation_progress']
+    assert progress['phase'] == 'final' and len(progress['stages']) == 6

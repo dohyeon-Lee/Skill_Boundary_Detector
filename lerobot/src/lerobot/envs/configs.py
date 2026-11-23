@@ -357,6 +357,29 @@ class LiberoEnv(EnvConfig):
         return kwargs
 
 
+@EnvConfig.register_subclass("mimicgen")
+@dataclass
+class MimicGenEnv(LiberoEnv):
+    """Coffee action/state schema matches LIBERO; simulation and pixels differ."""
+    task: str = "Coffee_D0"
+    fps: int = 20
+    episode_length: int | None = 600
+    init_states: bool = False
+    observation_height: int = 256
+    observation_width: int = 256
+    simulator_python: str = ""
+    dataset_dir: str = "dataset_mimicgen/coffee_d0_full_full"
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.task != "Coffee_D0":
+            raise ValueError("Coffee VLA currently supports Coffee_D0; CoffeePreparation needs its own dataset/instruction")
+        if self.control_mode != "relative":
+            raise ValueError("Coffee uses normalized relative OSC_POSE actions")
+        if self.init_states:
+            raise ValueError("Coffee HF data has no per-demo simulator states for exact resets")
+
+
 @EnvConfig.register_subclass("metaworld")
 @dataclass
 class MetaworldEnv(EnvConfig):

@@ -160,6 +160,9 @@ if [ -n "${SKILLSET_DINO_FEATURE_DIR:-}" ]; then
   echo "  DINO features: ${SKILLSET_DINO_FEATURE_DIR}"
 fi
 
+INITIAL_MASK_ARG=()
+[ "${SKILLSET_INITIAL_MASK:-true}" = true ] || INITIAL_MASK_ARG=(--initial_mask_frames 0)
+
 if [ "${SKILLSET_GAUSSIAN_INCLUDE_MEAN}" = "true" ]; then
   GAUSSIAN_MEAN_ARG=(--gaussian-include-mean)
 else
@@ -193,6 +196,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --probe_alpha "${SKILLSET_PROBE_ALPHA}" \
     --probe_generation "${SKILLSET_PROBE_GENERATION}" \
     --gaussian_sampling "${SKILLSET_GAUSSIAN_SAMPLING}" \
+    --gaussian_center "${SKILLSET_GAUSSIAN_CENTER:-current_gt}" \
     "${GAUSSIAN_MEAN_ARG[@]}" \
     --gaussian_seed "${SKILLSET_GAUSSIAN_SEED}" \
     --denoise_steps "${SKILLSET_DENOISE_STEPS}" \
@@ -217,6 +221,7 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --savgol_polyorder "${SKILLSET_SAVGOL_POLYORDER}" \
     --score_power "${SKILLSET_SCORE_POWER}" \
     --terminal_mask_frames "${SKILLSET_TERMINAL_MASK_FRAMES}" \
+    "${INITIAL_MASK_ARG[@]}" \
     --boundary_threshold_mode "${SKILLSET_BOUNDARY_THRESHOLD_MODE}" \
     --boundary_threshold_scale "${SKILLSET_BOUNDARY_THRESHOLD_SCALE}" \
     --global_threshold_path "${EFFECTIVE_GLOBAL_THRESHOLD_PATH}" \

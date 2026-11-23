@@ -1,0 +1,66 @@
+# 모델 선택 — FT의 auto는 해당 컴포넌트 학습 YAML에서 run 이름을 계산
+vsa_training_config: auto
+aux_training_configs:
+  predictor: auto
+  terminator: auto
+model_defaults:
+  focus_source: predictor
+  pose_source: auto
+  expert_xyz_source: auto
+models:
+  - label: Coffee_FT
+    vsa_checkpoint: '005000'
+    predictor_checkpoint: '005000'
+    terminator_checkpoint: '005000'
+
+# 평가 데이터 / 결과 이름
+output_name: coffee_d0_ft_10eps
+resume: true
+target_task: Coffee_D0
+gt_dataset:
+  skillvla_root: skillvla
+  source: coffee_d0_full_full
+  run: FSQ333_libero2000_ft_coffee_d0
+task_ids: [0]
+n_episodes: 10
+
+# Rollout / 스킬 전환
+n_action_steps: 5
+oracle:
+  episode_exact: false
+  repeat_episodes: false
+  broadcast_single_episode: false
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 0
+  max_skill_length: 200
+
+# 영상 / HTML
+video:
+  raw: true
+  record_skill_transitions: true
+  fullskill_overlay: true
+  max_per_task: 5
+  frame_stride: 4
+  fps: 10
+  skill_videos: true
+skill_html: true
+
+# GPU / CPU 실행 자원
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 1
+eval_batch_size: 1
+max_parallel_tasks: 1
+slurm:
+  gres: gpu:1
+  cpus: 8
+  memory: 64G
+  time: '3:00:00'
+
+# 로깅
+logging:
+  wandb:
+    enable: true
+    project: MimicGen_eval

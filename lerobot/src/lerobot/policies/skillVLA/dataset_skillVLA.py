@@ -556,6 +556,7 @@ class SkillVLADataset(LeRobotDataset):
             )
         else:
             self._chunk_end_state_cache = None
+        self._wrist_camera_mirror_x = bool(info.get("wrist_camera_mirror_x", True))
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
         self._iss = (
             _ISSStore(iss_path)
@@ -1412,6 +1413,9 @@ class SkillVLADataset(LeRobotDataset):
             self._add_chunk_end_targets(
                 item, item_index=item_index, frame_index=frame_index, episode_length=ep_len
             )
+        item["observation.wrist_camera_mirror_x"] = torch.tensor(
+            self._wrist_camera_mirror_x, dtype=torch.bool
+        )
         return item
 
     def _add_vlm_termination_targets(self, item, episode, frame, selected, starts, lengths, codes, episode_length):

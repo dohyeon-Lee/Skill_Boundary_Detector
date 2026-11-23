@@ -1,18 +1,24 @@
 # ./prepare_dataset.sh : download Coffee D0, then convert on CPU (no activation needed).
 # --download-only / --convert-only / --dry-run are also supported.
 source_repo: OliverHausdoerfer/demo_src_coffee_task_D0_robot_Panda_gripper_PandaGripper
+
 source_revision: 3ad3717ad8e848091bb6ba3150da1c992f4ddc58
 
 # Paths are relative to global dataset_root, except schema_reference (project root).
 raw_name: _raw/coffee_d0
+
 output_name: coffee_d0_full_full
+
 max_episodes: all           # all or a positive number, in source episode order
+
 schema_reference: dataset_filtered/libero_90_full_full
 
 # Source already has 256x256, 20 Hz AV1 video. Reuse without recompression.
 # Preserve source pixels; camera calibration records this image convention.
 image_transform: identity  # identity only; never apply LIBERO's HDF5 rotation blindly
+
 video_storage: hardlink    # hardlink (copy across filesystems) or copy
+
 gripper_action: signed     # robosuite: -1=open, +1=close; no LIBERO 0/1 remap
 
 # Reconstruct static top / EEF-relative wrist geometry from the pinned simulator.
@@ -21,5 +27,7 @@ prepare_camera_geometry: true
 
 # Lab proxy cannot reach the HF download CDN reliably; direct HTTPS by default.
 download_use_proxy: false
+
 download_retries: 6
+
 download_timeout: 60

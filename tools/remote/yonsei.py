@@ -96,7 +96,7 @@ def parse_flags(args):
 def config_and_resolver(script, args, env, root=ROOT):
     """Use the same config resolvers as native launchers, without submitting jobs."""
     rel = script.relative_to(root).as_posix()
-    family = 'abc' if '/abc/' in rel else 'libero'
+    family = 'mimicgen' if '/mimicgen/' in rel else ('abc' if '/abc/' in rel else 'libero')
     cfg = TREE / family / 'configs'
     parent = script.parent
     variable, default, resolver, extra = '', '', None, []
@@ -106,7 +106,7 @@ def config_and_resolver(script, args, env, root=ROOT):
     elif '/train_skillVLA/' in rel:
         common = root / SHARED / 'train_skillVLA'
         if '/eval/' in rel and script.name == 'submit_eval.sh':
-            if family == 'libero':
+            if family in {'libero', 'mimicgen'}:
                 variable = 'STAGE1_EVAL_CONFIG'
                 default = 'ft_eval_config.yaml' if '/FT/' in rel else 'pt_eval_config.yaml'
                 resolver = common / 'PT/eval/src/stage1_eval_config.py'
@@ -187,6 +187,23 @@ def config_and_resolver(script, args, env, root=ROOT):
             variable = name.upper() + '_TRAIN_CONFIG'
             default = name + ('_FT_config.yaml' if '/FT/' in rel else '_PT_config.yaml')
             resolver = root / cfg / ('train_' + name + '/PT/src/' + name + '_config.py')
+    if family == 'mimicgen':
+        shared_skills = root / SHARED / 'train_skills'
+        if '/train_skills/DP/eval/' in rel:
+            variable, default = 'MIMICGEN_DP_EVAL_CONFIG', 'eval_config.yaml'
+            resolver = parent / 'src/config.py'
+        elif '/train_skills/FSQ/eval/' in rel:
+            variable, default = 'MIMICGEN_FSQ_EVAL_CONFIG', 'eval_config.yaml'
+            resolver = shared_skills / 'skill_eval/fsq_codebook/src/config.py'
+        elif '/train_skills/' in rel:
+            variable = 'TRAIN_SKILLS_CONFIG'
+            resolver = shared_skills / 'src/train_skills_config.py'
+        elif '/train_skillVLA/' in rel and '/eval/' in rel:
+            variable = 'STAGE1_EVAL_CONFIG'
+            resolver = root / cfg / 'train_skillVLA/PT/eval/src/config.py'
+        elif '/train_skillVLA/build_data/' in rel:
+            variable, default = 'MIMICGEN_BUILD_CONFIG', 'build_data_config.yaml'
+            resolver = parent / 'src/build_dataset.py'
     if script.name == 'make_together.sh':
         default = 'together_config.yaml'
     elif script.name == 'run_visualize.sh':
@@ -326,8 +343,10 @@ def input_paths(settings, root=ROOT):
     walk(settings)
     # Dataset contracts often validate provenance adjacent to skillvla/.
     for path in tuple(paths):
+        if path.is_file() and path.suffix == '.pt' and (path.parent / 'fsq_meta.json').is_file():
+            paths.add(path.parent / 'fsq_meta.json')
         if path.name == 'skillvla' and path.is_dir():
-            for name in ('FSQ.pt', 'fsq_source.json', 'skill_focus_uv.npz',
+            for name in ('FSQ.pt', 'fsq_source.json', 'skill_focus_uv.npz', 'skill_initial_state.npz',
                          'skill_latents.npz', 'initial_state.npz', 'eval_init_states.npz'):
                 if (path.parent / name).is_file():
                     paths.add(path.parent / name)
@@ -666,10 +685,10 @@ def launch(script, args, root=ROOT, env=None):
     if manifest['evaluation'] and not manifest['dry_run']:
         manifest['evaluation']['storage_project'] = base
     (audit/'launch.json').write_text(json.dumps(manifest,indent=2))
-    links = ['.venv', '.venv_groot_lerobot', '.venv_molmoact2', 'models', 'third_party', 'libero_original_dataset',
+    links = ['.venv', '.venv_mimicgen', '.venv_groot_lerobot', '.venv_molmoact2', 'models', 'third_party', 'libero_original_dataset',
              'tools/lerobot-libero', 'tools/openpi', 'lerobot/libero']
     links += sorted({n.split('/')[0] for n in names if n.startswith(('dataset', 'outputs'))})
-    links += ['dataset_filtered','dataset_ABC','outputs_filtered','outputs_ABC']
+    links += ['dataset_filtered','dataset_ABC','dataset_mimicgen','outputs_filtered','outputs_ABC','outputs_mimicgen']
     # Small banks/references live alongside code, outside the root data links.
     links += [n for n in names if not n.startswith(('dataset','outputs','models','third_party','libero_original_dataset'))]
     started = rpc(host, base, 'start', work=work, links=links, manifest=manifest)

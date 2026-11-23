@@ -151,7 +151,7 @@ function renderEvaluation(card,job) {
   if(progress.kind==="sbd"||progress.kind==="sbd_build") {
     const final=progress.phase==="final";
     const build=progress.kind==="sbd_build";
-    container.querySelector(".evaluation-summary").textContent=`${build?"SBD 전체 빌드":"DP eval"} · ${progress.phase_label}${final?"":` · ${pct(progress.percent)}`}`;
+    container.querySelector(".evaluation-summary").textContent=`${build?(progress.pipeline?"SkillVLA 전체 빌드":"SBD 전체 빌드"):"DP eval"} · ${progress.phase_label}${final?"":` · ${pct(progress.percent)}`}`;
     add(body,"p",`${build?"전체 빌드":"평가"} ${progress.episodes}개 에피소드${build?` · 워커 ${progress.workers}개`:""} · 캐시 재사용 포함 · 단계별 진행률`,"muted");
     if(progress.cache_conflict)add(body,"p","기존 캐시의 모델·에피소드 설정이 달라 재사용할 수 없습니다.","eval-warning");
     for(const stage of progress.stages) {

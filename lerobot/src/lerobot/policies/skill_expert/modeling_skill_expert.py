@@ -216,7 +216,7 @@ from .modeling_utils import (
 )
 from .modeling_skill_predictor import FrozenVLMSkillPredictor
 from .wrist_patch_alignment import wrist_patch_alignment_loss
-from .wrist_patch_target import WristCamera, patch_labels
+from .wrist_patch_target import WristCamera, camera_for_batch, patch_labels
 
 log = logging.getLogger(__name__)
 
@@ -2199,7 +2199,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         # The head reads patches of the DINO frame, so the projection uses that frame's size.
         size = int(self.config.dino_image_size)
         cell, _, valid = patch_labels(
-            state[:, :3], state[:, 3:6], target, WristCamera(),
+            state[:, :3], state[:, 3:6], target, camera_for_batch(batch, repeat=top_k),
             grid=grid, height=size, width=size,
         )
         if chunk_patch:

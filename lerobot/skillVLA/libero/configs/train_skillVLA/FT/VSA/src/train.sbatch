@@ -159,6 +159,10 @@ fi
 # Operational settings come from this submission's YAML on fresh AND resumed
 # runs; keep the saved model/optimizer contract unchanged. The shared trainer
 # prunes local checkpoints only after a complete save, or archives verified copies.
+if [ "${DATASET_EPISODES:-null}" != null ]; then
+  echo "training episodes: ${DATASET_EPISODES}"
+  TRAIN_ARGS+=(--dataset.episodes="${DATASET_EPISODES}")
+fi
 TRAIN_ARGS+=(
   --num_workers="${NUM_WORKERS}"
   --dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS:-false}"

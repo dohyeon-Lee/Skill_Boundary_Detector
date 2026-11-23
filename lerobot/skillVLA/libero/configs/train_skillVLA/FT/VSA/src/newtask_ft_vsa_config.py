@@ -33,6 +33,7 @@ from train_skills_config import (  # noqa: E402
     resolve_run_checkpoint,
     resolve_skillvla_dataset_run,
     resolve_transition_randomization,
+    resolve_training_episodes,
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "vsa_ft_config.yaml"
@@ -164,6 +165,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         _at(config, "dataset", "relabeled", default=""),
     )
     dataset_dir = skillvla_root / dataset_source / run_tag / "skillvla"
+    episodes = resolve_training_episodes(config, dataset_dir)
     contract = _STAGE1._read_dataset_contract(dataset_dir, run_tag)
 
     # --- new dataset vs. frozen checkpoint contract --------------------------
@@ -407,6 +409,8 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     if source.get("vlm_termination_enabled", False) and not termination_loss:
         run_name += "_notermloss"
     run_name += oversampling.suffix
+    if episodes is not None:
+        run_name += f'_ep{len(episodes)}'
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
@@ -417,6 +421,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
+        "dataset_episodes": json.dumps(episodes, separators=(',', ':')),
         "dataset_relabeled": dataset_relabeled,
         "repo_id": f"dohyeon/{dataset_source}",
         "vsa_checkpoint_path": checkpoint,

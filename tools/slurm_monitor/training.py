@@ -101,7 +101,12 @@ def collect(project_root, allocations, known=(), history_days=3):
                    "parent_run_id": record.get("parent_run_id", "")}
             row["training_progress"] = training_progress(row, logs)
             build_env = launch.get("environment", {})
-            if (row["work_dir"].rstrip("/").endswith("/train_skills/build_data")
+            pipeline_path = path.with_name("sbd_build_progress.json")
+            pipeline = small_json(pipeline_path)
+            if (isinstance(pipeline, dict) and pipeline.get("kind") == "skillvla_build"
+                    and pipeline.get("run_id") == identity):
+                row["sbd_build_launch_path"] = str(pipeline_path)
+            elif (row["work_dir"].rstrip("/").endswith("/train_skills/build_data")
                     and (build_env.get("ABC_SINGLE_GPU_BUILD") == "true"
                          or build_env.get("LIBERO_SINGLE_GPU_BUILD") == "true")
                     and build_env.get("SKILLSET_DIR")

@@ -154,6 +154,21 @@ class LiberoProcessorStep(ObservationProcessorStep):
 
 
 @dataclass
+@ProcessorStepRegistry.register(name="mimicgen_processor")
+class MimicGenProcessorStep(LiberoProcessorStep):
+    """Coffee images are already upright; preserve them while flattening state."""
+    def _process_observation(self, observation):
+        # Reuse the exact quaternion convention, but skip LIBERO's image rotation.
+        images = {k:v for k,v in observation.items() if k.startswith(f"{OBS_IMAGES}.")}
+        result = super()._process_observation({k:v for k,v in observation.items() if k not in images})
+        result.update(images)
+        if OBS_STATE in result:
+            result["observation.wrist_camera_mirror_x"] = torch.zeros(
+                result[OBS_STATE].shape[0], dtype=torch.bool, device=result[OBS_STATE].device)
+        return result
+
+
+@dataclass
 @ProcessorStepRegistry.register(name="isaaclab_arena_processor")
 class IsaaclabArenaProcessorStep(ObservationProcessorStep):
     """

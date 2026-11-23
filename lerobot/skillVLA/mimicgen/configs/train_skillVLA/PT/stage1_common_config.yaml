@@ -1,0 +1,19 @@
+# 데이터 / 초기 체크포인트
+dataset:
+  skillvla_root: skillvla
+  source: coffee_d0_full_full
+  run: FSQ333_libero2000_ft_coffee_d0
+warm_start:
+  pi_base: models/pi05_base
+  tokenizer: models/paligemma-3b-pt-224-tokenizer
+
+# 실험 이름
+run:
+  common_suffix: ''
+
+# 스킬 전환 randomization
+transition_randomization:
+  enabled: true
+  percent: 25
+  distribution: half_normal
+  preserve_gripper: true

@@ -1,0 +1,31 @@
+# GPU needed — 캐시가 없거나 이 설정이 바뀌면 DP 부분빌드가 필요
+sbd_prediction_horizon: all  # 첫 N개 action 또는 all. DP의 최대 예측 길이는 체크포인트에서 읽음.
+replan_interval: 5           # SBD를 계산하는 간격 (원본 프레임 수)
+gaussian_center: current_gt  # current_gt | previous_action | pure_noise
+pca_scope: dataset           # 기존 전체 빌드처럼 전체 Coffee 데이터로 PCA fit (CPU).
+
+# CPU only — 호환되는 DP 캐시가 있으면 GPU 없이 재계산
+initial_mask: false          # 기존 LIBERO PT·FT 빌드처럼 초반 제외 없음. true면 20프레임 제외.
+gmm_components: 5            # GMM 클러스터 개수
+nms_frames: 15               # 경계 후보 간 최소 간격 (원본 프레임 수)
+smooth_window: 7             # SG window: 양의 홀수. 1이면 스무딩 끔.
+polyorder: 4                 # SG 스무딩 다항식 차수
+score_power: 2               # LIBERO standard=2
+peak_curvature_scale: 0      # 0=끄기. 1=후보 평균 곡률 미만 제외.
+
+# 모델 선택 — global과 다른 root만 지정. DP/checkpoints/... 경로는 자동 구성.
+dp_outputs_root: outputs_filtered
+dp_run_name: libero_90_full_full_grounded_future_only_obs20_future24_transformer_constLR_small
+dp_checkpoint: 10000         # 기존 LIBERO PT·FT용 DP. fresh 100k 버전과 구분.
+
+# Coffee 평가 데이터 / 결과 이름
+target_dataset: coffee_d0_full_full
+target_task: Coffee_D0
+task_ids: [0]
+task_id_space: dataset
+n_episodes: 5
+output_name: coffee_d0_original_liberoPTFT_DP10k_5ep_pca_dataset
+
+# 실행 자원 — YAML 우선
+eval_workers: 4
+eval_cpus_per_task: 8

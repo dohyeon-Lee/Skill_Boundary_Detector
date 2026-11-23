@@ -177,9 +177,11 @@ def _relocate_project_path(project_root: Path, value: str | Path | None) -> Path
         "dataset",
         "dataset_filtered",
         "dataset_ABC",
+        "dataset_mimicgen",
         "models",
         "outputs",
         "outputs_filtered",
+        "outputs_mimicgen",
     )
     for anchor in anchors:
         if anchor in path.parts:

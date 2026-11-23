@@ -1,0 +1,66 @@
+# 모델 선택 — FT의 auto는 해당 컴포넌트 학습 YAML에서 run 이름을 계산
+model_defaults:
+  focus_source: predictor
+  pose_source: auto
+  expert_xyz_source: auto
+  outputs_root: outputs_filtered
+models:
+  - label: Coffee_PT
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base
+    vsa_checkpoint: '100000'
+    predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+    predictor_checkpoint: '100000'
+    terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoS_freeze
+    terminator_checkpoint: '100000'
+
+# 평가 데이터 / 결과 이름
+output_name: coffee_d0_pt_10eps
+resume: true
+target_task: Coffee_D0
+gt_dataset:
+  skillvla_root: skillvla
+  source: coffee_d0_full_full
+  run: FSQ333_libero2000_ft_coffee_d0
+task_ids: [0]
+n_episodes: 10
+
+# Rollout / 스킬 전환
+n_action_steps: 5
+oracle:
+  episode_exact: false
+  repeat_episodes: false
+  broadcast_single_episode: false
+terminator:
+  end_mode: termination
+  end_threshold: 0.5
+  immediate_replan_on_skill_end: true
+  min_skill_steps: 0
+  max_skill_length: 200
+
+# 영상 / HTML
+video:
+  raw: true
+  record_skill_transitions: true
+  fullskill_overlay: true
+  max_per_task: 5
+  frame_stride: 4
+  fps: 10
+  skill_videos: true
+skill_html: true
+
+# GPU / CPU 실행 자원
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 1
+eval_batch_size: 1
+max_parallel_tasks: 1
+slurm:
+  gres: gpu:1
+  cpus: 8
+  memory: 64G
+  time: '3:00:00'
+
+# 로깅
+logging:
+  wandb:
+    enable: true
+    project: MimicGen_eval

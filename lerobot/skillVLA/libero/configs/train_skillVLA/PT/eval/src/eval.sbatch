@@ -85,6 +85,9 @@ export PATH="${EVAL_VENV}/bin:${PATH}"
 source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/runtime_env.sh"
 unset LD_LIBRARY_PATH
 
+# Coffee's pinned simulator runs in its own interpreter; it has no LIBERO assets.
+LIBERO_REPO_ROOT=""
+if [ "${STAGE1_EVAL_ENV_TYPE:-libero}" = libero ]; then
 LIBERO_REPO_ROOT="${PROJECT_ROOT}/tools/lerobot-libero"
 LIBERO_SOURCE_ROOT="${LIBERO_REPO_ROOT}/libero"
 LIBERO_BENCHMARK_ROOT="${LIBERO_SOURCE_ROOT}/libero"
@@ -106,6 +109,10 @@ datasets: ${LIBERO_SOURCE_ROOT}/datasets
 assets: ${LIBERO_BENCHMARK_ROOT}/assets
 EOF
 export LIBERO_CONFIG_PATH="${LIBERO_LOCAL_CONFIG_DIR}"
+
+else
+  mkdir -p logs "${STAGE1_EVAL_WORK_DIR:-${SUBMIT_DIR}}/logs"
+fi
 
 for artifact in "${POLICY_PATH}" "${SKILL_DATASET_DIR}" "${DINO_MODEL_PATH}"; do
   if [ ! -e "${artifact}" ]; then
@@ -240,7 +247,7 @@ for row in "${LOCAL_WORKER_ROWS[@]}"; do
         --policy.device=cuda \
         --policy.compile_model=false \
         --policy.gradient_checkpointing=false \
-        --env.type=libero \
+        --env.type="${STAGE1_EVAL_ENV_TYPE:-libero}" \
         --env.task="${TARGET_TASK}" \
         --env.fps=20 \
         --env.terminate_on_success=false \

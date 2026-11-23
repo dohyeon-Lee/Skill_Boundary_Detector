@@ -441,6 +441,36 @@ def _aux_setup(tmp_path: Path, component: str, **dataset_kwargs) -> dict:
     }
 
 
+@pytest.mark.parametrize('component', ['VSA', 'Predictor', 'Terminator'])
+def test_ft_episode_limit_is_ordered_and_has_its_own_output(tmp_path, component):
+    import pandas as pd
+
+    resolver = VSA if component == 'VSA' else AUX
+    cfg = _vsa_setup(tmp_path) if component == 'VSA' else _aux_setup(tmp_path, component)
+    if component == 'Predictor':
+        checkpoint = Path(cfg['warm_start']['predictor_checkpoint']) / 'config.json'
+        source = json.loads(checkpoint.read_text())
+        source.update(AUX._predictor_contract({'skill_predictor': {'spatial_target': 'uv'}}))
+        checkpoint.write_text(json.dumps(source))
+    cfg['dataset']['n_episodes'] = 'all'
+    full = resolver.build_settings(cfg)
+    assert json.loads(full['dataset_episodes']) is None
+    metadata = full['skillvla_dataset_dir'] / 'meta/episodes/chunk-000'
+    metadata.mkdir(parents=True)
+    # Deliberately shuffled, non-contiguous IDs: select metadata order by ID,
+    # rather than assuming range(N) or taking parquet row order.
+    ids = [42, 0, 19, 2, 7, 15, 18, 23, 31, 35, 39, 40]
+    pd.DataFrame({'episode_index': ids}).to_parquet(metadata / 'file-000.parquet')
+    cfg['dataset']['n_episodes'] = 10
+    limited = resolver.build_settings(cfg)
+    assert json.loads(limited['dataset_episodes']) == sorted(ids)[:10]
+    assert '_ep10' in limited['run_name']
+    assert limited['output_dir'] != full['output_dir']
+    cfg['dataset']['n_episodes'] = 13
+    with pytest.raises(ValueError, match='exceeds the 12 available episodes'):
+        resolver.build_settings(cfg)
+
+
 @pytest.mark.parametrize(
     ("component", "trained", "skipped"),
     [("Predictor", "train_skill_predictor", "train_terminator"),

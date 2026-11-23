@@ -30,7 +30,7 @@ from lerobot.policies.skill_expert.modeling_utils import (
 from lerobot.policies.skill_expert.wrist_patch_alignment import (
     wrist_patch_alignment_loss,
 )
-from lerobot.policies.skill_expert.wrist_patch_target import WristCamera, patch_labels
+from lerobot.policies.skill_expert.wrist_patch_target import WristCamera, camera_for_batch, patch_labels
 from lerobot.utils.constants import (
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
@@ -973,7 +973,7 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 current_context[:, :3],
                 current_context[:, 3:6],
                 clean_goal,
-                WristCamera(),
+                camera_for_batch(batch),
                 grid=grid,
                 height=int(wrist_input.shape[-2]),
                 width=int(wrist_input.shape[-1]),

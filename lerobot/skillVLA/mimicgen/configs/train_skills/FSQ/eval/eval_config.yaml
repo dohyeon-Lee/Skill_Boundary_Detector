@@ -1,0 +1,47 @@
+fsq_eval_workspace: lerobot/skillVLA/mimicgen/configs/train_skills/FSQ/eval
+
+fsq_eval_models:
+- run_name: FSQ333_contrastiveON_routeON_loss_coffee_d0
+
+fsq_eval_checkpoint:
+- '2000'
+
+output_name: coffee_fsq
+
+episode_source: dataset
+
+target_task: Coffee_D0
+
+task_ids:
+- 0
+
+episodes_per_task: 5
+
+episode_selection: first
+
+episode_ids: []
+
+seed: 42
+
+boundary_jitter_sweep: true
+
+terminator_visualization: false
+
+checkpoints_per_job: all
+
+workers_per_checkpoint: 1
+
+eval_max_concurrent: 1
+
+resume: true
+
+slurm:
+  gres: gpu:1
+  latents_time: 04:00:00
+  replay_profile: cpu
+  replay_gres: ''
+  replay_cpus: 4
+  replay_memory: 16G
+  cpus: 8
+  memory: 64G
+  time: 02:00:00

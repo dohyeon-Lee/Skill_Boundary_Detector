@@ -150,11 +150,18 @@ else
   echo "launcher  : direct lerobot-train (single GPU; no launcher import)"
 fi
 
+EPISODE_ARGS=()
+if [ "${DATASET_EPISODES:-null}" != null ]; then
+  echo "training episodes: ${DATASET_EPISODES}"
+  EPISODE_ARGS=(--dataset.episodes="${DATASET_EPISODES}")
+fi
+
 if PYTHONUNBUFFERED=1 PYTORCH_ALLOC_CONF=expandable_segments:True \
   "${TRAIN_LAUNCH[@]}" \
     --dataset.repo_id="${REPO_ID}" \
     --dataset.root="${SKILLVLA_DATASET_DIR}" \
     --dataset.video_backend=pyav \
+    "${EPISODE_ARGS[@]}" \
     --transition_oversampling.enabled="${TRANSITION_OVERSAMPLING_ENABLED:-false}" \
     --transition_oversampling.percent="${TRANSITION_OVERSAMPLING_PERCENT:-25}" \
     --transition_oversampling.distribution="${TRANSITION_OVERSAMPLING_DISTRIBUTION:-uniform}" \

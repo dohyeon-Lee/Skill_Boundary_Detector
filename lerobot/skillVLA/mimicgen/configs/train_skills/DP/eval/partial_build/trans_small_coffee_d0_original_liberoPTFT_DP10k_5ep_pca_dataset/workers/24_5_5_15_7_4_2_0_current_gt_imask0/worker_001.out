@@ -1,0 +1,9 @@
+[cpu] threads=2, interop=1, budget=8, episode_workers=4
+[worker 1] cache-only scope: 1 episodes; global calibration remains {'source': 'selected', 'expected_episodes': 5}; no local threshold or report will be published
+Threshold calibration: 1 episodes; report: 1 episodes
+Loading weights from local directory
+  [scheduler] DDIM, steps=10
+[worker 1] policy ready
+[probe 1/1] iid96_r5_true_h24_current_gt · ep3
+[cluster 1/1] iid96_r5_true_h24_current_gt + k5_unanchored · ep3
+[worker 1] raw and GMM caches ready; no local threshold/report generated
