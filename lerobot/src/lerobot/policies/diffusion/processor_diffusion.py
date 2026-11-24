@@ -15,6 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,7 @@ from lerobot.processor.relative_action_processor import (
     RelativeActionsProcessorStep,
 )
 from lerobot.processor.yam_kinematics import to_yam_delta_pose_actions
+from lerobot.processor.eef_delta_pose import to_eef_delta_pose_actions
 from lerobot.types import EnvTransition, TransitionKey
 from lerobot.utils.constants import (
     ACTION,
@@ -96,8 +98,11 @@ class DiffusionDeltaJointActionsProcessorStep(DeltaJointActionsProcessorStep):
 
 
 @ProcessorStepRegistry.register("diffusion_delta_pose_actions_processor")
+@dataclass
 class DiffusionDeltaPoseActionsProcessorStep(DiffusionDeltaJointActionsProcessorStep):
-    """Convert canonical ABC YAM joint chunks to consecutive bimanual EEF deltas."""
+    """Convert joint/FK or recorded EEF target chunks to consecutive pose deltas."""
+
+    pose_input: str = 'yam_joint'
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         observation = transition.get(TransitionKey.OBSERVATION, {}) or {}
@@ -114,11 +119,17 @@ class DiffusionDeltaPoseActionsProcessorStep(DiffusionDeltaJointActionsProcessor
         action = new_transition.get(TransitionKey.ACTION)
         if action is None or anchor_state is None:
             return new_transition
-        new_transition[TransitionKey.ACTION] = to_yam_delta_pose_actions(action, anchor_state)
+        if self.pose_input == 'eef_pose':
+            converted = to_eef_delta_pose_actions(action, anchor_state)
+        elif self.pose_input == 'yam_joint':
+            converted = to_yam_delta_pose_actions(action, anchor_state)
+        else:
+            raise ValueError('Unsupported delta-pose processor input: ' + self.pose_input)
+        new_transition[TransitionKey.ACTION] = converted
         return new_transition
 
     def get_config(self) -> dict[str, Any]:
-        return {"enabled": self.enabled}
+        return {"enabled": self.enabled, "pose_input": self.pose_input}
 
 
 def _load_relative_action_stats(config: DiffusionConfig) -> tuple[dict[str, torch.Tensor], list[str], list[str]]:
@@ -175,6 +186,8 @@ def _load_delta_pose_action_stats(config: DiffusionConfig) -> dict[str, torch.Te
         raise ValueError(
             f"delta-pose stats chunk_size={payload.get('chunk_size')} < policy horizon={horizon_needed}"
         )
+    if payload.get('pose_input', 'yam_joint') != config.delta_pose_input:
+        raise ValueError('delta-pose normalization stats use a different pose input convention')
     return {
         key: torch.tensor(value, dtype=torch.float32)
         for key, value in payload["action"].items()
@@ -301,7 +314,7 @@ def make_diffusion_pre_post_processors(
         delta_pose_stats = _load_delta_pose_action_stats(config)
         dataset_stats = dict(dataset_stats or {})
         dataset_stats["action"] = delta_pose_stats
-        action_step = DiffusionDeltaPoseActionsProcessorStep(enabled=True)
+        action_step = DiffusionDeltaPoseActionsProcessorStep(enabled=True, pose_input=config.delta_pose_input)
     input_steps = [
         RenameObservationsProcessorStep(rename_map={}),
         AddBatchDimensionProcessorStep(),

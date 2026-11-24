@@ -20,6 +20,7 @@ from lerobot.configs.transition_oversampling import TransitionOversamplingConfig
 from lerobot.utils.checkpoint_retention import validate_checkpoint_retention  # noqa: E402
 sys.path.insert(0, str(_HERE.parents[4] / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
+    apply_droid_training_group,
     as_bool,
     exists_here,
     as_list,
@@ -1836,6 +1837,8 @@ def build_settings(
         raise ValueError("termination_loss.post_end_steps must be non-negative.")
     if settings["num_workers"] < 0:
         raise ValueError("training.dataloader.workers must be non-negative.")
+    settings = apply_droid_training_group(config, settings, dataset_dir,
+        run_key='run_name', output_key='output_dir')
     if settings["dataloader_prefetch_factor"] <= 0:
         raise ValueError("training.dataloader.prefetch_factor must be positive.")
     if settings["dataloader_persistent_workers"] and settings["num_workers"] == 0:

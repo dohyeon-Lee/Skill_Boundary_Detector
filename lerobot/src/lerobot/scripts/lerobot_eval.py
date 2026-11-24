@@ -117,6 +117,7 @@ from lerobot.processor import PolicyProcessorPipeline
 from lerobot.types import PolicyAction
 from lerobot.utils.constants import ACTION, DONE, OBS_STR, REWARD
 from lerobot.utils.device_utils import get_safe_torch_device
+from lerobot.utils.eval_success import vector_successes
 from lerobot.utils.import_utils import register_third_party_plugins
 from lerobot.utils.io_utils import write_video
 from lerobot.utils.random_utils import set_seed
@@ -421,18 +422,9 @@ def rollout(
         if render_callback is not None:
             render_callback(env)
 
-        # VectorEnv stores is_success in `info["final_info"][env_index]["is_success"]`. "final_info" isn't
-        # available if none of the envs finished.
-        if "final_info" in info:
-            final_info = info["final_info"]
-            if not isinstance(final_info, dict):
-                raise RuntimeError(
-                    "Unsupported `final_info` format: expected dict (Gymnasium >= 1.0). "
-                    "You're likely using an older version of gymnasium (< 1.0). Please upgrade."
-                )
-            successes = final_info["is_success"].tolist()
-        else:
-            successes = [False] * env.num_envs
+        # NEXT_STEP emits terminal success directly; SAME_STEP nests it under
+        # final_info. Read both so successful Coffee rollouts are not lost.
+        successes = vector_successes(info, env.num_envs)
 
         # Keep track of which environments are done so far.
         # Mark the episode as done if we reach the maximum step limit.

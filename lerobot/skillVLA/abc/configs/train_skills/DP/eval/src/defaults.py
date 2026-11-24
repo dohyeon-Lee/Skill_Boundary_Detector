@@ -104,14 +104,17 @@ def resolve_config(raw, *, domain="abc"):
         raise ValueError("advanced must be a mapping")
     if set(advanced) & (set(CONTROLS) | RECIPE_KEYS):
         raise ValueError("Keep SBD controls at the top level; do not put variant lists in advanced")
-    if domain not in {"abc", "libero", "mimicgen"}:
-        raise ValueError("SBD domain must be abc|libero")
+    if domain not in {"abc", "libero", "mimicgen", "droid"}:
+        raise ValueError("SBD domain must be abc|libero|mimicgen|droid")
     domain_defaults = {} if domain == "abc" else {
         "target_dataset": "libero_90_full_full", "source_tasks": [],
         "target_task": "libero_90", "task_id_space": "suite",
         "report_image_key": "observation.images.image", "pca_scope": "selected",
         "report_consistency_tolerance_frames": 6,
     }
+    if domain == "droid":
+        domain_defaults.update(target_dataset="droid_success_5k_joint_velocity",
+                               target_task="droid", task_id_space="dataset", pca_scope="dataset")
     cfg = {**deepcopy(DEFAULTS), **domain_defaults, **deepcopy(advanced), **deepcopy(raw)}
     cfg.pop("advanced", None)
     if not cfg.get("target_task"):
@@ -124,7 +127,7 @@ def resolve_config(raw, *, domain="abc"):
     # Resolving an already expanded/frozen recipe must not add the prefix twice.
     if base_name.startswith(prefix + "_"):
         base_name = base_name[len(prefix) + 1:]
-    if domain == "libero" and cfg.get("pca_scope", "selected") == "dataset" and not base_name.endswith("_pca_dataset"):
+    if domain in {"libero", "droid"} and cfg.get("pca_scope", "selected") == "dataset" and not base_name.endswith("_pca_dataset"):
         base_name += "_pca_dataset"
     scope_tag = None
     if domain == "abc":
@@ -175,6 +178,9 @@ def resolve_config(raw, *, domain="abc"):
         return cfg, model
 
     domain_controls = {} if domain == "abc" else {"replan_interval": 5, "nms_frames": 15, "score_power": 2}
+    if domain == "droid":
+        domain_controls["replan_interval"] = _integer(cfg.get("vla_replan_steps", 8), "vla_replan_steps")
+        domain_controls["nms_frames"] = math.ceil(1.5 * _integer(cfg.get("vla_chunk_size", 15), "vla_chunk_size"))
     values = {**CONTROLS, **domain_controls, **{key: cfg[key] for key in CONTROLS if key in cfg}}
     requested = values["sbd_prediction_horizon"]
     length = maximum if requested == "all" else _integer(requested, "sbd_prediction_horizon")
@@ -243,7 +249,7 @@ def resolve_config(raw, *, domain="abc"):
         "initial_mask_frames": initial_mask_frames,
         "peak_curvature_scale": curvature,
     }]
-    if domain in {"libero", "mimicgen"}:
+    if domain in {"libero", "mimicgen", "droid"}:
         cfg["boundary_variants"][0]["terminal_mask_frames"] = 24
     cfg["experiments"] = [{
         "name": f"{horizon_tag}_{center}_unanchored", "probe": probe_name, "cluster": cluster_name,

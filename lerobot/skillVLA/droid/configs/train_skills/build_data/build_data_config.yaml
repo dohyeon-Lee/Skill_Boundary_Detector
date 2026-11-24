@@ -1,0 +1,47 @@
+# target_dataset inherits global droid_dataset; checkpoint choice stays explicit.
+dp_run_name: '{target_dataset}_future_only_obs30_future18_transformer_constLR_small{droid_group_suffix}'
+dp_checkpoint: '100000'
+skillvla_data_mode: pt
+skillset_mode: gaussian_x0hat
+skillset_dn_step: 7
+skillset_replan_interval: 8
+initial_mask: false
+skillset_probe_count: 96
+skillset_probe_generation: scheduler_gaussian
+skillset_gaussian_center: current_gt
+skillset_gaussian_sampling: iid
+skillset_gaussian_include_mean: false
+skillset_gaussian_seed: 42
+skillset_denoise_steps: 1
+skillset_denoise_output: pred_original_sample
+skillset_pca_variance: 0.95
+skillset_pca_stride: 3
+skillset_n_gmm: 5
+skillset_gmm_covariance: diag
+skillset_gmm_n_init: 10
+skillset_gmm_max_iter: 300
+skillset_gmm_weighted: true
+skillset_score_metric: covariance_gated_cosine
+skillset_score_power: 2
+skillset_smooth_window: 7
+skillset_savgol_polyorder: 4
+skillset_nms_dist: 23  # ceil(VLA chunk 15 * 1.5)
+skillset_min_skill_len: 10
+skillset_terminal_mask_frames: 15
+skillset_min_skills: 1
+skillset_boundary_threshold_scale: 1.0
+# joint velocities are already controller commands: do NOT subtract joint positions.
+skillset_action_mode: dataset
+skillset_gripper_mode: discrete
+skillset_gripper_indices: [7]
+skillset_gripper_values: [0.0, 1.0]
+skillset_gripper_threshold: 0.5
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_name: skillset
+slurm_gres: gpu:1
+skillset_single_gpu_workers: 8
+skillset_cpus_per_task: 16
+skillset_mem: 64G
+skillset_time: '24:00:00'
+skillset_wandb_project: ''

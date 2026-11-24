@@ -35,6 +35,7 @@ from lerobot.utils.gradient_checkpointing import parse_checkpointing
 _HERE = Path(__file__).resolve()
 sys.path.insert(0, str(_HERE.parent.parent.parent.parent / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
+    apply_droid_training_group,
     as_bool,
     exists_here,
     as_list,
@@ -2080,6 +2081,8 @@ def build_settings(config: dict) -> dict:
         "skip_dataset_staging": bimanual_spatial_auxiliary,
     }
     settings.update({name + "_checkpointing": json.dumps(value) for name, value in checkpoint_streams.items()})
+    settings = apply_droid_training_group(config, settings, dataset_dir,
+        run_key='pt_run_name', output_key='pt_output_dir')
     if settings["dataloader_prefetch_factor"] <= 0:
         raise ValueError("training.dataloader.prefetch_factor must be positive.")
     saved_config = settings["pt_output_dir"] / "checkpoints" / "last" / "pretrained_model" / "config.json"

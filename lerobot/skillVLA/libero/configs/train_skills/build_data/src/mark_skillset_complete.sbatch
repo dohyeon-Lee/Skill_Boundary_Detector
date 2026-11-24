@@ -63,13 +63,16 @@ fi
 # has its completion marker, including filtered and too-short episodes.
 if [ "${LIBERO_SINGLE_GPU_BUILD:-false}" = true ]; then
   "${BOOTSTRAP_PYTHON}" - "${PROJECT_ROOT}" "${RAW_DATASET_DIR}" "${SKILLSET_DIR}" "${LIBERO_EXPECTED_EPISODES}" <<'PY'
-import sys
+import json, os, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "lerobot/skillVLA/libero/configs/train_skillVLA/build_data/src"))
 from verify_skillset import task_to_episodes
 mapping = task_to_episodes(Path(sys.argv[2]), None)
 root = Path(sys.argv[3]) / "skills"
 expected = {(ep, task) for task, episodes in mapping.items() for ep in episodes}
+if os.environ.get('DROID_SELECTION_PATH'):
+    allowed = set(json.loads(Path(os.environ['DROID_SELECTION_PATH']).read_text())['episode_ids'])
+    expected = {(ep, task) for ep, task in expected if ep in allowed}
 if len(expected) != int(sys.argv[4]):
     raise RuntimeError("Dataset episode/task mapping changed since submission.")
 missing = [(ep, task) for ep, task in expected

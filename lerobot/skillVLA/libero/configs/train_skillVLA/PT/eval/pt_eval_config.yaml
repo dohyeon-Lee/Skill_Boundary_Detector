@@ -1,43 +1,44 @@
+# 모델: top crop 1.1 + full-skill gripper action PT 50k
+# 기존 mode2 Predictor 100k + VSA 내장 종료 신호
 model_defaults:
   focus_source: predictor
   pose_source: auto
   expert_xyz_source: auto
 models:
-- label: fullskillL18_Term1_dinoS_freeze
-  vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_fullskillL18_vlast9_base
-  vsa_checkpoint: '100000'
-  predictor_dir: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
-  predictor_checkpoint: '100000'
-  terminator_dir: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoS_freeze
-  terminator_checkpoint: '100000'
-output_name: pt_nonproprio_fullskillL18_100k_Predmode2PT100k_Term1DinoSPT100k_10eps_th05
+  - label: termbn_detach_topcrop1p1_gripaction_50k
+    model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_topcrop1p1_gripaction_base
+    checkpoint: '050000'
+    external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
+    external_predictor_checkpoint: '100000'
+    skill_source: external
+    advance_mode: own       # 별도 Terminator 없이 VSA 내장 종료 예측 사용
+    end_mode: termination
+
+# 결과 저장: eval/outputs/<output_name>
+output_name: pt_nonproprio_termbn_detach_topcrop1p1_gripaction_50k_Predmode2PT100k_10eps_th05
 resume: true
+
+# 평가 데이터와 초기 상태
 target_task: libero_90
 gt_dataset:
   skillvla_root: skillvla
   source: libero_90_full_full
   run: FSQ333_contrastive_2000_pt_grounded
-task_ids:
-- 0
-- 1
-- 2
-- 3
-- 4
-- 5
-- 6
-- 7
-- 8
-- 9
-eval_num_gpus: 1
-eval_max_workers_per_gpu: 4
+task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 n_episodes: 10
-eval_batch_size: 1
-max_parallel_tasks: 1
-n_action_steps: 5
 oracle:
   episode_exact: true
   repeat_episodes: true
   broadcast_single_episode: false
+
+# 실행 병렬도와 재계획 간격
+eval_num_gpus: 1
+eval_max_workers_per_gpu: 4
+eval_batch_size: 1
+max_parallel_tasks: 1
+n_action_steps: 5           # action chunk 중 앞 5스텝 실행 후 재계획
+
+# 스킬 종료: 내장 종료 신호의 임계값
 terminator:
   end_mode: termination
   end_threshold: 0.5
@@ -46,6 +47,8 @@ terminator:
   min_skill_steps: 0
   reject_same_skill_transition: false
   max_skill_length: 200
+
+# 영상과 HTML
 video:
   raw: true
   record_skill_transitions: true
@@ -57,10 +60,10 @@ video:
   grid_columns: 1
 skill_html: true
 skill_html_train_samples: 5
+
+# 로깅과 Slurm 자원 (GPU 종류/partition/qos/node는 global 설정 상속)
 logging:
-  wandb:
-    enable: true
-    project: VLA_stage1_eval
+  wandb: {enable: true, project: VLA_stage1_eval}
 slurm:
   gres: gpu:1
   cpus: 16

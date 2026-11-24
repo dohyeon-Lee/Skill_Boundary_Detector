@@ -25,6 +25,7 @@ _HERE = Path(__file__).resolve()
 _TRAIN_SKILLVLA = _HERE.parents[3]
 sys.path.insert(0, str(_TRAIN_SKILLVLA.parent / "train_skills" / "src"))
 from train_skills_config import (  # noqa: E402
+    apply_droid_training_group,
     as_bool,
     as_list,
     load_stage1_component_config,
@@ -417,7 +418,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     if len(run_name) > 240:
         raise ValueError(f"Run name exceeds the filesystem limit ({len(run_name)} chars): {run_name}")
 
-    return {
+    return apply_droid_training_group(config, {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
@@ -496,7 +497,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "train_time": str(_at(config, "slurm", "time", default="48:00:00")),
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
-    }
+    }, dataset_dir, run_key='run_name', output_key='output_dir')
 
 
 def main() -> None:

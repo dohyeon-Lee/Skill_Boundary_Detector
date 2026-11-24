@@ -103,7 +103,16 @@ def _merge_global(config_path: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         cfg = runpy.run_path(str(paths))["expand_warm_start"](cfg, resolve_run_checkpoint)
         modes = paths.with_name("data_modes.py")
         cfg = runpy.run_path(str(modes))["configure_data_mode"](cfg)
+    if cfg.get("workflow_domain") == "droid":
+        root = next(p for p in Path(__file__).resolve().parents if (p / 'lerobot/src/lerobot').is_dir())
+        cfg = runpy.run_path(str(root / 'lerobot/skillVLA/droid/configs/src/dataset_registry.py'))['configure'](cfg)
+        _droid_groups()["definition"](cfg)
     return cfg
+
+
+def _droid_groups():
+    root = next(p for p in Path(__file__).resolve().parents if (p / 'lerobot/src/lerobot').is_dir())
+    return runpy.run_path(str(root / 'lerobot/skillVLA/droid/configs/src/dataset_groups.py'))
 
 
 def load_config(path: Path | str | None = None) -> dict[str, Any]:
@@ -154,7 +163,8 @@ def resolve_training_episodes(config: dict, dataset_dir: Path) -> list[int] | No
     """Select the first N actual episode IDs; omission/all keeps the whole dataset."""
     value = config.get('dataset', {}).get('n_episodes', 'all')
     if isinstance(value, str) and value.strip().lower() == 'all':
-        return None
+        return (_droid_groups()['selected_episodes'](config, dataset_dir)
+                if config.get('workflow_domain') == 'droid' else None)
     if isinstance(value, bool) or not (
         isinstance(value, int) or isinstance(value, str) and value.strip().isdigit()
     ):
@@ -171,9 +181,32 @@ def resolve_training_episodes(config: dict, dataset_dir: Path) -> list[int] | No
                  for ep in pd.read_parquet(path, columns=['episode_index'])['episode_index'])
     if len(ids) != len(set(ids)) or any(ep < 0 for ep in ids):
         raise ValueError('Episode metadata contains duplicate or negative episode IDs')
+    if config.get('workflow_domain') == 'droid':
+        ids = _droid_groups()['selected_episodes'](config, dataset_dir, ids)
     if count > len(ids):
         raise ValueError(f'dataset.n_episodes={count} exceeds the {len(ids)} available episodes')
     return ids[:count]
+
+
+def apply_droid_training_group(config, settings, dataset_dir, *, run_key, output_key):
+    """Shared VSA/Predictor/Terminator PT and FT hook; other domains unchanged."""
+    if config.get('workflow_domain') != 'droid' or not _droid_groups()['suffix'](config):
+        return settings
+    groups = _droid_groups()
+    episodes = resolve_training_episodes(config, dataset_dir)
+    # Include the actual selection, so a different corpus with the same group
+    # name/count cannot accidentally resume this model's previous output.
+    import hashlib
+    selection = groups['select'](config, dataset_dir)
+    fingerprint = hashlib.sha256(json.dumps([selection['selection_sha256'],
+        selection['group_manifest_sha256'], episodes]).encode()).hexdigest()[:10]
+    name = groups['tagged'](settings[run_key], config) + '_sel' + fingerprint
+    if len(name.encode()) > 255:
+        raise ValueError('DROID group run name exceeds filesystem limit; shorten run suffix')
+    settings[run_key] = name
+    settings[output_key] = Path(settings[output_key]).with_name(name)
+    settings['dataset_episodes'] = json.dumps(episodes, separators=(',', ':'))
+    return settings
 
 
 def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[Path, ...]:
@@ -1216,6 +1249,24 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
 
 
 def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    if cfg.get('workflow_domain') != 'droid' or not _droid_groups()['suffix'](cfg):
+        return _build_data_settings(cfg, dataset)
+    groups = _droid_groups()
+    cfg = dict(cfg, skillset_output_suffix=groups['tagged'](cfg.get('skillset_output_suffix', ''), cfg))
+    settings = _build_data_settings(cfg, dataset)
+    if settings['skillset_single_gpu_workers'] < 1:
+        raise ValueError('DROID group builds require the single-GPU episode worker runner')
+    selection = groups['select'](cfg, settings['raw_dataset_dir'])
+    # Read-only resolution; the submitter writes this contract into the private
+    # config bundle before enqueueing. PCA uses the full group, never a shard.
+    # Pass compact contracts through the environment. Full DROID ID lists can
+    # exceed the operating system's per-environment-variable size limit.
+    settings['droid_selection_sha256'] = selection['selection_sha256']
+    settings['droid_selected_episodes'] = selection['selected_episodes']
+    return settings
+
+
+def _build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
     """Resolve only settings used to build the DP-segmented skill dataset.
 
     This stage produces the input artifact consumed later by FSQ or BSQ.  Its
@@ -1404,7 +1455,7 @@ def train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str,
 
     raw_dataset_dir = dp_settings["raw_dataset_dir"]
     fsq_frame_cache_enabled = as_bool(
-        get_value(cfg, "fsq_frame_cache_enabled", True)
+        get_value(cfg, "fsq_frame_cache_enabled", False)
     )
     fsq_frame_cache_stage_local = as_bool(
         get_value(cfg, "fsq_frame_cache_stage_local", True)

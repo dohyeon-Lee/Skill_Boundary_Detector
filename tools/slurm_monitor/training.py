@@ -12,8 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 if __package__:
+    from .conversion import progress as conversion_progress
     from .slurm import CONCRETE_JOB_ID, output_paths, read_log, small_json, training_progress
 else:
+    from conversion import progress as conversion_progress
     from slurm import CONCRETE_JOB_ID, output_paths, read_log, small_json, training_progress
 
 
@@ -100,6 +102,11 @@ def collect(project_root, allocations, known=(), history_days=3):
                    "resource_status_path": record.get("resource_status_path", ""),
                    "parent_run_id": record.get("parent_run_id", "")}
             row["training_progress"] = training_progress(row, logs)
+            row["conversion_progress"] = conversion_progress(row, launch, logs)
+            if not manifest.is_file() and rows.get(key, {}).get("conversion_progress"):
+                row["conversion_progress"] = rows[key]["conversion_progress"]
+            if row["conversion_progress"] and not row["outputs"]:
+                row["outputs"] = [row["conversion_progress"]["output"]]
             build_env = launch.get("environment", {})
             pipeline_path = path.with_name("sbd_build_progress.json")
             pipeline = small_json(pipeline_path)

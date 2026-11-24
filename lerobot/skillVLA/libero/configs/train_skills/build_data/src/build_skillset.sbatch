@@ -149,6 +149,9 @@ EPISODE_SHARD_ARG=()
 if [ -n "${LIBERO_EPISODE_SHARD_PATH:-}" ]; then
   EPISODE_SHARD_ARG=(--episode_ids_path "${LIBERO_EPISODE_SHARD_PATH}" --write_done_markers)
 fi
+if [ -n "${DROID_SELECTION_PATH:-}" ]; then
+  EPISODE_SHARD_ARG+=(--pca_episode_ids_path "${DROID_SELECTION_PATH}")
+fi
 
 # For a fixed cross-task reference, segmentation reads the source JSON directly.
 # Otherwise the global reducer created this skillset's own threshold JSON.

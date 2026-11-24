@@ -43,7 +43,29 @@ else
   RESOLVED_SETTINGS="$("${BOOTSTRAP_PYTHON}" "${COMMON_SRC_DIR}/train_skills_config.py" \
     --config "${CONFIG_PATH}" --stage build_data --shell)"
 fi
+unset DROID_SELECTION_SHA256 DROID_SELECTED_EPISODES DROID_SELECTION_PATH
 eval "${RESOLVED_SETTINGS}"
+
+if [ -n "${DROID_SELECTION_SHA256:-}" ]; then
+  export DROID_SELECTION_PATH="$(dirname "${CONFIG_PATH}")/dataset_selection.json"
+  "${BOOTSTRAP_PYTHON}" - "${PROJECT_ROOT}" "${CONFIG_PATH}" "${RAW_DATASET_DIR}" "${DROID_SELECTION_PATH}" "${SKILLSET_DIR}" <<'PY'
+import json, os, runpy, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+loader = runpy.run_path(str(root / 'lerobot/skillVLA/libero/configs/train_skills/src/train_skills_config.py'))
+groups = runpy.run_path(str(root / 'lerobot/skillVLA/droid/configs/src/dataset_groups.py'))
+selection = groups['select'](loader['load_config'](sys.argv[2]), sys.argv[3])
+if selection['selection_sha256'] != os.environ['DROID_SELECTION_SHA256']:
+    raise ValueError('DROID selection changed during submission')
+selection = {k:v for k,v in selection.items() if k != 'source_episode_ids'}
+saved = Path(sys.argv[5]) / 'dataset_selection.json'
+if saved.is_file() and json.loads(saved.read_text()) != selection:
+    raise ValueError('Existing SBD output belongs to a different DROID selection')
+if (Path(sys.argv[5]) / '.complete').exists() and not saved.is_file():
+    raise ValueError('Completed DROID group build is missing its selection contract')
+groups['write_selection'](sys.argv[4], selection)
+PY
+fi
 
 # This build produces only the state-DP skillset. It neither stages visual features nor decodes
 # episode videos; FSQ handles its own raw-frame vision inputs later during FSQ training/evaluation.
@@ -61,14 +83,20 @@ if [ "${SKILLSET_SINGLE_GPU_WORKERS}" -gt 0 ]; then
   [ -d "${RAW_DATASET_DIR}" ] || { echo "Dataset not found: ${RAW_DATASET_DIR}" >&2; exit 1; }
   [ -d "${DP_POLICY_PATH}" ] || { echo "DP checkpoint not found: ${DP_POLICY_PATH}" >&2; exit 1; }
   METADATA_EXPORTS="$("${BOOTSTRAP_PYTHON}" - "${RAW_DATASET_DIR}" <<'PY'
-import json, shlex, sys
+import json, os, shlex, sys
 from pathlib import Path
 import pandas as pd
 root = Path(sys.argv[1]) / "meta"
 tasks = pd.read_parquet(root / "tasks.parquet").reset_index()
 ids = sorted(int(value) for value in tasks["task_index"].unique())
 parts = sorted((root / "episodes").rglob("file-*.parquet"))
-count = sum(len(pd.read_parquet(part, columns=["episode_index"])) for part in parts)
+episodes = pd.concat([pd.read_parquet(part, columns=["episode_index"]) for part in parts])
+if os.environ.get('DROID_SELECTION_PATH'):
+    selected = json.loads(Path(os.environ['DROID_SELECTION_PATH']).read_text())['episode_ids']
+    if not set(selected).issubset(set(episodes.episode_index)):
+        raise ValueError('DROID selected episodes are missing')
+    episodes = episodes[episodes.episode_index.isin(selected)]
+count = len(episodes)
 if not ids or not count:
     raise ValueError("Source dataset has no tasks/episodes")
 print("export LIBERO_TASK_INDICES_JSON=" + shlex.quote(json.dumps(ids)))

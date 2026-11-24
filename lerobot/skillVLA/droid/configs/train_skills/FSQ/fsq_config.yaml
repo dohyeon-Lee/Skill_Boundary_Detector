@@ -1,0 +1,35 @@
+# target_dataset inherits global droid_dataset.
+fsq_dataset_root: FSQ_dataset
+fsq_inputs_name: FSQ_inputs
+skillset_seg_name: seg_{target_dataset}_future_only_obs30_future18_transformer_constLR_small{droid_group_suffix}_ck100000_gaussian_x0hat_globalmean_100p
+skillset_name: skillset
+
+fsq_run_name: FSQ333_contrastiveON_routeON_loss_{target_dataset}
+fsq_quantizer: {type: fsq, levels: [3, 3, 3]}
+fsq_hidden_dim: 256
+fsq_num_layers: 2
+fsq_autoencoder: {mode: norm_action, gripper_weight: 0.1}
+fsq_start_state_conditioning: none
+fsq_pair_loss: {type: contrastive, weight: 0.1, inv_temperature: 5.0}
+fsq_route_loss: {enabled: true}
+# Reconstruction-only; standalone SkillVLA Terminator will be trained separately.
+# Chunk length defaults to global vla_chunk_size (15); override here if needed:
+# fsq_chunk_size: 15
+fsq_boundary_aug_pmax_step: 8
+fsq_boundary_aug_pmax_percent: 0
+fsq_lr: 0.000003
+fsq_lr_schedule: constant
+fsq_batch_size: 64
+fsq_num_epochs: 2000
+fsq_samples_per_skill: 3
+fsq_num_workers: 8
+fsq_val_num_workers: 0
+fsq_val_every: 25
+fsq_checkpoint_every: 100
+fsq_save_best_model: false
+fsq_gradient_checkpointing: false
+fsq_seed: 42
+fsq_wandb_project: DROID_FSQ
+fsq_train_cpus_per_task: 8
+fsq_train_mem: 64G
+fsq_train_time: '48:00:00'

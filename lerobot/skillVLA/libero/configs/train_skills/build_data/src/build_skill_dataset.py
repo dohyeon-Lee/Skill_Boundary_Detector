@@ -137,7 +137,9 @@ class Args:
     source_tasks: str = ""
     """Comma-separated ABC official source-task IDs; empty keeps every source task."""
     episode_ids_path: str = ""
-    """Optional JSON episode shard. Only processing is filtered; PCA still fits the full dataset."""
+    """Optional processing shard; does not determine the PCA corpus."""
+    pca_episode_ids_path: str = ""
+    """Full corpus selection for PCA; independent of the worker's episode shard."""
     # ── Diffusion scheduler ──────────────────────────────────────────────────
     noise_scheduler_type: str = "DDIM"
     num_inference_steps: int = 10
@@ -1222,6 +1224,14 @@ def main(args: Args) -> None:
         selected_episodes = set(map(int, ids))
         if not ids or len(selected_episodes) != len(ids) or not selected_episodes.issubset(_ep_task):
             raise ValueError("episode_ids_path must contain unique, existing episode IDs.")
+    pca_episodes = None
+    if args.pca_episode_ids_path:
+        ids = json.loads(Path(args.pca_episode_ids_path).read_text())['episode_ids']
+        if not ids or len(set(ids)) != len(ids) or not set(ids).issubset(_ep_task):
+            raise ValueError('pca_episode_ids_path must contain unique, existing episode IDs')
+        pca_episodes = tuple(sorted(ids))
+        if selected_episodes is not None and not selected_episodes.issubset(pca_episodes):
+            raise ValueError('Worker shard is outside the selected PCA corpus')
 
     def _episodes_for_task(tid: int) -> list[int]:
         return sorted(ep for ep, ti in _ep_task.items() if ti == tid
@@ -1299,9 +1309,9 @@ def main(args: Args) -> None:
         if args.action_mode in {ACTION_MODE_ANCHOR_RELATIVE, ACTION_MODE_DELTA_JOINT}:
             rel_mask = relative_action_mask(action_dim, names, exclude_tokens)
         elif args.action_mode == ACTION_MODE_DELTA_POSE:
-            if action_dim != 14:
+            if action_dim != 14 and not (action_dim == 7 and getattr(policy.config, 'delta_pose_input', '') == 'eef_pose'):
                 raise ValueError(
-                    f"delta_pose requires canonical ABC YAM 14D actions, got {action_dim}."
+                    f"delta_pose requires ABC YAM 14D joint targets or explicit 7D EEF targets, got {action_dim}."
                 )
         elif args.action_mode != ACTION_MODE_DATASET:
             raise ValueError(f"Unsupported --action_mode: {args.action_mode}")
@@ -1334,6 +1344,8 @@ def main(args: Args) -> None:
         }
         if args.pca_scale_mode != PCA_SCALE_NONE:
             pca_metadata["pca_scale_mode"] = args.pca_scale_mode
+        if pca_episodes is not None:
+            pca_metadata['episode_ids'] = list(pca_episodes)
         pca_path = output_dir / "action_probe_pca.npz"
         print(f"Loading/fitting action-plan PCA: {pca_path}")
         action_pca = get_or_fit_action_pca(
@@ -1354,6 +1366,7 @@ def main(args: Args) -> None:
                 scale_mode=args.pca_scale_mode,
                 metadata=pca_metadata,
                 source_tasks=source_tasks,
+                episode_ids=pca_episodes,
             ),
         )
         if args.probe_generation == "scheduler_gaussian":

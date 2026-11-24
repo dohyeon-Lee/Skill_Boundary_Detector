@@ -59,6 +59,10 @@ class Args:
     """Output directory. Defaults to parent of skills_dir."""
     stats_path: str = ""
     """Optional task-selection stats JSON; defaults to raw_dataset_dir/meta/stats.json."""
+    training_skill_mask_path: str = ""
+    """Optional boolean .npy, aligned with all skills; filters training IDs only."""
+    episode_ids: list[int] | None = None
+    """Whole-episode corpus selection, applied before train/validation splitting."""
     action_space: str = "dataset"
     """dataset/absolute_joint keep raw targets; delta_joint follows DP's joint deltas."""
     action_encoder_mode: str = "original"
@@ -259,14 +263,21 @@ def _make_target_action(actions):
 
 def load_skill_files(
     skills_dir: Path,
+    *, episode_ids: list[int] | None = None,
 ) -> tuple[list[np.ndarray], list[np.ndarray], list[np.ndarray], list[dict]]:
     npz_files = sorted(skills_dir.rglob("*.npz"))
     if not npz_files:
         raise FileNotFoundError(f"No .npz files in {skills_dir}")
 
     segments, dec_states, dec_targets, metadata = [], [], [], []
+    allowed = None if episode_ids is None else set(episode_ids)
+    if allowed is not None and (not allowed or len(allowed) != len(episode_ids)):
+        raise ValueError('FSQ episode_ids must be nonempty and unique')
     for f in npz_files:
-        d = np.load(str(f))
+        with np.load(str(f)) as source:
+            if allowed is not None and int(source['episode_id']) not in allowed:
+                continue
+            d = dict(source)
         actions = d["actions"].astype(np.float32)
         states  = d["states"].astype(np.float32)
         segments.append(_make_encoder_traj(states))
@@ -282,6 +293,8 @@ def load_skill_files(
             "length":      len(actions),
         })
 
+    if not segments:
+        raise ValueError('FSQ episode selection contains no skills')
     print(f"[FSQ] Loaded {len(segments)} skills from {skills_dir}")
     lengths = [m["length"] for m in metadata]
     print(f"[FSQ] Skill lengths — min:{min(lengths)} max:{max(lengths)} mean:{np.mean(lengths):.1f}")
@@ -324,7 +337,7 @@ def main(args: Args) -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir)
+    segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir, episode_ids=args.episode_ids)
     from action_representation import prepare_fsq_actions
 
     if args.action_space not in {"dataset", "absolute_joint", "delta_joint"}:
@@ -835,6 +848,8 @@ def main(args: Args) -> None:
         wandb_run=wandb_run,
         metadata=metadata,
         resume_from=args.resume_from,
+        training_skill_mask=(np.load(args.training_skill_mask_path, allow_pickle=False)
+                             if args.training_skill_mask_path else None),
     )
 
     # Skill latents (skill_latents.npz) are produced separately by encode_FSQ_skills.py

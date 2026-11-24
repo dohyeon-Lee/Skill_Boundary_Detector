@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,22 @@ from lerobot.datasets.utils import (
 from lerobot.utils.utils import SuppressProgressBars
 
 
+# Arrow materializations are execution caches, not dataset outputs. Keep them
+# local to this process and remove them on normal exit; per-PID ownership also
+# keeps spawned DataLoader workers independent of the parent's cleanup object.
+_PARQUET_CACHE_DIRS: dict[int, tempfile.TemporaryDirectory] = {}
+
+
+def _parquet_cache_dir() -> str:
+    pid = os.getpid()
+    if pid not in _PARQUET_CACHE_DIRS:
+        scratch = os.environ.get("SLURM_TMPDIR") or "/tmp"
+        _PARQUET_CACHE_DIRS[pid] = tempfile.TemporaryDirectory(
+            prefix=f"lerobot-parquet-{os.getuid()}-{pid}-", dir=scratch
+        )
+    return _PARQUET_CACHE_DIRS[pid].name
+
+
 def get_parquet_file_size_in_mb(parquet_path: str | Path) -> float:
     metadata = pq.read_metadata(parquet_path)
     total_uncompressed_size = 0
@@ -63,7 +81,7 @@ def load_nested_dataset(
     pq_dir: Path, features: datasets.Features | None = None, episodes: list[int] | None = None
 ) -> Dataset:
     """Find parquet files in provided directory {pq_dir}/chunk-xxx/file-xxx.parquet
-    Convert parquet files to pyarrow memory mapped in a cache folder for efficient RAM usage
+    Convert parquet files to memory-mapped Arrow in a process-local temporary cache.
     Concatenate all pyarrow references to return HF Dataset format
 
     Args:
@@ -78,7 +96,10 @@ def load_nested_dataset(
     with SuppressProgressBars():
         # We use .from_parquet() memory-mapped loading for efficiency
         filters = pa_ds.field("episode_index").isin(episodes) if episodes is not None else None
-        return Dataset.from_parquet([str(path) for path in paths], filters=filters, features=features)
+        return Dataset.from_parquet(
+            [str(path) for path in paths], filters=filters, features=features,
+            cache_dir=_parquet_cache_dir(),
+        )
 
 
 def get_parquet_num_frames(parquet_path: str | Path) -> int:

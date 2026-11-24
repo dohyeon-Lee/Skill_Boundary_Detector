@@ -107,7 +107,7 @@ def test_fsq_selects_skillset_by_folders_and_reads_manifest(tmp_path: Path) -> N
     assert settings["fsq_terminator_model"] == "default"
     assert settings["fsq_terminator_input_space"] == "both"
     assert settings["fsq_state_rnn_terminator"] is False
-    assert settings["fsq_frame_cache_enabled"] is True
+    assert settings["fsq_frame_cache_enabled"] is False
     assert settings["fsq_frame_cache_stage_local"] is True
     assert settings["fsq_frame_cache_local_root"] == ""
     assert settings["fsq_frame_cache_local_reserve_gb"] == 16
@@ -169,6 +169,7 @@ def test_fsq_term22_execution_accelerations_resolve_independently(
     config = _minimal_fsq_config(tmp_path)
     config.update(
         fsq_terminator={"architecture": "term22", "termination": True},
+        fsq_frame_cache_enabled=True,
         fsq_dino_features={"enabled": True, "batch_size": 128},
         fsq_route_batching={"enabled": True, "chunk_size": 8},
     )

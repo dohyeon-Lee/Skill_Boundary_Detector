@@ -84,17 +84,18 @@ function updateCard(card, job) {
   card.querySelector("h3").textContent=job.display_name;
   card.querySelector("h3").title=job.display_name;
   const training=job.kind==="training";
+  const activity=job.conversion_progress?"변환":job.evaluation_progress?"평가":"학습";
   card.querySelector(".job-meta").textContent=training?
-    `개별 ${job.evaluation_progress?"평가":"학습"} · GPU 할당 #${job.job_id} (${job.allocation_state}) · 시작 ${date(job.started_at)}`:
+    `개별 ${activity} · GPU 할당 #${job.job_id} (${job.allocation_state}) · 시작 ${date(job.started_at)}`:
     `GPU 할당 #${job.job_id} · ${job.job_name} · 경과 ${job.elapsed || "—"} / 제한 ${job.time_limit || "—"}`;
-  card.querySelector(".armed-label").textContent=training?`이 ${job.evaluation_progress?"평가":"학습"} 종료 시 이 지시를 Codex에 자동 전송`:"GPU 할당 종료 시 이 지시를 Codex에 자동 전송";
+  card.querySelector(".armed-label").textContent=training?`이 ${activity} 종료 시 이 지시를 Codex에 자동 전송`:"GPU 할당 종료 시 이 지시를 Codex에 자동 전송";
   badge(card.querySelector(".state"),job.state==="WAITING_FOR_MEMORY"?"VRAM 대기":job.state==="WAITING_FOR_WORKER"?"실행 관리자 응답 대기":job.state,job.state==="COMPLETED"?"green":job.terminal?"red":job.group==="pending"||["WAITING_FOR_MEMORY","WAITING_FOR_WORKER"].includes(job.state)?"amber":"blue");
   card.querySelector(".location").textContent=job.terminal?`종료 ${date(job.ended_at)} · exit ${job.exit_code ?? "—"}${job.reason?" · "+job.reason:""}`:job.reason || "";
   const cancelStatus=job.cancel?.status || "";
   const cancelButton=card.querySelector(".cancel");
   cancelButton.hidden=!job.can_cancel;
   cancelButton.disabled=canceling.has(job.key)||["requesting","requested"].includes(cancelStatus);
-  cancelButton.textContent=cancelButton.disabled?"종료 요청 중":training?(job.evaluation_progress?"이 평가 종료":"이 학습 종료"):"Job 취소";
+  cancelButton.textContent=cancelButton.disabled?"종료 요청 중":training?`이 ${activity} 종료`:"Job 취소";
   const cancelNote=card.querySelector(".cancel-status");
   cancelNote.hidden=!cancelStatus||job.terminal;
   cancelNote.textContent=cancelStatus==="uncertain"?`종료 요청 결과 확인 필요 · ${job.cancel.error || "상태를 확인하세요."}`:training?"종료 요청 중 · 개별 실행 종료를 확인하고 있습니다.":"취소 요청 중 · Slurm 종료 상태 확인을 기다립니다.";
@@ -102,6 +103,18 @@ function updateCard(card, job) {
   progress.replaceChildren();
   progress.hidden=!(job.training_progress?.length);
   if(job.training_progress?.length) progress.append(DeskMetrics.renderTrainingProgress(job.training_progress, 'slurm:'+job.key));
+  if(job.conversion_progress) {
+    const c=job.conversion_progress;
+    progress.hidden=false;
+    const label=document.createElement("p");
+    label.textContent=`데이터 변환 · ${c.completed.toLocaleString()} / ${c.total.toLocaleString()} 에피소드 · ${c.percent.toFixed(1)}%`;
+    const meter=document.createElement("progress");
+    meter.max=c.total;meter.value=c.completed;meter.style.width="100%";
+    meter.setAttribute("aria-label","에피소드 변환 진행률");
+    const note=document.createElement("p");
+    note.textContent=`${c.phase==="complete"?"완료·검증됨":c.phase==="finalizing"?"에피소드 변환 완료 · 최종 정리·검증 중":"에피소드 변환 중"}${c.workers?` · 워커 ${c.workers}개`:""} · 제외 ${c.excluded}개`;
+    progress.append(label,meter,note);
+  }
   const status=job.delivery.status;
   let text=deliveryNames[status] || status;
   if(status==="none") text=job.armed?"자동 전송 설정됨 · 종료 대기":job.prompt?"자동 전송 꺼짐":"종료 후 지시 미설정";

@@ -27,6 +27,7 @@ from lerobot.datasets.compute_stats import aggregate_stats
 from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
 from lerobot.datasets.feature_utils import get_hf_features_from_features
 from lerobot.datasets.io_utils import (
+    _parquet_cache_dir,
     get_file_size_in_mb,
     get_parquet_file_size_in_mb,
     to_parquet_with_hf_images,
@@ -492,7 +493,7 @@ def aggregate_data(src_meta, dst_meta, data_idx, data_files_size_in_mb, chunk_si
         )
         if contains_images:
             # Use HuggingFace datasets to read source data to preserve image format
-            src_ds = datasets.Dataset.from_parquet(str(src_path))
+            src_ds = datasets.Dataset.from_parquet(str(src_path), cache_dir=_parquet_cache_dir())
             df = src_ds.to_pandas()
         else:
             df = pd.read_parquet(src_path)
@@ -631,7 +632,7 @@ def append_or_create_parquet_file(
     else:
         if contains_images:
             # Use HuggingFace datasets to read existing data to preserve image format
-            existing_ds = datasets.Dataset.from_parquet(str(dst_path))
+            existing_ds = datasets.Dataset.from_parquet(str(dst_path), cache_dir=_parquet_cache_dir())
             existing_df = existing_ds.to_pandas()
         else:
             existing_df = pd.read_parquet(dst_path)

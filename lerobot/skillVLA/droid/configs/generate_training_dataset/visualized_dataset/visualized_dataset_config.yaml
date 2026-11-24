@@ -1,0 +1,15 @@
+# Dataset inherits the converted folder selected in DROID global_config.yaml.
+dataset_root_override: ""   # DROID global dataset_root
+
+visualize:
+  task_grouping: language_prompt
+  task: all
+  samples: 5
+  sampling: first
+  seed: 42
+  cameras: [observation.images.image, observation.images.wrist_image, observation.images.image2]
+  output: outputs/{source_dataset}/index.html
+  force: false
+  ffmpeg: auto
+  crf: 23
+  preset: veryfast

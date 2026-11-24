@@ -1437,7 +1437,8 @@ def main(args: Args) -> None:
                 log_dict[f"boundary/ep{ep_id:05d}"] = _wandb.Image(str(cos_div_plot))
             if args.plot_gmm_3d and gmm_3d_path and Path(gmm_3d_path).exists():
                 artifact = _wandb.Artifact(f"gmm_3d_ep{ep_id:05d}", type="html")
-                artifact.add_file(str(gmm_3d_path))
+                # Keep the upload, without retaining another local artifact copy.
+                artifact.add_file(str(gmm_3d_path), skip_cache=True)
                 wb_run.log_artifact(artifact)
             _wandb.log(log_dict)
             print(f"    [wandb] logged ep{ep_id:05d}")

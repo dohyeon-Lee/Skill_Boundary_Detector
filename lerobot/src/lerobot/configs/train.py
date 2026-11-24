@@ -49,6 +49,8 @@ class TrainPipelineConfig(HubMixin):
     # regardless of what's provided with the training command at the time of resumption.
     resume: bool = False
     transition_oversampling: TransitionOversamplingConfig = field(default_factory=TransitionOversamplingConfig)
+    # Frozen DROID-only stage switches; empty preserves every existing workflow.
+    droid_idle_filter: dict[str, Any] = field(default_factory=dict)
     # PI05 FT: target-dataset statistics by default, or the warm-start PT statistics.
     normalization_stats: str = "ft"  # ft | pt; resume always keeps saved processor statistics
     # `seed` is used for training (eg: model initialization, dataset shuffling)

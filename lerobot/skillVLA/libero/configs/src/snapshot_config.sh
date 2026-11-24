@@ -81,5 +81,14 @@ snapshot_config() {
   if [ -f "${newtask_ft_common}" ]; then
     cp "${newtask_ft_common}" "${bundle}/newtask_ft_common_config.yaml" >&2
   fi
+  # DROID UUID groups are data contracts too: queued work must not reread a
+  # subsequently edited allowlist. Other domains and old snapshots are unchanged.
+  local group_helper group_python
+  group_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/droid/configs/src/dataset_groups.py"
+  if [ -f "${group_helper}" ] && grep -Eq '^workflow_domain: *droid *$' "${bundle}/global_config.yaml"; then
+    group_python="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)/.venv/bin/python"
+    [ -x "${group_python}" ] || group_python=python3
+    "${group_python}" "${group_helper}" --freeze "${bundle}/global_config.yaml" || return
+  fi
   printf '%s\n' "${snap}"
 }

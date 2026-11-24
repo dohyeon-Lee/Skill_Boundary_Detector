@@ -79,9 +79,21 @@ def build_settings(config_path: str, *, analysis_domain="abc", eval_dir_override
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     defaults = _load_module(_SOURCE_DIR / "defaults.py", "sbd_compact_defaults")
-    cfg, model = defaults.resolve_config(shared.load_config(config_path), domain=analysis_domain)
+    loaded = shared.load_config(config_path)
+    if analysis_domain == 'droid':
+        import runpy
+        root = next(p for p in Path(__file__).resolve().parents if (p / 'lerobot/src/lerobot').is_dir())
+        registry = runpy.run_path(str(root / 'lerobot/skillVLA/droid/configs/src/dataset_registry.py'))
+        loaded = registry['configure'](loaded)
+        groups = runpy.run_path(str(root / 'lerobot/skillVLA/droid/configs/src/dataset_groups.py'))
+        if groups['suffix'](loaded):
+            loaded['output_name'] = groups['tagged'](loaded['output_name'], loaded)
+    cfg, model = defaults.resolve_config(loaded, domain=analysis_domain)
     if analysis_domain == "abc" and ("n_tasks" in cfg or cfg.get("task_ids") is None):
         source = _load_module(_SOURCE_DIR / "dataset_source.py", "sbd_abc_source")
+        cfg["task_ids"] = source.resolve_task_ids(cfg)
+    if analysis_domain == "droid":
+        source = _load_module(Path(eval_dir_override) / "src/dataset_source.py", "sbd_droid_selection")
         cfg["task_ids"] = source.resolve_task_ids(cfg)
     standalone = shared.as_bool(shared.get_value(cfg, "standalone", False))
     if not standalone:

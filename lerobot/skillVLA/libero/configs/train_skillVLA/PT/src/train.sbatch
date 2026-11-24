@@ -42,6 +42,7 @@ if ! STAGE1_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py"
   echo "Stage-1 config resolution failed inside the job (${SRC_DIR}/stage1_train_config.py)." >&2
   exit 1
 fi
+unset DATASET_EPISODES
 eval "${STAGE1_EXPORTS}"
 
 cd "${LEROBOT_ROOT}"
@@ -132,11 +133,16 @@ elif [ -e "${PT_OUTPUT_DIR}" ]; then
 fi
 
 stage1_configure_launcher "${NUM_GPUS}" "${PROJECT_ROOT}/.venv/bin/lerobot-train"
+DATASET_GROUP_ARGS=()
+if [ -n "${DATASET_EPISODES:-}" ] && [ "${DATASET_EPISODES}" != null ]; then
+  DATASET_GROUP_ARGS=(--dataset.episodes="${DATASET_EPISODES}")
+fi
 echo "launcher: ${TRAIN_LAUNCH[*]} (CPU threads=${OMP_NUM_THREADS})"
 PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --dataset.repo_id="${REPO_ID}" \
     --dataset.root="${SKILLVLA_DATASET_DIR}" \
     --dataset.video_backend=pyav \
+    "${DATASET_GROUP_ARGS[@]}" \
     --policy.type=skill_expert \
     --policy.pretrained_path="${PI_BASE}" \
     --policy.architecture="${ARCHITECTURE}" \

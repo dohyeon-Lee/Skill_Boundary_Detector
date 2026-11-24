@@ -9,6 +9,8 @@ lerobot/
     ├── servers/        # Shared machine, storage and scheduler profiles
     ├── abc/configs/    # ABC datasets, simulator, training, and evaluation
     ├── libero/configs/ # LIBERO datasets, training, and evaluation; shared helpers
+    ├── mimicgen/configs/ # MimicGen datasets, training, and evaluation
+    ├── droid/configs/  # Local raw DROID conversion and dataset inspection
     └── analysis/       # ABC/LIBERO analysis reports and media
 ```
 

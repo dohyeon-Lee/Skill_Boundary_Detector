@@ -7895,6 +7895,7 @@ def train_spline_fsqae(
     wandb_run=None,
     metadata: list[dict[str, Any]],
     resume_from: str | None = None,
+    training_skill_mask: np.ndarray | None = None,
 ) -> SplineFSQAE:
     if not segments:
         raise ValueError("No skill trajectories were provided.")
@@ -8047,6 +8048,17 @@ def train_spline_fsqae(
             adjacent_skill_indices=adjacent_skill_indices,
         )
 
+    training_mask_sha256 = None
+    if training_skill_mask is not None:
+        allowed = np.asarray(training_skill_mask)
+        if allowed.dtype != np.bool_ or allowed.shape != (len(segments),):
+            raise ValueError('training_skill_mask must align with every original skill trajectory')
+        before = len(train_ids)
+        train_ids = [index for index in train_ids if allowed[index]]
+        if not train_ids:
+            raise ValueError('Skill filter leaves no training trajectories')
+        training_mask_sha256 = hashlib.sha256(allowed.tobytes()).hexdigest()
+        print(f'[FSQ-v3] training-only skill filter: {len(train_ids)}/{before}; validation and encoding unchanged')
     train_ds, val_ds = dataset(train_ids, True), dataset(val_ids, False)
     if cfg.num_workers < 0:
         raise ValueError(f"num_workers must be >= 0, got {cfg.num_workers}.")
@@ -8184,6 +8196,8 @@ def train_spline_fsqae(
     previous_code_epoch: int | None = None
     if resume_from:
         checkpoint = torch.load(resume_from, map_location="cpu", weights_only=False)
+        if checkpoint.get('training_skill_mask_sha256') != training_mask_sha256:
+            raise ValueError('Cannot resume FSQ with a different training skill filter')
         resume_cfg = _checkpoint_config(checkpoint)
         if resume_cfg.action_encoder_mode != cfg.action_encoder_mode:
             raise ValueError("Cannot resume FSQ across different encoder modes; use a new run.")
@@ -8426,6 +8440,8 @@ def train_spline_fsqae(
             "val_select": select,
             "best_val": best_val,
         }
+        if training_mask_sha256 is not None:
+            payload['training_skill_mask_sha256'] = training_mask_sha256
         # FSQ.pt is copied into every SkillVLA data run and only needs component weights.
         # Periodic checkpoints retain optimizer/scheduler state for exact resume.
         if resumable:

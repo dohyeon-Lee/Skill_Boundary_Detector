@@ -9,7 +9,7 @@ warm_start:
   outputs_root: outputs_filtered
 
   vsa_checkpoint:
-    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlast9_base
+    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_base
     checkpoint: 100000
 
   predictor_checkpoint:

@@ -49,6 +49,16 @@ class LIBEROSharedGPUBuilder(_shared.SingleGPUBuilder):
         self.episodes = [(int(row.episode_index), int(row.length)) for row in rows.itertuples()]
         if len({ep for ep, _ in self.episodes}) != len(self.episodes):
             raise ValueError("Dataset episode IDs are duplicated.")
+        if self.env.get('DROID_SELECTION_PATH'):
+            selection = json.loads(Path(self.env['DROID_SELECTION_PATH']).read_text())
+            allowed = set(selection['episode_ids'])
+            if len(allowed) != len(selection['episode_ids']) or not allowed.issubset(dict(self.episodes)):
+                raise ValueError('DROID group has duplicate or missing episodes')
+            self.episodes = [(ep, n) for ep, n in self.episodes if ep in allowed]
+            import runpy
+            project = Path(self.env['PROJECT_ROOT'])
+            groups = runpy.run_path(str(project / 'lerobot/skillVLA/droid/configs/src/dataset_groups.py'))
+            groups['write_selection'](Path(self.env['SKILLSET_DIR']) / 'dataset_selection.json', selection)
         expected = int(self.env["LIBERO_EXPECTED_EPISODES"])
         if len(self.episodes) != expected or expected < 1:
             raise ValueError("Episode count changed since submission.")

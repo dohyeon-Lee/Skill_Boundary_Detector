@@ -1,0 +1,31 @@
+# Full converted trajectories; either training view reuses the existing videos.
+# source_dataset/target_dataset inherit global droid_dataset.
+
+# joint_velocity: recorded 7 joint velocities + absolute gripper (8D).
+# delta_pose: consecutive base-frame EEF XYZ/SO(3) deltas + absolute gripper (7D).
+# This DP-only choice creates a separate data view/output; no video re-encoding.
+# New run names use delta_joint for joint_velocity, or delta_pose for EEF.
+dp_action_space: joint_velocity   # joint_velocity | delta_pose
+
+# Our initial SBD DP choices, not a claim about pi05's observation history.
+dp_n_obs_steps: 30                # 2 seconds at 15Hz
+dp_future_action_horizon: 18      # 1.2 seconds at 15Hz; current-inclusive
+dp_history_encoder: transformer
+dp_history_encoder_dim: 128
+dp_down_dims: [128, 256, 512]     # small U-Net
+dp_lr_scheduler: constant
+dp_amp: false
+
+dp_steps: 100000
+dp_batch_size: 256
+dp_num_workers: 8
+dp_save_freq: 10000
+dp_log_freq: 200
+dp_seed: 42
+dp_policy_name: '{target_dataset}_future_only_obs{dp_n_obs_steps}_future{dp_future_action_horizon}_{dp_history_encoder}_{dp_lr_tag}_{dp_unet_tag}'
+dp_wandb_enable: true
+dp_wandb_project: DROID_DP
+
+dp_cpus_per_task: 8
+dp_mem: 64G
+dp_time: '48:00:00'

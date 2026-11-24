@@ -1,0 +1,38 @@
+server: auto
+workflow_domain: droid
+dataset_root: dataset_DROID
+outputs_root: outputs_DROID
+
+# Change only name + group for ordinary use. All workflows share this choice.
+droid_dataset:
+  name: success_5k
+  group: without_deformable  # all | without_deformable (whole episodes; independent of idle_filter)
+
+  # Register a newly downloaded dataset here once, then select its name above.
+  sources:
+    success_5k:
+      raw_root: /data4/yeonsumia/foundation_critic/data/droid_raw_scale
+      calibration_root: /data4/yeonsumia/foundation_critic/data/droid_calibration
+      annotations_path: ""  # optional official language annotation JSON
+      converted_dataset: droid_success_5k
+      training_dataset: droid_success_5k_joint_velocity
+
+# Released pi05_droid interface: 7 joint velocities + absolute gripper action;
+# measured 7 joint positions + gripper state. No EEF delta or joint-position delta.
+droid_fps: 15
+droid_action_space: joint_velocity
+droid_proprio_space: joint_position
+vla_chunk_size: 15
+vla_replan_steps: 8
+
+# Training-start selection only. Conversion, SBD segmentation and encoding keep
+# the complete converted trajectory. Official OpenPI non-idle rule (7/16/10).
+idle_filter:
+  DP: false
+  FSQ: false
+  PT_VSA: true
+  PT_PRED: true
+  PT_TERM: true
+  FT_VSA: true
+  FT_PRED: true
+  FT_TERM: true

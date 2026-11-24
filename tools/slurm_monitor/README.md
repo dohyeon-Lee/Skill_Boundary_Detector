@@ -98,6 +98,12 @@ Failed node queries retain the last reading marked as delayed with its timestamp
 
 ## Cluster queue and priority
 
+DROID conversion cards count completed episode markers from the active staging
+directory, including out-of-order parallel workers. They show completed/eligible
+episodes, percentage, worker count and excluded inputs. Reaching 100% episodes
+still shows final assembly/validation until the verified dataset is published.
+Stopped historical attempts use their own logs rather than a newer run's cache.
+
 The bottom **서버 전체 대기열 · 내 예상 순위** section lists GPU-requesting
 pending jobs from all users, grouped into B200 (`node200`) and L40S
 (`node01`, `node100`). Requested/excluded nodes, GPU type and partition membership

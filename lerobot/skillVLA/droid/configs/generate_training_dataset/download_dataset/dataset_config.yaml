@@ -1,0 +1,34 @@
+# Local raw DROID -> LeRobot v3. No download or source-file modification.
+# ./prepare_dataset.sh --dry-run    inspect selection without creating a dataset
+# ./prepare_dataset.sh              convert / resume this exact request on CPU
+# ./prepare_dataset.sh --75000 --16   existing allocation, 16 CPU workers
+# ./prepare_dataset.sh --75000 --64   use up to all 64 CPUs of that allocation
+# Add --dry-run to inspect the allocation/selection without enqueueing work.
+# Paths + output name inherit the selected droid_dataset in global_config.yaml.
+# Explicit local raw_root/calibration_root/output_name still override defaults.
+max_episodes: all            # all or a positive number, after calibration filtering
+episode_ids: []              # empty = all; otherwise explicit original DROID UUIDs
+success_only: true
+missing_calibration: skip    # skip (record every exclusion) | error
+
+cameras: [exterior_1, wrist, exterior_2]  # two external views (not fixed top views) + wrist; left stereo RGB
+image_size: [256, 256]       # [height,width]; no crop/flip; K adjusted for resize AND padding
+image_transform: letterbox  # preserve aspect ratio + centred black padding; legacy: stretch
+fps: 15                     # DROID control rate, not the raw MP4's 60fps header
+remove_skipped_steps: true
+empty_episode_policy: skip  # 활성 프레임 0개인 에피소드만 제외하고 manifest에 기록. error=중단
+video_tail_policy: drop_last_if_missing_one  # only accepts N or N-1 video frames
+recording_timestamps_root: .cache/droid_recording_timestamps  # 검증된 SVO 촬영 시각으로 반복 관측/영상 시작 차이 정렬
+
+# DROID normalized EEF velocity XYZ/RPY + absolute gripper position, 0=open/1=close.
+# MimicGen instead uses normalized OSC delta-pose + a signed gripper command.
+# Alternatives: cartesian_position (absolute XYZ + rotation-vector + gripper),
+# joint_velocity (pi05_droid's 8D interface), joint_position.
+# All four source action types and measured EEF XYZ/Euler/rotation-vector poses
+# are preserved regardless of this choice. Joint modes use joint+gripper state.
+action_mode: cartesian_velocity
+external_extrinsics: calibrated  # calibrated (GT/Pred provenance retained) | recorded
+
+workers: 4                  # independent CPU episodes; --JOB_ID --WORKERS overrides this
+encoder_threads: 1
+video_crf: 20

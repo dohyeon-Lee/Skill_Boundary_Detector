@@ -84,6 +84,10 @@ prepare_node_local_venv_archive() {
   ) 9>"${lock_file}"; then
     return 1
   fi
+  # Retain the requested environment and one previous generation, rather than
+  # accumulating a multi-GB archive after every dependency/fingerprint change.
+  "${source_venv}/bin/python" "$(dirname "${BASH_SOURCE[0]}")/cache_retention.py" \
+    "${archive_root}" "${archive}" || echo "${label}: archive pruning skipped." >&2
   printf '%s\n' "${archive}"
 }
 
@@ -137,6 +141,7 @@ stage_node_local_venv() {
 
   (
     flock -x 9
+    flock -s 8
     if [ -x "${final_root}/bin/python" ] \
       && [ -f "${final_root}/.node_local_venv_archive" ] \
       && [ "$(cat "${final_root}/.node_local_venv_archive")" = "${archive_name}" ]; then
@@ -184,5 +189,5 @@ stage_node_local_venv() {
     trap - EXIT
     echo "${label}: node-local environment ready." >&2
     printf '%s\n' "${final_root}"
-  ) 9>"${lock_file}"
+  ) 9>"${lock_file}" 8>"${archive}.lock"
 }

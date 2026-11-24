@@ -218,7 +218,7 @@ class ParallelAblation:
         balancer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(balancer)
         manifest = evaluator._load_manifest(Path(self.settings['skillset_dir']))
-        if manifest.get('evaluation_source') in {'libero_subset', 'mimicgen_subset'}:
+        if manifest.get('evaluation_source') in {'libero_subset', 'mimicgen_subset', 'droid_subset'}:
             lengths = {int(row['episode_index']): int(row['length']) for row in manifest['evaluation_episodes']}
         else:
             from lerobot.datasets.abc_native_io import load_abc_native_episodes

@@ -1232,6 +1232,15 @@ def train(
         shuffle = True
         sampler = None
 
+    if cfg.droid_idle_filter:
+        import runpy
+        filter_root = next(p for p in Path(__file__).resolve().parents
+                           if (p / 'lerobot/skillVLA/droid/configs/src/training_filter.py').is_file())
+        sampler = runpy.run_path(str(filter_root / 'lerobot/skillVLA/droid/configs/src/training_filter.py'))[
+            'apply_frame_sampler'](dataset, cfg.droid_idle_filter, sampler,
+                                   grouped=grouped_batch_sampler is not None)
+        shuffle = False if sampler is not None else shuffle
+
     dataloader_common = {
         "dataset": dataset,
         "num_workers": cfg.num_workers,

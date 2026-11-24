@@ -198,6 +198,9 @@ class DiffusionConfig(PreTrainedConfig):
     # installed, so predicted actions remain delta poses.
     use_delta_pose_actions: bool = False
     delta_pose_stats_path: str | None = None
+    # yam_joint: canonical ABC 14D joint targets through YAM FK (legacy default).
+    # eef_pose: 7D XYZ/rotvec/gripper targets with measured EEF pose (DROID).
+    delta_pose_input: str = "yam_joint"
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
     kernel_size: int = 5
@@ -402,6 +405,8 @@ class DiffusionConfig(PreTrainedConfig):
                 self.use_delta_pose_actions,
             )
         )
+        if self.delta_pose_input not in {'yam_joint', 'eef_pose'}:
+            raise ValueError('delta_pose_input must be yam_joint|eef_pose')
         if transformed_action_modes > 1:
             raise ValueError(
                 "use_relative_actions, use_delta_joint_actions, and use_delta_pose_actions "

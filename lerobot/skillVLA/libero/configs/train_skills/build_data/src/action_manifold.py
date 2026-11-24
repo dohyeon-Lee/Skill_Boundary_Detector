@@ -149,6 +149,9 @@ def to_model_action_chunk(
     if action_mode == ACTION_MODE_DATASET:
         return chunk
     if action_mode == ACTION_MODE_DELTA_POSE:
+        if chunk.shape[-1] == 7:
+            from lerobot.processor.eef_delta_pose import to_eef_delta_pose_actions_numpy
+            return to_eef_delta_pose_actions_numpy(chunk, anchor_state)
         return to_yam_delta_pose_actions_numpy(chunk, anchor_state)
     if relative_mask is None:
         raise ValueError(f"{action_mode} action mode requires a relative-action mask.")

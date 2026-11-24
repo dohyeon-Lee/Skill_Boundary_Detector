@@ -97,7 +97,8 @@ def render_video_report(settings, episode_rows, task_groups, manifest):
             label = f"task{task_id}: {task_names.get(task_id, ' / '.join(map(str, row['tasks'])))}"
             video = _episode_video_metadata(
                 dataset, metadata, settings["report_image_key"], episode, root, fps,
-                clip_cache_dir=assets / "videos",
+                # DROID conversion already stores one MP4 per episode/camera.
+                clip_cache_dir=None if manifest.get("evaluation_source") == "droid_subset" else assets / "videos",
             )
             video_path = (root / unquote(video["video_src"])).resolve()
             if not video_path.is_file():
@@ -158,7 +159,7 @@ def render_video_report(settings, episode_rows, task_groups, manifest):
             if rendered_episodes % 5 == 0 or rendered_episodes == total_episodes:
                 print(f"[SBD video] episodes={rendered_episodes}/{total_episodes}", flush=True)
         print(f"[video report] task {task_id}: {len(episodes)} episodes", flush=True)
-    domain = {"libero_subset": "LIBERO", "mimicgen_subset": "MimicGen"}.get(manifest.get("evaluation_source"), "ABC")
+    domain = {"libero_subset": "LIBERO", "mimicgen_subset": "MimicGen", "droid_subset": "DROID"}.get(manifest.get("evaluation_source"), "ABC")
     task_label = settings.get("target_task", "") if domain != "ABC" else ', '.join(manifest['source_tasks'])
     title = f"{domain} {task_label} · obs{policy['n_obs_steps']} / future{policy['horizon']} · NMS "
     title += ", ".join(str(item.get("nms_frames", 0)) for item in boundaries.values())

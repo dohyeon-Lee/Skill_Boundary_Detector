@@ -3,69 +3,16 @@
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
 fi
-# FSQ-only helpers for turning the many-file project venv into one sequential
-# Lustre read, then running from node-local storage. Other training stages do
-# not source this file and the shared venv is never modified.
+# FSQ staging uses the common environment archive pool and its own node-local
+# extraction directory. The shared venv is never modified.
 
 fsq_prepare_venv_archive() {
   local project_root="${1:?fsq_prepare_venv_archive needs PROJECT_ROOT}"
-  local source_venv
-  source_venv="$(readlink -f "${project_root}/.venv")"
-  if [ ! -x "${source_venv}/bin/python" ]; then
-    echo "FSQ venv cache: shared interpreter is missing: ${source_venv}/bin/python" >&2
-    return 1
-  fi
-  if ! command -v zstd >/dev/null 2>&1 || ! command -v flock >/dev/null 2>&1; then
-    echo "FSQ venv cache: zstd/flock unavailable; using the shared venv." >&2
-    return 1
-  fi
-
-  local archive_root="${FSQ_VENV_ARCHIVE_DIR:-${project_root}/.cache/fsq_venv}"
-  mkdir -p "${archive_root}"
-
-  # Dependency lock + interpreter metadata define the cache generation. This
-  # repository keeps its uv project under <project_root>/lerobot, while older
-  # deployments may keep it at the project root.
-  local uv_project_root="${project_root}"
-  if [ -f "${project_root}/lerobot/uv.lock" ] \
-    || [ -f "${project_root}/lerobot/pyproject.toml" ]; then
-    uv_project_root="${project_root}/lerobot"
-  fi
-  local fingerprint
-  fingerprint="$({
-    printf '%s\n' "${source_venv}"
-    for dependency_file in uv.lock pyproject.toml; do
-      if [ -f "${uv_project_root}/${dependency_file}" ]; then
-        sha256sum "${uv_project_root}/${dependency_file}"
-      else
-        printf 'missing:%s\n' "${uv_project_root}/${dependency_file}"
-      fi
-    done
-    sha256sum "${source_venv}/pyvenv.cfg"
-  } | sha256sum | cut -d' ' -f1)"
-
-  local archive="${archive_root}/venv-${fingerprint:0:16}.tar.zst"
-  local size_file="${archive}.size"
-  local lock_file="${archive}.lock"
-  (
-    flock 9
-    if [ ! -s "${archive}" ]; then
-      local temporary="${archive}.tmp.$$"
-      trap 'rm -f "${temporary}"' EXIT
-      echo "FSQ venv cache: creating one-time archive ${archive}" >&2
-      tar -C "${source_venv}" -cf - . | zstd -1 -T"${FSQ_VENV_ARCHIVE_THREADS:-4}" -q -o "${temporary}"
-      mv "${temporary}" "${archive}"
-      trap - EXIT
-      echo "FSQ venv cache: archive ready." >&2
-    fi
-    if [ ! -s "${size_file}" ] \
-      || ! [[ "$(tr -dc '0-9' < "${size_file}")" =~ ^[0-9]+$ ]]; then
-      local size_tmp="${size_file}.tmp.$$"
-      du -s --apparent-size --block-size=1 "${source_venv}" | awk '{print $1}' > "${size_tmp}"
-      mv "${size_tmp}" "${size_file}"
-    fi
-  ) 9>"${lock_file}"
-  printf '%s\n' "${archive}"
+  # Share the same fingerprinted archive pool with evaluation instead of
+  # packaging an identical multi-GB environment a second time for FSQ.
+  source "$(dirname "${BASH_SOURCE[0]}")/../../../src/node_local_venv.sh"
+  NODE_LOCAL_VENV_ARCHIVE_DIR="${FSQ_VENV_ARCHIVE_DIR:-${NODE_LOCAL_VENV_ARCHIVE_DIR:-${project_root}/.cache/node_local_venv}}" \
+    prepare_node_local_venv_archive "${project_root}" "FSQ venv cache"
 }
 
 
@@ -118,6 +65,7 @@ fsq_stage_venv_on_node() {
   local lock_file="${local_root}/.${fingerprint}.lock"
   (
     flock -x 9
+    flock -s 8
     if [ -x "${final_root}/bin/python" ] \
       && [ -f "${final_root}/.fsq_venv_archive" ] \
       && [ "$(cat "${final_root}/.fsq_venv_archive")" = "${archive_name}" ]; then
@@ -129,6 +77,8 @@ fsq_stage_venv_on_node() {
     local expected_bytes
     if [ -s "${archive}.size" ]; then
       expected_bytes="$(tr -dc '0-9' < "${archive}.size")"
+    elif [ -s "${archive}.unpacked_size" ]; then
+      expected_bytes="$(tr -dc '0-9' < "${archive}.unpacked_size")"
     else
       expected_bytes=$(( $(stat -c %s "${archive}") * 3 ))
     fi
@@ -170,7 +120,7 @@ fsq_stage_venv_on_node() {
     trap - EXIT
     echo "FSQ venv cache: local venv ready at ${final_root}." >&2
     printf '%s\n' "${final_root}"
-  ) 9>"${lock_file}"
+  ) 9>"${lock_file}" 8>"${archive}.lock"
   local status=$?
   if [ "${status}" -ne 0 ]; then
     return 1
