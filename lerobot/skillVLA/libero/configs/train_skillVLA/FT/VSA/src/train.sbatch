@@ -112,6 +112,9 @@ else
     --policy.path="${VSA_CHECKPOINT_PATH}"
     --policy.newtask_ft_enabled=true
     --policy.newtask_ft_freeze_expert="${FREEZE_EXPERT}"
+    --policy.vsa_top_crop_enabled="${VSA_TOP_CROP_ENABLED}"
+    --policy.vsa_top_crop_zoom="${VSA_TOP_CROP_ZOOM}"
+    --policy.bspline_gripper_action="${BSPLINE_GRIPPER_ACTION:-false}"
     --policy.newtask_ft_freeze_skill_core="${FREEZE_SKILL_CORE:-false}"
     --policy.newtask_ft_train_bridge_layers_and_head="${TRAIN_BRIDGE_LAYERS_AND_HEAD:-false}"
     --policy.newtask_ft_unfreeze_action_head="${UNFREEZE_ACTION_HEAD}"

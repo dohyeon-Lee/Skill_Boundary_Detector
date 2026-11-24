@@ -175,9 +175,6 @@ class Guard:
         self.command, self.env, self.folder = list(command), dict(env), Path(run_dir)
         self.probe, self.settings, self.retry = probe, settings or Settings.from_env(), retry
         self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        gpu, self.total, _ = probe.sample()
-        scope = re.sub(r'[^A-Za-z0-9_-]', '_', env.get('SLURM_JOB_ID', 'local') + '_' + gpu)
-        self.registry = registry or Registry(Path(env.get('SBD_GPU_GUARD_REGISTRY_ROOT', f'/tmp/sbd-gpu-guard-{os.getuid()}')) / scope)
         self.key = uuid.uuid4().hex
         self.process = None
         self.cancelled = False
@@ -185,6 +182,28 @@ class Guard:
         self.errors = ''
         self.error_lock = threading.Lock()
         self.child_stopped = True
+        gpu, self.total, _ = self.initial_sample()
+        scope = re.sub(r'[^A-Za-z0-9_-]', '_', env.get('SLURM_JOB_ID', 'local') + '_' + gpu)
+        self.registry = registry or Registry(Path(env.get('SBD_GPU_GUARD_REGISTRY_ROOT', f'/tmp/sbd-gpu-guard-{os.getuid()}')) / scope)
+
+    def initial_sample(self):
+        """Retry transient NVML startup failures before admitting any trainer.
+
+        Each query remains bounded by Nvidia.sample's timeout. Invalid or
+        ambiguous GPU identities still fail immediately; never guess a device
+        or start training without a successful memory measurement.
+        """
+        for attempt in range(3):
+            try:
+                return self.probe.sample()
+            except subprocess.SubprocessError as error:
+                reason = f'Initial GPU query failed ({attempt + 1}/3): {error}'
+                self.status('FAILED' if attempt == 2 else 'WAITING_FOR_MEMORY', reason)
+                self.attach()
+                if attempt == 2:
+                    raise
+                print('GPU memory guard: ' + reason + '; retrying.', file=sys.stderr, flush=True)
+                time.sleep(attempt + 1)
 
     def status(self, state, reason='', **values):
         write_json(self.folder / 'status.json', {'state': state, 'reason': reason,

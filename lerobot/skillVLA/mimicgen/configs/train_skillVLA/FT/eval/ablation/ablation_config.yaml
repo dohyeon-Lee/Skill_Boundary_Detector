@@ -1,0 +1,29 @@
+# 동일한 episode 0 초기 상태에서 1→2→3→4 실행: GT 길이 전환 vs Terminator 전환
+# 모델·데이터 경로는 상위 FT eval YAML에서 가져오며, 이 체크포인트를 사용.
+vsa_checkpoint: '010000'
+episode_index: 0
+skill_index: 0                 # 0부터 시작. 1번째부터 전체 실행: token 3→20→4→5
+n_trials: 3                   # 각 seed에서 동일 초기 상태·노이즈로 A/B 비교
+seed: 1000
+max_skill_steps: 200
+n_action_steps: 10            # 10-step chunk를 전부 실행한 뒤 재계획. 스킬 전환은 즉시 반영.
+initialization: transition_timing # gt_prefix | rollout_entry | transition_timing
+gt_replay_control: true       # gt_prefix 모드에서만 사용하는 GT suffix 대조군
+
+# GT prefix 없이 검증된 episode 초기 상태에서 시작. 이후 action은 모두 VSA 예측.
+# A: 1번째 65개, 2번째 55개, 3번째 35개 action 후 전환 (누적 65/120/155).
+# B: 각 전환에 상위 eval의 Terminator(20k, threshold 0.5, 최대 200스텝) 사용.
+# 4번째 스킬은 양쪽 모두 Terminator 없이 최대 200스텝 실행.
+# GT skill·GT UV, 원래 episode-start XYZ grounding 유지.
+output_name: coffee_d0_FT10k_ep0_skills1234_gtstart_transition_AB_r10_gripper
+
+# Top view에 표시. 원본 영상도 별도로 보존.
+video:
+  fullskill_overlay: true
+  uv_overlay: true
+
+slurm:
+  gres: gpu:1
+  cpus: 4
+  memory: 48G
+  time: '1:00:00'

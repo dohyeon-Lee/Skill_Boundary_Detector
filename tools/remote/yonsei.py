@@ -189,7 +189,9 @@ def config_and_resolver(script, args, env, root=ROOT):
             resolver = root / cfg / ('train_' + name + '/PT/src/' + name + '_config.py')
     if family == 'mimicgen':
         shared_skills = root / SHARED / 'train_skills'
-        if '/train_skills/DP/eval/' in rel:
+        if '/train_pi05/' in rel:
+            resolver = parent / 'src/config.py'
+        elif '/train_skills/DP/eval/' in rel:
             variable, default = 'MIMICGEN_DP_EVAL_CONFIG', 'eval_config.yaml'
             resolver = parent / 'src/config.py'
         elif '/train_skills/FSQ/eval/' in rel:
@@ -241,7 +243,7 @@ def resolve_settings(script, args, env, root=ROOT):
     command = [str(root / '.venv/bin/python'), str(resolver), '--config', str(config), *extra, '--shell']
     resolver_env = {**os.environ, **env,
         'PYTHONPATH': str(root / 'lerobot/src') + os.pathsep + os.environ.get('PYTHONPATH', '')}
-    if resolver.name == 'stage1_eval_config.py' and script.name == 'submit_eval.sh':
+    if script.name == 'submit_eval.sh' and '/train_skillVLA/' in script.as_posix():
         # Reproduce the PT/FT shell wrapper rather than inheriting its caller's directory.
         resolver_env['STAGE1_EVAL_WORK_DIR'] = str(script.parent)
     result = run(command, cwd=root, env=resolver_env, capture_output=True)
@@ -532,7 +534,7 @@ def transfer(host, source, destination, directory=False):
     run(command)
 
 
-def freeze(root, destination, profile, selected, config, extra_files):
+def freeze(root, destination, profile, selected, config, extra_files, settings=None):
     files = code_files(root) | set(extra_files)
     if config:
         try:
@@ -546,6 +548,39 @@ def freeze(root, destination, profile, selected, config, extra_files):
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.suffix in {'.yaml', '.yml'} and TREE in rel.parents and 'servers' not in rel.parts:
             data = yaml.safe_load(src.read_text())
+            if (src == config and settings and '/mimicgen/' in src.as_posix()
+                    and '/train_pi05/' in src.as_posix() and '/eval/' in src.as_posix()):
+                # Resolve the auto FT run on the source; evaluation needs the FT
+                # checkpoint, not the unused LIBERO warm-start checkpoint.
+                for key in ('policy_path', 'dataset_dir', 'tokenizer_path', 'simulator_python',
+                            'mimicgen_source_root', 'init_states_path', 'eval_out_dir', 'run_name'):
+                    data[key] = settings[key]
+            if (src == config and settings and '/mimicgen/' in src.as_posix()
+                    and '/train_skillVLA/' in src.as_posix() and '/eval/' in src.as_posix()):
+                # Auto selectors are resolved at the source. Recomputing a training
+                # run remotely would require its unused warm-start PT checkpoint.
+                resolved = settings.get('models_json', [])
+                if isinstance(resolved, str):
+                    resolved = json.loads(resolved)
+                rows = []
+                originals = {row.get('label'): row for row in data.get('models', [])}
+                for model in resolved:
+                    row = dict(originals.get(model['label'], {}))
+                    policy = Path(model['policy_path'])
+                    row.update(label=model['label'], vsa_dir=str(policy.parents[2]),
+                               vsa_checkpoint=policy.parent.name,
+                               skill_source=model['skill_source'], focus_source=model['focus_source'],
+                               pose_source=model['pose_source'])
+                    for component in ('predictor', 'terminator'):
+                        checkpoint = model.get('external_' + component + '_model')
+                        if checkpoint:
+                            checkpoint = Path(checkpoint)
+                            row[component + '_dir'] = str(checkpoint.parents[2])
+                            row[component + '_checkpoint'] = checkpoint.parent.name
+                    rows.append(row)
+                if not rows:
+                    raise ValueError('MimicGen evaluation resolved no models')
+                data.update(vsa_training_config=None, aux_training_configs={}, models=rows)
             dst.write_text(yaml.safe_dump(portable(data, root, destination, profile),sort_keys=False,allow_unicode=True))
         else:
             shutil.copy2(src, dst)
@@ -574,6 +609,8 @@ def evaluation_spec(script, settings, root):
             'labels': labels or ['eval'], 'episodes': int(settings.get('n_episodes') or 0)}
     if settings.get('abc_eval_output_dir'):
         spec['kind'] = 'abc'
+    elif '/mimicgen/' in script.as_posix() and '/train_pi05/' in script.as_posix():
+        spec['kind'] = 'mimicgen_pi05'
     return spec
 
 
@@ -635,7 +672,7 @@ def launch(script, args, root=ROOT, env=None):
     rpc(host, base, 'init', work=work)
     with tempfile.TemporaryDirectory(prefix='sbd-yonsei-') as temporary:
         packet = Path(temporary)
-        freeze(root, destination, profile, packet, config, files)
+        freeze(root, destination, profile, packet, config, files, settings=settings)
         transfer(host, packet, destination, directory=True)
     missing = set(probe['missing'])
     for path, name in zip(inputs, names):

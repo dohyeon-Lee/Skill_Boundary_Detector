@@ -11,7 +11,7 @@ adaptation:
   freeze_expert: true
   skill_flow_loss: true
   visual_aux_loss: true
-  termination_loss: false  # true: 종료 loss 가중치 1 / false: 종료 loss 끔 (비교 실험)
+  termination_loss: true   # 통합 detach termination bottleneck도 함께 FT (가중치 1)
 
 training:
   dataloader:

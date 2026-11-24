@@ -163,6 +163,10 @@ _NESTED_KEYS = {
     ("adaptation", "freeze_expert"): {"ft": "ft_freeze_expert", "pt": None},
     ("training", "dataloader", "batch_size"): "{s}_batch_size",
     ("training", "dataloader", "workers"): "{s}_num_workers",
+    ("training", "dataloader", "cpu_threads"): {"ft": "ft_cpu_threads", "pt": None},
+    ("training", "dataloader", "persistent_workers"): {"ft": "ft_persistent_workers", "pt": None},
+    ("training", "dataloader", "pin_memory"): {"ft": "ft_pin_memory", "pt": None},
+    ("training", "dataloader", "prefetch_factor"): {"ft": "ft_prefetch_factor", "pt": None},
     ("training", "dataloader", "gpus"): "{s}_num_gpus",
     ("training", "optimizer", "base_lr"): {"pt": "pt_lr_base", "ft": "ft_lr"},
     ("training", "gradient_checkpointing"): "{s}_gradient_checkpointing",
@@ -334,7 +338,8 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     # (switchable to outputs_filtered). PT and FT write to SEPARATE subdirs; FT still reads its
     # pretrained PT checkpoint from the PT subdir.
     outputs_root = str(get_value(cfg, "outputs_root", "outputs"))
-    pi05_pt_root = project_root / outputs_root / str(get_value(cfg, "pi05_outputs_root", "pi05_PT"))
+    pt_outputs_root = str(get_value(cfg, "ft_pretrained_outputs_root", outputs_root))
+    pi05_pt_root = project_root / pt_outputs_root / str(get_value(cfg, "pi05_outputs_root", "pi05_PT"))
     pi05_ft_root = project_root / outputs_root / str(get_value(cfg, "pi05_ft_outputs_root", "pi05_FT"))
 
     pt_dataset = str(get_value(cfg, "pt_dataset", "libero_90", env="PT_DATASET"))
@@ -454,6 +459,10 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "ft_dataset_dir": project_root / ft_dataset_root / ft_dataset,
         "ft_batch_size": ft_batch_size,
         "ft_num_workers": int(get_value(cfg, "ft_num_workers", 4, env="FT_NUM_WORKERS")),
+        "ft_cpu_threads": int(get_value(cfg, "ft_cpu_threads", 4)),
+        "ft_persistent_workers": as_bool(get_value(cfg, "ft_persistent_workers", False)),
+        "ft_pin_memory": as_bool(get_value(cfg, "ft_pin_memory", False)),
+        "ft_prefetch_factor": int(get_value(cfg, "ft_prefetch_factor", 4)),
         "ft_exp": ft_exp,
         "ft_lr": str(get_value(cfg, "ft_lr", 2.5e-05, env="FT_LR")),
         "ft_lr_mode": ft_lr_mode,
@@ -489,6 +498,10 @@ def build_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     }
     settings.update(slurm_settings(cfg, "pt", cpus=16, mem="128G", time="48:00:00", qos="big_qos"))
     settings.update(slurm_settings(cfg, "ft", cpus=16, mem="128G", time="48:00:00", qos="pro6000_qos"))
+    if not 1 <= settings["ft_cpu_threads"] <= settings["ft_cpus_per_task"]:
+        raise ValueError("training.dataloader.cpu_threads must be between 1 and slurm.cpus")
+    if settings["ft_prefetch_factor"] < 1:
+        raise ValueError("training.dataloader.prefetch_factor must be positive")
     return settings
 
 

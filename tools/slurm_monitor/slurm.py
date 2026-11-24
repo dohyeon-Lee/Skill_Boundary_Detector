@@ -216,6 +216,17 @@ def training_progress(job, logs):
                 goal = config.get("steps") if isinstance(config, dict) else None
                 if type(goal) is int and goal > 0:
                     total = goal
+        if output and job.get("status_path") and job.get("run_id") and not epochs:
+            status_path = Path(job["status_path"])
+            live_path = status_path.parent / "progress" / (job["run_id"] + ".json")
+            if not live_path.is_file():
+                live_path = status_path.with_name("training_progress.json")
+            live = small_json(live_path)
+            if (live.get("run_id") == job["run_id"] and live.get("output") == output
+                    and type(live.get("step")) is int and type(live.get("total")) is int
+                    and 0 <= live["step"] <= live["total"] and live["total"] > 0):
+                candidates.append((live["step"], False, str(live_path)))
+                total = live["total"]
         latest = max(candidates, key=lambda row: (row[0], row[1])) if candidates else (None, False, "")
         step, approximate, source = latest
         try:

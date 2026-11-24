@@ -682,6 +682,7 @@ def build_settings(config: dict) -> dict:
         "image_size",
         "freeze",
         "foveation",
+        "top_crop",
     }
     if unknown_vision_keys:
         raise ValueError(f"Unsupported vision settings: {sorted(unknown_vision_keys)}.")
@@ -707,6 +708,13 @@ def build_settings(config: dict) -> dict:
             f"{sorted(unknown_foveation_keys)}."
         )
     foveated_vision_enabled = as_bool(foveation_config.get("enabled", False))
+    top_crop = vision_config.get("top_crop", {})
+    if not isinstance(top_crop, dict) or set(top_crop) - {"enabled", "zoom"}:
+        raise ValueError("vision.top_crop accepts enabled and zoom only.")
+    vsa_top_crop_enabled = as_bool(top_crop.get("enabled", False))
+    vsa_top_crop_zoom = float(top_crop.get("zoom", 1.1))
+    if not math.isfinite(vsa_top_crop_zoom) or vsa_top_crop_zoom < 1:
+        raise ValueError("vision.top_crop.zoom must be finite and >= 1.")
     foveation_mode = str(
         foveation_config.get("mode", "partial_fov")
     ).strip().lower()
@@ -792,6 +800,8 @@ def build_settings(config: dict) -> dict:
     foveation_randomization_enabled = as_bool(
         randomization.get("enabled", False)
     )
+    if vsa_top_crop_enabled and (foveated_vision_enabled or foveation_randomization_enabled):
+        raise ValueError("vision.top_crop cannot be combined with vision.foveation transforms.")
     color_config = randomization.get("color", {})
     crop_config = randomization.get("crop", {})
     blur_config = randomization.get("blur", {})
@@ -994,13 +1004,22 @@ def build_settings(config: dict) -> dict:
     is_direct = architecture_label in DIRECT_PATCH_ARCH_LABELS
     is_window = is_residual or is_direct
     is_bspline = architecture_label in BSPLINE_ARCH_LABELS
+    bspline_config = config.get("bspline", {})
+    if not isinstance(bspline_config, dict) or set(bspline_config) - {"tokens", "weight", "gripper_action"}:
+        raise ValueError("bspline accepts only tokens, weight and gripper_action.")
+    bspline_gripper_action = as_bool(bspline_config.get("gripper_action", False))
     skill_image_keys = [str(value) for value in as_list(architecture_config.get(
         "image_keys", ["observation.images.image", "observation.images.wrist_image"]
     ))]
     skill_plan_state_dim = int(architecture_config.get("plan_state_dim", 8))
+    chunk_end_state_dim = skill_plan_state_dim
     bimanual_spatial_auxiliary = as_bool(
         architecture_config.get("bimanual_spatial_auxiliary", False)
     )
+    if bspline_gripper_action:
+        if not is_bspline or bimanual_spatial_auxiliary or contract["state_dim"] != 8 or contract["action_dim"] != 7:
+            raise ValueError("bspline.gripper_action requires LIBERO-compatible 8D states and 7D actions.")
+        skill_plan_state_dim, chunk_end_state_dim = 7, 8
     if bimanual_spatial_auxiliary:
         expected = [
             "observation.images.top",
@@ -1063,10 +1082,10 @@ def build_settings(config: dict) -> dict:
             f"observation.state q01/q99 for the xyz axes in {dataset_dir / 'meta' / 'stats.json'}."
         )
     chunk_end_state_q01, chunk_end_state_q99 = _state_quantiles(
-        dataset_dir, skill_plan_state_dim
+        dataset_dir, chunk_end_state_dim
     )
     if is_lit or is_bspline or architecture_label in VANILA_LABELS:
-        expected_state_dim = skill_plan_state_dim if is_bspline else 8
+        expected_state_dim = chunk_end_state_dim if is_bspline else 8
         if contract["state_dim"] != expected_state_dim:
             raise ValueError(
                 f"Architecture expects state_dim={expected_state_dim}; "
@@ -1482,9 +1501,6 @@ def build_settings(config: dict) -> dict:
         "both_lit_4_dedicated",
     }
     skill_flow_weight = float(skill_flow_config.get("weight", 1.0))
-    bspline_config = config.get("bspline", {})
-    if not isinstance(bspline_config, dict) or set(bspline_config) - {"tokens", "weight"}:
-        raise ValueError("bspline accepts only tokens and weight.")
     bspline_tokens = int(bspline_config.get("tokens", 30))
     bspline_loss_weight = float(bspline_config.get("weight", 1.0))
     if bspline_tokens < 2 or not math.isfinite(bspline_loss_weight) or bspline_loss_weight <= 0:
@@ -1801,6 +1817,10 @@ def build_settings(config: dict) -> dict:
     if use_muon:
         # Muon A/B runs must never collide with the AdamW output directory.
         run_name = f"{run_name}_muon"
+    if vsa_top_crop_enabled:
+        run_name += "_topcrop" + f"{vsa_top_crop_zoom:g}".replace(".", "p")
+    if bspline_gripper_action:
+        run_name += "_gripaction"
     if run_suffix:
         # The user suffix is always last so the automatic batch/architecture
         # naming contract stays machine-readable.
@@ -1856,6 +1876,8 @@ def build_settings(config: dict) -> dict:
         "tokenizer_path": tokenizer_path,
         "dino_model_path": dino_model,
         "dino_image_size": int(_at(config, "vision", "image_size", default=224)),
+        "vsa_top_crop_enabled": vsa_top_crop_enabled,
+        "vsa_top_crop_zoom": vsa_top_crop_zoom,
         "freeze_vision_encoder": freeze_vision_encoder,
         "dino_lr_scale": dino_lr_scale,
         "foveated_vision_enabled": foveated_vision_enabled,
@@ -1922,7 +1944,7 @@ def build_settings(config: dict) -> dict:
         "goal_xyz_q01": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q01) + "]",
         "goal_xyz_q99": "[" + ",".join(f"{value:.9g}" for value in goal_xyz_q99) + "]",
         "chunk_end_state_loss_weight": 0.3,
-        "chunk_end_state_dim": skill_plan_state_dim,
+        "chunk_end_state_dim": chunk_end_state_dim,
         "chunk_end_state_q01": "[" + ",".join(
             f"{value:.9g}" for value in chunk_end_state_q01
         ) + "]",
@@ -1986,6 +2008,7 @@ def build_settings(config: dict) -> dict:
         "skill_flow_state_conditioned": skill_flow_state_conditioned,
         "skill_flow_chunk_multiplier": skill_flow_chunk_multiplier,
         "bspline_tokens": bspline_tokens,
+        "bspline_gripper_action": bspline_gripper_action,
         "bspline_loss_weight": bspline_loss_weight,
         "skill_flow_checkpoint_layers": skill_flow_checkpoint_layers,
         "skill_flow_latent_best_of_n_enabled": skill_flow_latent_best_of_n_enabled,

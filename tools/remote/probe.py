@@ -176,6 +176,8 @@ def progress(project, spec):
     out = storage / spec['output']
     # Output must belong to this recipe, including workspace output aliases.
     out.resolve().relative_to(storage.resolve())
+    if spec.get('kind') == 'mimicgen_pi05':
+        out = out / 'src'  # The report root contains only index.html.
     if spec.get('kind') == 'abc':
         for prefix in ('src/metrics', 'metrics'):
             value = read(out / prefix / 'summary.json') or read(out / prefix / 'partial_summary.json')

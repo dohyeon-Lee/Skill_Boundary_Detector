@@ -25,6 +25,7 @@ class MimicGenGymEnv(gym.Env):
     def __init__(self,cfg,render=True):
         self.cfg=cfg;self.task_description=INSTRUCTION;self.task=cfg.task;self.wrist_camera_mirror_x=False;self.render_mode='rgb_array';self._max_episode_steps=cfg.episode_length or 600
         self.episode_index=cfg.init_state_offset;self.init_state_id=self.episode_index
+        self.init_states=False;self._init_states=None;self._reset_stride=1
         self.action_space=spaces.Box(-1.,1.,shape=(7,),dtype=np.float32)
         h,w=cfg.observation_height,cfg.observation_width
         self.observation_space=spaces.Dict({
@@ -69,8 +70,15 @@ class MimicGenGymEnv(gym.Env):
     def reset(self,*,seed=None,options=None):
         super().reset(seed=seed)
         self.init_state_id=self.episode_index
-        self.episode_index+=1;self._steps=0
-        obs=self._rpc('reset',{'seed':int(seed if seed is not None else self.init_state_id)})
+        self.episode_index+=self._reset_stride;self._steps=0
+        if self.init_states:
+            if self._init_states is None or not len(self._init_states):
+                raise ValueError('Coffee exact reset requires a verified state/XML record')
+            record=self._init_states[self.init_state_id % len(self._init_states)]
+            obs=self._rpc('reset_exact',{'state':np.asarray(record['state']).tolist(),
+                                         'model_xml':record['model_xml']})
+        else:
+            obs=self._rpc('reset',{'seed':int(seed if seed is not None else self.init_state_id)})
         return self._observation(obs),{'task':INSTRUCTION,'init_state_id':self.init_state_id}
 
     def step(self,action):
@@ -111,5 +119,7 @@ def create_mimicgen_envs(cfg,n_envs,env_cls):
     if cfg.task_ids not in (None, [0]):raise ValueError('Coffee_D0 has one task: task_ids=[0]')
     if cfg.init_states:raise ValueError('Coffee dataset has no exact simulator states; use init_states=false')
     configs=[copy.deepcopy(cfg) for _ in range(n_envs)]
+    def create(item):
+        env=MimicGenGymEnv(item);env._reset_stride=n_envs;return env
     for index, item in enumerate(configs):item.init_state_offset+=index
-    return {cfg.task:{0:env_cls([partial(MimicGenGymEnv,item) for item in configs])}}
+    return {cfg.task:{0:env_cls([partial(create,item) for item in configs])}}

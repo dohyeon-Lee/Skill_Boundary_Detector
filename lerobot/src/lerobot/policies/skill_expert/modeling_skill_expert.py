@@ -2675,6 +2675,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
         return torch.bfloat16 if self.config.dtype == "bfloat16" else torch.float32
 
     def reset(self) -> None:
+        self._vsa_top_crop = None
         self._action_queue = deque(maxlen=self.config.n_action_steps)
         self._preskill_identity = None
         self._preskill_plan_cache = None
@@ -3639,8 +3640,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 )
                 if tuple(target.shape) != expected or not bool(torch.isfinite(target).all()):
                     raise ValueError(f"Independent planner target must be finite {expected}.")
-                q01 = target.new_tensor(self.config.chunk_end_state_q01)
-                q99 = target.new_tensor(self.config.chunk_end_state_q99)
+                low, high = self.config.bspline_plan_quantiles
+                q01 = target.new_tensor(low)
+                q99 = target.new_tensor(high)
                 target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
             if self.config.uses_dual_bottleneck:
                 return target  # The action forward will share its current VLM graph with FM.
@@ -4948,6 +4950,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         end_xyz_override: Tensor | None = None,
         action_only: bool = False,
     ):
+        from .vsa_top_crop import prepare_top_crop
+
+        batch, self._vsa_top_crop = prepare_top_crop(batch, self.config, training=self.training)
         if end_xyz_override is not None:
             if SKILL_END_STATE not in batch:
                 raise KeyError("Predicted XYZ conditioning requires skill_end_state metadata.")
@@ -5393,8 +5398,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     target = batch[SKILL_BSPLINE_STATES].to(device=prediction.device, dtype=torch.float32)
                     if target.shape != prediction.shape or not bool(torch.isfinite(target).all()):
                         raise ValueError(f"Invalid Bspline proprio target: {tuple(target.shape)} vs {tuple(prediction.shape)}.")
-                    q01 = torch.tensor(self.config.chunk_end_state_q01, device=prediction.device)
-                    q99 = torch.tensor(self.config.chunk_end_state_q99, device=prediction.device)
+                    low, high = self.config.bspline_plan_quantiles
+                    q01 = torch.tensor(low, device=prediction.device)
+                    q99 = torch.tensor(high, device=prediction.device)
                     target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
                 if getattr(self.config, "skill_planner_mode", "") == "denoising":
                     if independent_flow_loss is None:
@@ -5929,6 +5935,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         self, batch: dict, *, batch_indices: list[int] | None = None,
     ) -> Tensor:
         """Sample rendered slots only, reusing observation features and Action caches."""
+        from .vsa_top_crop import prepare_top_crop
+
+        batch, _ = prepare_top_crop(batch, self.config, training=False, crop=self._vsa_top_crop)
         if not getattr(self.config, "uses_independent_skill_planner", False):
             raise RuntimeError("This checkpoint has no independent skill planner.")
         if getattr(self.config, "skill_planner_mode", "") != "denoising":
@@ -5953,6 +5962,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_termination_probability(self, batch: dict) -> Tensor:
         """Evaluate the integrated head on current observations, without action denoising."""
+        from .vsa_top_crop import prepare_top_crop
+
+        batch, _ = prepare_top_crop(batch, self.config, training=False)
         if not self.config.vlm_termination_enabled:
             raise RuntimeError("This checkpoint has no integrated VLM termination head.")
         self.eval()
@@ -5965,6 +5977,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict, **kwargs) -> Tensor:
         self.eval()
+        from .vsa_top_crop import prepare_top_crop
+
+        batch, self._vsa_top_crop = prepare_top_crop(batch, self.config, training=False)
         state = pad_vector(batch[OBS_STATE], self.config.max_state_dim)
         skill_code = self._skill_code(batch)
         images = self._collect_images(batch)

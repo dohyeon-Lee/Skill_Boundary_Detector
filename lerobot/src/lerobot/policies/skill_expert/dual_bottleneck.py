@@ -28,7 +28,7 @@ class DualBottleneckSkillExpert(Pi05VLMVanilaSkillExpert):
             self.bridge_proprio_condition = nn.Identity()
         if config.dual_uses_start_proprio:
             self.start_proprio_condition = nn.Sequential(
-                nn.Linear(getattr(config, "skill_plan_state_dim", 8), self.width), nn.SiLU(), nn.Linear(self.width, self.width, bias=False),
+                nn.Linear(getattr(config, "chunk_end_state_dim", 8), self.width), nn.SiLU(), nn.Linear(self.width, self.width, bias=False),
             )
             nn.init.zeros_(self.start_proprio_condition[-1].weight)
         self.lower_layerwise_latent_queries = nn.Parameter(

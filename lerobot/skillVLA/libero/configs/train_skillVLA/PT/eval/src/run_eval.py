@@ -1008,6 +1008,7 @@ class Stage1OraclePolicy(PreTrainedPolicy):
         # One raw (pre-normalization, grounded) EEF pose per environment step. The video overlay
         # needs the pose at every rendered frame, while the trace only records skill boundaries.
         self._eef_pose_log: list[np.ndarray] = []
+        self._pending_gripper_chunks: list[dict] = []
         self._episode_step = 0
         self._started = False
 
@@ -2202,7 +2203,8 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             logging.warning("Fullskill video overlay: action forward exposed no Bspline prediction.")
             return
         config = self.policy.config
-        xyz = prediction.detach()[..., :3].float().cpu().numpy()
+        normalized_state = prediction.detach().float().cpu().numpy()
+        xyz = normalized_state[..., :3].copy()
         q01 = np.asarray(config.chunk_end_state_q01, dtype=np.float64)[:3]
         q99 = np.asarray(config.chunk_end_state_q99, dtype=np.float64)[:3]
         xyz = (xyz + 1) * .5 * np.maximum(q99 - q01, 1e-6) + q01
@@ -2214,10 +2216,31 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             xyz = xyz + np.asarray(offset).reshape(-1, 1, 3)[selected]
         for prediction_index, batch_index in enumerate(selected):
             trace_index = self._active_trace[batch_index]
-            self._trace[trace_index].setdefault("fullskill_plans", []).append({
+            point = {
                 "episode_timestep": int(self._episode_step),
                 "xyz_world": xyz[prediction_index].tolist(),
-            })
+            }
+            if getattr(config, "bspline_gripper_action", False):
+                if normalized_state.shape[-1] != 7:
+                    raise ValueError("Gripper-action fullskill prediction must be 7D.")
+                commands = normalized_state[prediction_index, :, 6]
+                point["gripper_action"] = commands.tolist()
+                point["gripper_open_fraction"] = np.clip((1 - commands) / 2, 0, 1).tolist()
+            elif normalized_state.shape[-1] == 8:
+                # LIBERO/Coffee: left/right finger qpos have opposite signs.
+                # Their normalized opening fractions are (left+1)/2 and
+                # (1-right)/2. This describes predicted state, not action.
+                fingers = normalized_state[prediction_index, :, 6:8]
+                limits_low = np.asarray(config.chunk_end_state_q01)[6:8]
+                limits_high = np.asarray(config.chunk_end_state_q99)[6:8]
+                point["gripper_qpos"] = (
+                    (fingers + 1) * .5 * np.maximum(limits_high - limits_low, 1e-6)
+                    + limits_low
+                ).tolist()
+                point["gripper_open_fraction"] = np.clip(
+                    (2 + fingers[:, 0] - fingers[:, 1]) / 4, 0, 1,
+                ).tolist()
+            self._trace[trace_index].setdefault("fullskill_plans", []).append(point)
 
     def _record_video_goals(self, action_batch: dict) -> None:
         """Record actual chunk inputs without another prediction or a GT fallback."""
@@ -2241,11 +2264,19 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             uv = uv.detach().float().cpu()
             uv = torch.where(torch.isfinite(uv).all(-1, keepdim=True),
                              uv.clamp(-1, 1), torch.full_like(uv, float("nan")))
+        model_uv = None
+        crop = getattr(self.policy, "_vsa_top_crop", None)
+        if crop is not None and uv is not None:
+            from lerobot.policies.skill_expert.vsa_top_crop import map_uv
+
+            model_uv = map_uv(crop, uv)[0]
         for batch_index, trace_index in enumerate(self._active_trace):
             if trace_index is None:
                 continue
             record = self._trace[trace_index]
             point = {"episode_timestep": int(self._episode_step)}
+            if model_uv is not None:
+                point["focus_uv_model"] = model_uv[batch_index].tolist()
             for field, values in (("expert_end_xyz_m", xyz), ("focus_uv", uv)):
                 if values is not None and batch_index < len(values):
                     row = values[batch_index].tolist()
@@ -2867,8 +2898,24 @@ class Stage1OraclePolicy(PreTrainedPolicy):
             from lerobot.policies.skill_expert.bottleneck_video import capture_bottleneck, decode_auxiliaries
             with capture_bottleneck(getattr(self.policy, "model", None), self._capture_vsa_top_inputs) as aux:
                 chunk = self.policy.predict_action_chunk(action_batch)
+            if getattr(self, "gripper_signal_enabled", False):
+                self._pending_gripper_chunks.append({
+                    "start_step": int(self._episode_step), "actions": chunk.detach().clone(),
+                })
             if aux is not None:
                 decoded = decode_auxiliaries(aux["outputs"], self.policy.config, self.get_grounding_offset())
+                crop = getattr(self.policy, "_vsa_top_crop", None)
+                if crop is not None:
+                    from lerobot.policies.skill_expert.vsa_top_crop import map_uv
+
+                    # Videos display the original camera. XYZ and wrist boxes
+                    # already use that convention; restore only Top UV boxes.
+                    for values in decoded.values():
+                        if "top_patch_box_uv" in values:
+                            boxes = values["top_patch_box_uv"]
+                            values["top_patch_box_uv"] = map_uv(
+                                crop, torch.as_tensor(boxes).reshape(len(boxes), 2, 2), inverse=True,
+                            ).numpy().reshape(boxes.shape)
                 for batch_index, trace_index in enumerate(self._active_trace):
                     if trace_index is None:
                         continue
@@ -3106,6 +3153,10 @@ class Stage1OraclePolicy(PreTrainedPolicy):
     def predict_action_chunk(self, batch, **kwargs):
         return self.policy.predict_action_chunk(batch, **kwargs)
 
+    def pop_gripper_action_chunks(self) -> list[dict]:
+        chunks, self._pending_gripper_chunks = self._pending_gripper_chunks, []
+        return chunks
+
 
 def _repeat_to_length(sequences: list, count: int) -> list:
     return list(islice(cycle(sequences), count)) if sequences else []
@@ -3294,9 +3345,16 @@ def _episode_exact_oracle_maps(
                     entry.close()
                 continue
             common = common[:n_episodes]
-            init_states = np.stack(
-                [indexed[0][episode]["init_state"] for episode in common]
-            ).astype(np.float64)
+            if suite_name == 'Coffee_D0':
+                init_states = np.asarray([
+                    {'state': indexed[0][episode]['init_state'],
+                     'model_xml': indexed[0][episode]['model_xml']}
+                    for episode in common
+                ], dtype=object)
+            else:
+                init_states = np.stack(
+                    [indexed[0][episode]["init_state"] for episode in common]
+                ).astype(np.float64)
             # Applied by the lazy env factory when this task's env is created.
             init_state_arrays[(task_group, int(task_id))] = init_states
             for index, model in enumerate(indexed):
@@ -3361,9 +3419,9 @@ def _make_lazy_envs(
     oracle stage before any factory runs and is read at env-creation time.
     """
     if cfg.env.type == "mimicgen":
-        if init_state_arrays or init_model_body_poses:
-            raise ValueError("MimicGen does not support LIBERO exact reset state banks")
-        return {cfg.env.task: {0: _lazy_env_factory(cfg, cfg.env.task, 0, {}, None)}}
+        if init_model_body_poses is not None:
+            raise ValueError("MimicGen exact resets require a Coffee episode map, not a LIBERO bank")
+        return {cfg.env.task: {0: _lazy_env_factory(cfg, cfg.env.task, 0, init_state_arrays, None)}}
     from lerobot.envs.libero import _get_suite, _select_task_ids
 
     suite_names = [s.strip() for s in str(cfg.env.task).split(",") if s.strip()]
@@ -4211,6 +4269,11 @@ def _build_context(spec: dict, cfg, device: torch.device) -> dict:
         goal_noise_target=str(spec.get("goal_noise_target", "none")),
         goal_noise_seed=int(spec.get("goal_noise_seed", 0)),
     )
+    if (getattr(cfg.env, "type", "") == "mimicgen"
+            and not getattr(policy_config, "bspline_gripper_action", False)):
+        from goal_overlay import dataset_gripper_reference
+
+        wrapper.fullskill_gripper_reference = dataset_gripper_reference(spec["raw_dataset_dir"])
     if spec.get("task0_intervention"):
         from lerobot.utils.task0_intervention import Task0Intervention, load_reference
 
@@ -4341,7 +4404,8 @@ def _panel_artifacts_complete(
                 raw_video = task_videos / "raw" / f"eval_episode_{episode_index}.mp4"
                 if not raw_video.is_file() or raw_video.stat().st_size == 0:
                     return False
-        if bool(getattr(cfg.eval, "record_skill_transitions", False)):
+        if (bool(getattr(cfg.eval, "record_skill_transitions", False))
+                or os.environ.get("GRIPPER_SIGNAL", "false").lower() == "true"):
             for episode_index in range(int(cfg.eval.n_episodes)):
                 metadata_path = task_videos / "episode_metadata" / f"eval_episode_{episode_index}.json"
                 try:
@@ -4350,6 +4414,12 @@ def _panel_artifacts_complete(
                         return False
                     if metadata["episode_steps"] <= 0 or not metadata["skills"]:
                         return False
+                    if os.environ.get("GRIPPER_SIGNAL", "false").lower() == "true":
+                        signal = metadata.get("gripper_signal", {})
+                        if len(signal.get("values", [])) != metadata["episode_steps"]:
+                            return False
+                        if not signal.get("chunks"):
+                            return False
                     if bool(getattr(cfg.eval, "raw_videos", False)) and episode_index < expected_videos:
                         raw = metadata["raw_video"]
                         if raw["frame_count"] != metadata["episode_steps"] or raw["overlays"]:
@@ -4635,7 +4705,7 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
             "independent_base": bool(getattr(cfg.eval, "motion_plan_independent_base", False)),
         }
     if bool(getattr(cfg.eval, "video_fullskill_overlay", False)):
-        signature["video_fullskill_overlay"] = "bspline_deployed_or_auxiliary_rendered_replan_v3"
+        signature["video_fullskill_overlay"] = "bspline_latest_replan_gripper_action_or_gtwidth_v6"
     if int(getattr(cfg.eval, "max_videos_per_task", 0)) > 0:
         signature["video_aux_layout"] = "rollout_input_top_wrist_predictions_v2"
     if _episode_exact_broadcast_single_episode():
@@ -4644,6 +4714,8 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         signature["raw_videos"] = "native_fps_unannotated_v1"
     if bool(getattr(cfg.eval, "record_skill_transitions", False)):
         signature["record_skill_transitions"] = "executed_skill_steps_v1"
+    if os.environ.get("GRIPPER_SIGNAL", "false").lower() == "true":
+        signature["gripper_signal"] = "continuous_action_and_full_chunks_v1"
     if bool(getattr(cfg.eval, "presentation_videos", False)):
         # Only enabled FT runs adopt this cache contract; ordinary Stage-1
         # resumes remain compatible with their existing metrics artifacts.
@@ -4964,8 +5036,8 @@ def eval_main(cfg: EvalPipelineConfig):
         )
         if cfg.env.type == "mimicgen":
             from lerobot.envs.mimicgen import INSTRUCTION
-            if any(spec.get("eval_init_states_path") or spec.get("initial_state_bank") for spec in specs):
-                raise ValueError("MimicGen Coffee requires ordinary seeded resets, not demo-exact resets")
+            if any(spec.get("initial_state_bank") for spec in specs):
+                raise ValueError("MimicGen Coffee does not support LIBERO initial state banks")
             task_descriptions = {0: INSTRUCTION}
         else:
             task_descriptions = _libero_task_descriptions(cfg.env.task)
@@ -5052,6 +5124,7 @@ def eval_main(cfg: EvalPipelineConfig):
             with serialized_model_load():
                 context = _build_context(spec, cfg, device)
             context["policy"].fullskill_overlay = bool(getattr(cfg.eval, "video_fullskill_overlay", False))
+            context["policy"].gripper_signal_enabled = os.environ.get("GRIPPER_SIGNAL", "false").lower() == "true"
             if getattr(cfg.eval, "motion_plan_images", False):
                 context["policy"].set_capture_motion_plans(
                     True, cfg.eval.motion_plan_samples_per_skill,

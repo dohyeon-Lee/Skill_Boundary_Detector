@@ -380,6 +380,7 @@ class SkillVLADataset(LeRobotDataset):
         )
         self._residual_action_horizon = int(kwargs.pop("residual_action_horizon", 0))
         self._bspline_skill_state_tokens = int(kwargs.pop("bspline_skill_state_tokens", 0))
+        self._bspline_gripper_action = bool(kwargs.pop("bspline_gripper_action", False))
         if self._bspline_skill_state_tokens < 0 or self._bspline_skill_state_tokens == 1:
             raise ValueError("bspline_skill_state_tokens must be 0 (disabled) or >=2.")
         self._bspline_target_cache = {}
@@ -556,6 +557,15 @@ class SkillVLADataset(LeRobotDataset):
             )
         else:
             self._chunk_end_state_cache = None
+        self._bspline_gripper_action_cache = None
+        if self._bspline_skill_state_tokens and self._bspline_gripper_action:
+            actions = self._canonical_action_cache
+            if actions is None:
+                values = self.hf_dataset.select_columns(["action"]).with_format("numpy")[:]["action"]
+                actions = torch.from_numpy(np.asarray(values, dtype=np.float32))
+            if actions.ndim != 2 or actions.shape[1] != 7 or len(actions) != len(self._chunk_end_state_cache):
+                raise ValueError("Gripper-action Bspline targets require aligned 7D actions and 8D states.")
+            self._bspline_gripper_action_cache = actions[:, 6].clone().contiguous()
         self._wrist_camera_mirror_x = bool(info.get("wrist_camera_mirror_x", True))
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
         self._iss = (
@@ -743,7 +753,7 @@ class SkillVLADataset(LeRobotDataset):
 
     def _bspline_skill_states(self, *, episode_index, skill_start_frame, skill_length):
         """Selected original GT skill, as with canonical flow; jitter changes selection only."""
-        from .proprio_spline import resample_skill_proprio
+        from .proprio_spline import resample_skill_proprio, resample_skill_with_gripper_action
 
         key = (episode_index, skill_start_frame, skill_length)
         if key not in self._bspline_target_cache:
@@ -755,9 +765,14 @@ class SkillVLADataset(LeRobotDataset):
             mapping = self.reader._absolute_to_relative_idx
             indices = list(indices) if mapping is None else [mapping[index] for index in indices]
             selected = self._chunk_end_state_cache[indices].numpy()
-            self._bspline_target_cache[key] = torch.from_numpy(
-                resample_skill_proprio(selected, self._bspline_skill_state_tokens)
-            )
+            if getattr(self, "_bspline_gripper_action", False):
+                target = resample_skill_with_gripper_action(
+                    selected, self._bspline_gripper_action_cache[indices].numpy(),
+                    self._bspline_skill_state_tokens,
+                )
+            else:
+                target = resample_skill_proprio(selected, self._bspline_skill_state_tokens)
+            self._bspline_target_cache[key] = torch.from_numpy(target)
         return self._bspline_target_cache[key].clone()
 
     def _canonical_skill_actions(

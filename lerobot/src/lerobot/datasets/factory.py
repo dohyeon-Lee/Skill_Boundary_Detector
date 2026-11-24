@@ -554,6 +554,7 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
                             foveated_vision_config=_foveated_vision_config(
                                 cfg.policy
                             ),
+                            bspline_gripper_action=bool(getattr(cfg.policy, "bspline_gripper_action", False)),
                             bspline_skill_state_tokens=(
                                 int(getattr(cfg.policy, "bspline_tokens", 30))
                                 if getattr(cfg.policy, "uses_bspline_plan", False)

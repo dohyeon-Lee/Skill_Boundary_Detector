@@ -22,6 +22,7 @@ init states into an already-built env, so ``sim.model`` is authoritative and can
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 import torch
@@ -160,21 +161,106 @@ def fullskill_from_trace(
     return initial, current
 
 
-def draw_fullskill(image, initial, current) -> None:
-    """Draw both trajectories; NaN/offscreen points break lines rather than join across gaps."""
+@lru_cache(maxsize=16)
+def dataset_gripper_reference(dataset_dir: str, episode_index: int = 0) -> dict:
+    """Measure open and object-constrained grasp widths from stable GT commands.
+
+    A held object prevents fully closed joints. Use the demonstrated grasp width,
+    never the midpoint of the PT joint quantiles, to color Coffee's state readout.
+    This reference is only for visualization and never changes policy inputs.
+    """
+    from pathlib import Path
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    tables = [pq.read_table(path, filters=[("episode_index", "=", episode_index)],
+                           columns=["frame_index", "action", "observation.state"])
+              for path in sorted((Path(dataset_dir) / "data").glob("**/*.parquet"))]
+    table = pa.concat_tables([part for part in tables if len(part)]).sort_by("frame_index")
+    actions = np.asarray(table["action"].to_pylist())
+    states = np.asarray(table["observation.state"].to_pylist())
+    if states.shape[1] != 8:
+        raise ValueError("Gripper visualization calibration expects two finger qpos in state[6:8].")
+    width = np.abs(states[:, 6:8]).sum(-1)
+    closed_command = actions[:, -1] > 0
+    age = np.zeros(len(actions), dtype=int)
+    for index in range(1, len(actions)):
+        age[index] = age[index - 1] + 1 if closed_command[index] == closed_command[index - 1] else 0
+    stable = age >= 8  # exclude the physical closing/opening transient
+    opened = width[stable & ~closed_command]
+    grasped = width[stable & closed_command]
+    if not len(opened) or not len(grasped):
+        raise ValueError("Reference episode needs stable open and close-command states.")
+    open_width, grasp_width = float(np.median(opened)), float(np.median(grasped))
+    if open_width - grasp_width <= 1e-4:
+        raise ValueError("GT open and grasp widths cannot be distinguished.")
+    return dict(open_width_m=open_width, grasp_width_m=grasp_width,
+                episode_index=episode_index, stable_command_steps=8)
+
+
+def fullskill_gripper_from_trace(
+    trace, *, batch_index: int, n_video_frames: int, video_frame_stride: int,
+    gripper_reference: dict | None = None,
+) -> np.ndarray | None:
+    """Latest plan's command or finger opening; missing historical values stay unknown."""
+    records = sorted(
+        (record for record in trace if int(record.get("batch_index", 0)) == batch_index),
+        key=lambda record: int(record.get("episode_timestep", 0)),
+    )
+    sample = next((point["gripper_open_fraction"] for record in records
+                   for point in record.get("fullskill_plans", [])
+                   if "gripper_open_fraction" in point), None)
+    if sample is None:
+        return None
+    result = np.full((n_video_frames, len(sample)), np.nan)
+    for record_index, record in enumerate(records):
+        start = int(record.get("episode_timestep", 0))
+        end = (int(records[record_index + 1].get("episode_timestep", 0))
+               if record_index + 1 < len(records) else float("inf"))
+        points = sorted(record.get("fullskill_plans", []), key=lambda point: int(point["episode_timestep"]))
+        point_index = -1
+        for frame_index in range(n_video_frames):
+            timestep = frame_index * max(1, int(video_frame_stride))
+            if not start <= timestep < end:
+                continue
+            while point_index + 1 < len(points) and int(points[point_index + 1]["episode_timestep"]) <= timestep:
+                point_index += 1
+            if point_index >= 0:
+                point = points[point_index]
+                if "gripper_action" in point:
+                    result[frame_index] = np.clip((1 - np.asarray(point["gripper_action"])) / 2, 0, 1)
+                elif gripper_reference is not None and "gripper_qpos" in point:
+                    width = np.abs(point["gripper_qpos"]).sum(-1)
+                    result[frame_index] = np.clip(
+                        (width - gripper_reference["grasp_width_m"]) /
+                        (gripper_reference["open_width_m"] - gripper_reference["grasp_width_m"]), 0, 1,
+                    )
+                elif gripper_reference is None and "gripper_open_fraction" in point:
+                    result[frame_index] = point["gripper_open_fraction"]
+    return result
+
+
+def draw_fullskill(image, initial, current, *, gripper_open_fraction=None) -> None:
+    """Draw only the latest plan, blue=open/red=closed; unknown state is gray."""
     from PIL import ImageDraw  # noqa: PLC0415
 
     draw = ImageDraw.Draw(image)
-    for pixels, color, thickness in (
-        (initial, (60, 220, 100), 5),
-        (current, (255, 165, 40), 2),
-    ):
-        if pixels is None:
-            continue
-        points = np.asarray(pixels)
-        for start, end in zip(points[:-1], points[1:], strict=True):
-            if np.isfinite(start).all() and np.isfinite(end).all():
-                draw.line([tuple(start), tuple(end)], fill=color, width=thickness)
+    pixels = current if current is not None else initial
+    if pixels is None:
+        return
+    points = np.asarray(pixels)
+    opening = (np.full(len(points), np.nan) if gripper_open_fraction is None
+               else np.asarray(gripper_open_fraction))
+    if opening.shape != (len(points),):
+        raise ValueError("Fullskill gripper values must match the trajectory waypoints.")
+    colors = [(160, 170, 185) if not np.isfinite(value) else
+              (45, 125, 255) if value > .5 else (245, 65, 65) for value in opening]
+    for index, (start, end) in enumerate(zip(points[:-1], points[1:], strict=True)):
+        if np.isfinite(start).all() and np.isfinite(end).all():
+            draw.line([tuple(start), tuple(end)], fill=colors[index], width=3)
+    for (x, y), color in zip(points, colors, strict=True):
+        if np.isfinite((x, y)).all():
+            draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=color)
 
 
 def _finish(

@@ -472,6 +472,9 @@ class SkillExpertConfig(PreTrainedConfig):
     # independent planner label selects learned inputs or a proprio flow.
     bspline_tokens: int = 30
     bspline_loss_weight: float = 1.0
+    # Replace the full-plan's two finger qpos with one raw gripper action.
+    # Observation inputs and spatial auxiliary state statistics stay 8-D.
+    bspline_gripper_action: bool = False
     skill_flow_state_conditioned: bool = False
     skill_flow_chunk_multiplier: int = 1
     # Optional IMLE-style mode assignment for the skill-flow architectures.
@@ -499,6 +502,8 @@ class SkillExpertConfig(PreTrainedConfig):
     vision_backbone: str = "dino"
     dino_model_path: str = "models/dinov3-vitl16"
     dino_image_size: int = 224
+    vsa_top_crop_enabled: bool = False
+    vsa_top_crop_zoom: float = 1.1
     dino_lr_scale: float = 0.1
     freeze_vision_encoder: bool = False
     dino_lr: float | None = None
@@ -1455,6 +1460,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("Legacy Fullskill visual revisions fix the 17+1 split; other splits require the split_v3 revision.")
             if self.skill_flow_latent_best_of_n_enabled or self.newtask_joint_enabled:
                 raise ValueError("Fullskill visual models currently support ordinary PT/standalone FT, not latent Best-of-N or Joint routing.")
+        if self.bspline_gripper_action and (
+            not self.uses_bspline_plan or self.bimanual_spatial_auxiliary
+            or self.chunk_end_state_dim != 8 or self.skill_plan_state_dim != 7
+        ):
+            raise ValueError("bspline_gripper_action requires a 7D LIBERO plan and 8D proprio statistics.")
         if self.uses_bspline_plan:
             if self.uses_dual_bottleneck and int(self.visual_bridge_last_n_layers) != 9:
                 raise ValueError("Dual bottleneck requires a 9+9 Expert split (visual_bridge_last_n_layers=9).")
@@ -1469,7 +1479,7 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("Bspline tokens must be >=2 and loss weight must be finite and positive.")
             if self.skill_plan_state_dim <= 0:
                 raise ValueError("skill_plan_state_dim must be positive.")
-            if self.chunk_end_state_dim != self.skill_plan_state_dim:
+            if not self.bspline_gripper_action and self.chunk_end_state_dim != self.skill_plan_state_dim:
                 raise ValueError(
                     "Fullskill Bspline requires chunk_end_state_dim to match "
                     f"skill_plan_state_dim ({self.skill_plan_state_dim}), got "
@@ -1477,11 +1487,11 @@ class SkillExpertConfig(PreTrainedConfig):
                 )
             for name in ("chunk_end_state_q01", "chunk_end_state_q99"):
                 values = getattr(self, name)
-                if (values is None or len(values) != self.skill_plan_state_dim
+                if (values is None or len(values) != self.chunk_end_state_dim
                         or not all(math.isfinite(v) for v in values)):
                     raise ValueError(
                         "Fullskill Bspline requires finite "
-                        f"{self.skill_plan_state_dim}D {name} statistics."
+                        f"{self.chunk_end_state_dim}D {name} statistics."
                     )
             if not self.skill_image_keys:
                 raise ValueError("skill_image_keys must contain at least one camera.")
@@ -1563,6 +1573,14 @@ class SkillExpertConfig(PreTrainedConfig):
             raise ValueError("Stage 1 requires the DINO vision path; vision_backbone must be 'dino'.")
         if self.dino_image_size <= 0:
             raise ValueError("dino_image_size must be positive.")
+        if not math.isfinite(self.vsa_top_crop_zoom) or self.vsa_top_crop_zoom < 1:
+            raise ValueError("vsa_top_crop_zoom must be finite and >= 1.")
+        if self.vsa_top_crop_enabled and (
+            not self.uses_dual_bottleneck or self.dual_uses_start_proprio or self.bimanual_spatial_auxiliary
+            or self.newtask_joint_enabled or self.foveated_vision_enabled
+            or self.foveation_randomization_enabled
+        ):
+            raise ValueError("VSA Top crop requires a current-frame dual bottleneck without other camera transforms or Joint FT.")
         if self.dino_lr_scale <= 0.0:
             raise ValueError("dino_lr_scale must be positive.")
         if self.dino_lr is not None and self.dino_lr <= 0.0:
@@ -2773,6 +2791,13 @@ class SkillExpertConfig(PreTrainedConfig):
             or self.training_skill_source == "predictor"
             or self.newtask_joint_enabled
         )
+
+    @property
+    def bspline_plan_quantiles(self) -> tuple[list[float], list[float]]:
+        """Plan scales, independent of the untouched proprio/auxiliary scales."""
+        if self.bspline_gripper_action:
+            return list(self.chunk_end_state_q01[:6]) + [-1.0], list(self.chunk_end_state_q99[:6]) + [1.0]
+        return self.chunk_end_state_q01, self.chunk_end_state_q99
 
     def get_optimizer_preset(self) -> AdamWConfig | MuonConfig:
         if self.use_muon:

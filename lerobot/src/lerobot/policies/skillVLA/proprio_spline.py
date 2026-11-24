@@ -39,3 +39,21 @@ def resample_skill_proprio(
         degree = min(1 if axis in gripper_axes_set else 3, len(values) - 1)
         result[:, axis] = make_interp_spline(source, values[:, axis], k=degree)(target)
     return result
+
+
+def resample_skill_with_gripper_action(trajectory, gripper_action, tokens: int = 30) -> np.ndarray:
+    """Pose6 spline + aligned gripper command, held until its next source frame.
+
+    Commands use the dataset's action scale (-1=open, +1=close). Do not apply
+    finger-position quantiles or interpolate between discrete commands.
+    """
+    states = np.asarray(trajectory, dtype=np.float32)
+    commands = np.asarray(gripper_action, dtype=np.float32)
+    if states.ndim != 2 or states.shape[1] != 8 or commands.shape != (len(states),):
+        raise ValueError("Mixed Bspline targets require aligned (time, 8) states and (time,) commands.")
+    if not np.isfinite(commands).all() or np.any(np.abs(commands) > 1.00001):
+        raise ValueError("Gripper commands must be finite raw actions in [-1, 1].")
+    pose = resample_skill_proprio(states[:, :6], tokens, gripper_axes=())
+    # Integer arithmetic avoids round-off advancing/delaying an exact frame boundary.
+    indices = np.arange(tokens, dtype=np.int64) * (len(states) - 1) // (tokens - 1)
+    return np.concatenate((pose, commands[indices, None]), axis=-1)

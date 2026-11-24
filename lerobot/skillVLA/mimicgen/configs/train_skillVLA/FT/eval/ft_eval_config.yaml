@@ -1,34 +1,35 @@
 # 모델 선택 — FT의 auto는 해당 컴포넌트 학습 YAML에서 run 이름을 계산
 vsa_training_config: auto
-aux_training_configs:
-  predictor: auto
-  terminator: auto
 model_defaults:
-  focus_source: predictor
+  skill_source: external    # FT Predictor의 skill 예측 사용
+  focus_source: predictor   # 같은 Predictor의 top-view UV 예측 사용
   pose_source: auto
+  advance_mode: external     # 스킬 전환은 기존 Terminator 20k 사용
   expert_xyz_source: auto
 models:
-  - label: Coffee_FT
-    vsa_checkpoint: '005000'
-    predictor_checkpoint: '005000'
-    terminator_checkpoint: '005000'
+  - label: Coffee_FT10k_Pred10k_Term20k_fixed
+    vsa_checkpoint: '010000'
+    predictor_dir: bs16_FSQ333_libero2000_ft_coffee_d0_libero_90_full_full_coffee_d0_full_full_predictor_uv_fullvlm_mode2_ep1_uvclip_lab
+    predictor_checkpoint: '010000'
+    terminator_dir: bs32_FSQ333_libero2000_ft_coffee_d0_libero_90_full_full_coffee_d0_full_full_terminator_Term_Token_1_dinoS_freeze_ep1_lab_yonsei
+    terminator_checkpoint: '020000'
 
 # 평가 데이터 / 결과 이름
-output_name: coffee_d0_ft_10eps
+output_name: coffee_d0_FT10k_Pred10k_Term20k_exact_ep0_5eps_fixed_r10
 resume: true
 target_task: Coffee_D0
-gt_dataset:
+gt_dataset:                  # 초기 배치 복원 및 평가 참조 데이터
   skillvla_root: skillvla
   source: coffee_d0_full_full
   run: FSQ333_libero2000_ft_coffee_d0
 task_ids: [0]
-n_episodes: 10
+n_episodes: 5
 
 # Rollout / 스킬 전환
-n_action_steps: 5
+n_action_steps: 10 # 5
 oracle:
-  episode_exact: false
-  repeat_episodes: false
+  episode_exact: true
+  repeat_episodes: true      # 복원 검증된 episode 0 배치를 n_episodes회 반복
   broadcast_single_episode: false
 terminator:
   end_mode: termination
@@ -39,6 +40,7 @@ terminator:
 
 # 영상 / HTML
 video:
+  gripper_signal: true       # 실행 신호 + replanning별 전체 chunk. Coffee: 0 초과=닫기, 0 미만=열기.
   raw: true
   record_skill_transitions: true
   fullskill_overlay: true

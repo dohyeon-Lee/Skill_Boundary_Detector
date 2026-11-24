@@ -2759,6 +2759,7 @@ def build_settings(config: dict) -> dict:
         "video_fullskill_overlay": as_bool(_at(config, "video", "fullskill_overlay", default=False)),
         "raw_videos": as_bool(_at(config, "video", "raw", default=True)),
         "record_skill_transitions": as_bool(_at(config, "video", "record_skill_transitions", default=True)),
+        "gripper_signal": as_bool(_at(config, "video", "gripper_signal", default=False)),
         "skill_videos": as_bool(
             _at(config, "video", "skill_videos", default=False)
         ),

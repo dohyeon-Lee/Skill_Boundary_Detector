@@ -1,5 +1,6 @@
 import ast
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,8 +29,9 @@ def test_exact_transition_timing_differs_from_sampled_video_and_keeps_reentries(
 
 
 @pytest.mark.parametrize('collect_html', [False, True])
+@pytest.mark.parametrize('capture_gripper', [False, True])
 def test_evaluator_saves_native_frames_before_overlays_and_metadata_for_unfilmed_episodes(
-    monkeypatch, tmp_path, collect_html,
+    monkeypatch, tmp_path, collect_html, capture_gripper,
 ):
     import torch
     import lerobot.scripts.lerobot_skillvla_eval as m
@@ -49,6 +51,7 @@ def test_evaluator_saves_native_frames_before_overlays_and_metadata_for_unfilmed
 
     class Policy:
         config = SimpleNamespace()
+        gripper_signal_enabled = capture_gripper
 
         def eval(self):
             pass
@@ -63,7 +66,10 @@ def test_evaluator_saves_native_frames_before_overlays_and_metadata_for_unfilmed
             env.value = value
             if kwargs['render_callback']:
                 kwargs['render_callback'](env)
-        return dict(done=torch.tensor([[False] * 5 + [True]]),
+        actions = torch.zeros(1, 6, 7)
+        actions[0, :, 6] = torch.tensor([-1, -.1, 0, .1, .49, 1])
+        return dict(done=torch.tensor([[False] * 5 + [True]]), action=actions,
+                    gripper_action_chunks=[{'start_step': 0, 'actions': actions.numpy()}],
                     reward=torch.zeros((1, 6)), success=torch.tensor([[False] * 5 + [True]]))
 
     written = {}
@@ -104,6 +110,14 @@ def test_evaluator_saves_native_frames_before_overlays_and_metadata_for_unfilmed
     assert [t['step'] for t in first['transitions']] == [3, 5]
     assert second['raw_video'] is None and second['annotated_video'] is None
     assert [first['seed'], second['seed']] == [1000, 1001]
+    if capture_gripper:
+        for metadata in (first, second):
+            signal = metadata['gripper_signal']
+            assert len(signal['values']) == 6 and signal['values'][4] == pytest.approx(.49)
+            assert signal['threshold'] == 0 and signal['chunks'][0]['executed_steps'] == 6
+        if collect_html:
+            assert info['skill_html_records'][0]['video_path'].endswith('eval_episode_0.mp4')
+            assert info['skill_html_records'][1]['video_path'] is None
 
 
 def test_native_encoder_keeps_non_macroblock_dimensions_and_all_frames(tmp_path):
@@ -127,7 +141,7 @@ def test_cache_requires_raw_recordings_and_valid_episode_metadata(tmp_path):
     source = Path(__file__).parents[2] / 'skillVLA/libero/configs/train_skillVLA/PT/eval/src/run_eval.py'
     node = next(n for n in ast.parse(source.read_text()).body
                 if isinstance(n, ast.FunctionDef) and n.name == '_panel_artifacts_complete')
-    namespace = {'Path': Path, 'json': json}
+    namespace = {'Path': Path, 'json': json, 'os': os}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), 'exec'), namespace)
     complete = namespace['_panel_artifacts_complete']
     cfg = SimpleNamespace(eval=SimpleNamespace(n_episodes=1, max_videos_per_task=1,

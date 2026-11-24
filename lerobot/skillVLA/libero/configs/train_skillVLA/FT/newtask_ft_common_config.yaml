@@ -21,7 +21,7 @@ transition_oversampling:
   weight: 2.0
 
 warm_start:
-  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_vlmtermGT_k10_s1_pw2_w1_vlast9_base, checkpoint: "100000"}
+  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_base, checkpoint: "100000"}
   # Scalar = one Predictor FT; list = independent simultaneous FT on ONE GPU.
   # VSA/Terminator ignore these entries. Joint still requires a single source.
   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip, checkpoint: "100000"}

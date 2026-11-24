@@ -1437,6 +1437,10 @@ def train(
         # increment `step` here.
         step += 1
         gpu_memory_guard.mark_ready()
+        if is_main_process:
+            from lerobot.utils.training_progress import publish_training_progress
+
+            publish_training_progress(cfg.output_dir, step, cfg.steps)
         if training_observer is not None:
             training_observer.on_step(step)
         if is_main_process:
@@ -1456,7 +1460,7 @@ def train(
                 wandb_logger.log_dict(
                     bridge_gate_metrics, step, mode="bridge_gate"
                 )
-        is_log_step = cfg.log_freq > 0 and step % cfg.log_freq == 0 and is_main_process
+        is_log_step = cfg.log_freq > 0 and (step % cfg.log_freq == 0 or step in {1, 2, 5}) and is_main_process
         is_saving_step = (
             step in checkpoint_steps
             if checkpoint_steps

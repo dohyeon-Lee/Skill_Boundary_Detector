@@ -1,4 +1,4 @@
-slurm_profile: 48gb  # base | big | pro6000 | 48gb (change ONLY this selector)
+slurm_profile: base  # base | big | pro6000 | 48gb (change ONLY this selector)
 
 # ./submit_*.sh --yonsei: SSH destination and existing workspace/environment.
 remote_host: mdorazi@165.132.142.208

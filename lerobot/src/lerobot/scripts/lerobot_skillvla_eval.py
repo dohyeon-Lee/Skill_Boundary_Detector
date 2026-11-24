@@ -822,6 +822,12 @@ def rollout(
     motion_records = []
     motion_anchors = {}
     capture_motion = bool(getattr(policy, "capture_motion_plans", False))
+    capture_gripper = bool(getattr(policy, "gripper_signal_enabled", False))
+    gripper_chunks = []
+    if capture_gripper:
+        # A diagnostic copy must never advance state in the execution processors.
+        gripper_postprocessor = deepcopy(postprocessor)
+        gripper_env_postprocessor = deepcopy(env_postprocessor)
     if capture_motion:
         from lerobot.utils.motion_plan_visualization import decode_motion_plan
 
@@ -886,6 +892,17 @@ def rollout(
         action_transition = {ACTION: action}
         action_transition = env_postprocessor(action_transition)
         action = action_transition[ACTION]
+        if capture_gripper:
+            pop_chunks = getattr(policy, "pop_gripper_action_chunks", None)
+            for predicted in pop_chunks() if callable(pop_chunks) else []:
+                chunk = predicted["actions"]
+                batch_size, horizon, dimensions = chunk.shape
+                converted = gripper_postprocessor(chunk.reshape(-1, dimensions))
+                converted = gripper_env_postprocessor({ACTION: converted})[ACTION]
+                gripper_chunks.append({
+                    "start_step": predicted["start_step"],
+                    "actions": converted.reshape(batch_size, horizon, dimensions).detach().cpu().numpy(),
+                })
         record_executed_action = getattr(policy, "record_executed_action", None)
         if record_executed_action is not None:
             record_executed_action(action)
@@ -955,6 +972,8 @@ def rollout(
         }
     if capture_motion:
         ret["motion_plan_records"] = motion_records
+    if capture_gripper:
+        ret["gripper_action_chunks"] = gripper_chunks
 
     if hasattr(policy, "use_original_modules"):
         policy.use_original_modules()
@@ -1702,9 +1721,13 @@ def _annotate_eval_video(
     expert_xyz_values: np.ndarray | None = None,
     input_uv_values: np.ndarray | None = None,
     expert_xyz_label: str = "Pred XYZ",
+    input_uv_label: str = "Input UV",
     top_uv_enabled: bool = True,
     fullskill_start_pixels: np.ndarray | None = None,
     fullskill_replan_pixels: np.ndarray | None = None,
+    fullskill_gripper_open_fraction: np.ndarray | None = None,
+    fullskill_gripper_calibrated: bool = False,
+    fullskill_gripper_action: bool = False,
     bottleneck_overlays: dict | None = None,
 ) -> np.ndarray:
     """Eval-video annotation with outcome/skill bars and terminator gauges.
@@ -1802,6 +1825,8 @@ def _annotate_eval_video(
                 draw_fullskill(
                     image, fullskill_start_pixels[index],
                     None if fullskill_replan_pixels is None else fullskill_replan_pixels[index],
+                    gripper_open_fraction=(None if fullskill_gripper_open_fraction is None
+                                           else fullskill_gripper_open_fraction[index]),
                 )
             panel_draw = ImageDraw.Draw(image)
             text_width = panel_draw.textlength(label, font=label_font)
@@ -1817,7 +1842,7 @@ def _annotate_eval_video(
                 _draw_goal_marker(image, input_uv_pixels[index], color=uv_color, marker="circle")
             y = label_h + 2
             if input_uv_pixels is not None:
-                panel_draw.text((5, y), "Input UV", fill=uv_color,
+                panel_draw.text((5, y), input_uv_label, fill=uv_color,
                                 font=label_font, stroke_width=1, stroke_fill=(0, 0, 0))
                 y += max(12, int(h * 0.06))
             if show_values:
@@ -1853,8 +1878,14 @@ def _annotate_eval_video(
                                     font=label_font, stroke_width=1, stroke_fill=(0, 0, 0))
                     y += max(12, int(h * 0.06))
             if show_fullskill and fullskill_start_pixels is not None:
-                for name, color in (("Fullskill: skill-start", (60, 220, 100)),
-                                    ("Fullskill: latest replan", (255, 165, 40))):
+                legend = (((("Latest plan: GT open-width" if fullskill_gripper_calibrated else "Latest plan: wider fingers"), (45, 125, 255)),
+                           (("Latest plan: GT grasp-width" if fullskill_gripper_calibrated else "Latest plan: narrower fingers"), (245, 65, 65)))
+                          if fullskill_gripper_open_fraction is not None else
+                          (("Latest plan: gripper unavailable", (160, 170, 185)),))
+                if fullskill_gripper_action and fullskill_gripper_open_fraction is not None:
+                    legend = (("Latest plan: open command", (45, 125, 255)),
+                              ("Latest plan: close command", (245, 65, 65)))
+                for name, color in legend:
                     panel_draw.text((5, y), name, fill=color, font=label_font,
                                     stroke_width=1, stroke_fill=(0, 0, 0))
                     y += max(12, int(h * 0.06))
@@ -2504,6 +2535,8 @@ def _write_task_skill_html(
     if not records:
         return None
 
+    from lerobot.utils.gripper_signal import GRIPPER_PLAYER_SCRIPT, gripper_player_html
+
     task_dir = output_dir / f"{task_group}_task{task_id:02d}"
     assets_dir = task_dir / "assets"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -2581,6 +2614,12 @@ def _write_task_skill_html(
                     else bool(episode_record["success"])
                 ),
                 "skills": skill_payloads,
+                "gripper_signal": episode_record.get("gripper_signal"),
+                "gripper_player": (
+                    gripper_player_html(os.path.relpath(episode_record["video_path"], task_dir))
+                    if episode_record.get("video_path") and episode_record.get("gripper_signal")
+                    else None
+                ),
                 "timeline_graph": timeline_graph,
                 "motion_plan_gallery": (
                     os.path.relpath(episode_record["motion_plan_gallery"], task_dir)
@@ -2784,6 +2823,7 @@ function selectToken(token) {{
   document.querySelectorAll(".examples").forEach(root => renderExamples(root, token));
 }}
 
+{GRIPPER_PLAYER_SCRIPT}
 const app = document.getElementById("app");
 for (const ep of DATA.episodes) {{
   const section = document.createElement("section");
@@ -2797,6 +2837,10 @@ for (const ep of DATA.episodes) {{
   }}
   if (ep.timeline_graph) {{
     section.innerHTML += `<img class="timeline" src="${{ASSET + ep.timeline_graph}}">`;
+  }}
+  if (ep.gripper_player) {{
+    section.insertAdjacentHTML("beforeend", ep.gripper_player);
+    attachGripperSignal(section.querySelector('.gripper-signal-player'), ep.gripper_signal);
   }}
   const row = document.createElement("div");
   row.className = "row";
@@ -3097,6 +3141,23 @@ def eval_policy(
         n_steps = rollout_data["done"].shape[1]
         # Note: this relies on a property of argmax: that it returns the first occurrence as a tiebreaker.
         done_indices = torch.argmax(rollout_data["done"].to(int), dim=1)
+        gripper_signals = {}
+        if getattr(policy, "gripper_signal_enabled", False):
+            from lerobot.utils.gripper_signal import gripper_signal
+
+            sim_fps = float(env.unwrapped.metadata["render_fps"])
+            encoded_fps = float(video_fps or max(1, int(sim_fps) // video_frame_stride))
+            for local_i, done_index in enumerate(done_indices.flatten().tolist()):
+                gripper_signals[local_i] = gripper_signal(
+                    rollout_data[ACTION][local_i, :int(done_index) + 1].cpu().numpy(),
+                    sim_fps=sim_fps, video_fps=encoded_fps, frame_stride=video_frame_stride,
+                    chunks=[
+                        {"start_step": chunk["start_step"],
+                         "values": chunk["actions"][local_i, :, 6].tolist()}
+                        for chunk in rollout_data.get("gripper_action_chunks", [])
+                        if chunk["start_step"] <= int(done_index)
+                    ],
+                )
         # Make a mask with shape (batch, n_steps) to mask out rollout data after the first done
         # (batch-element-wise). Note the `done_indices + 1` to make sure to keep the data from the done step.
         mask = (torch.arange(n_steps) <= einops.repeat(done_indices + 1, "b -> b s", s=n_steps)).int()
@@ -3171,7 +3232,7 @@ def eval_policy(
 
         # Preserve native render frames before any overlays/resizing are applied.
         # Every episode gets timing metadata, even when video.max_per_task limits capture.
-        if raw_videos or record_skill_transitions:
+        if raw_videos or record_skill_transitions or gripper_signals:
             from lerobot.utils.eval_edit_metadata import episode_edit_metadata, write_simulator_video
 
             sim_fps = float(env.unwrapped.metadata["render_fps"])
@@ -3200,7 +3261,7 @@ def eval_policy(
                                  "width": int(raw_frames.shape[2]), "height": int(raw_frames.shape[1]),
                                  "overlays": False}
                     del raw_frames
-                if record_skill_transitions:
+                if record_skill_transitions or gripper_signals:
                     metadata = episode_edit_metadata(
                         trace, batch_index=local_i, episode_index=episode_index,
                         episode_steps=episode_steps, sim_fps=sim_fps,
@@ -3212,6 +3273,8 @@ def eval_policy(
                         annotated_video=(f"eval_episode_{episode_index}.mp4"
                                          if episode_index < max_episodes_rendered else None),
                     )
+                    if local_i in gripper_signals:
+                        metadata["gripper_signal"] = gripper_signals[local_i]
                     metadata_path = videos_dir / "episode_metadata" / f"eval_episode_{episode_index}.json"
                     metadata_path.parent.mkdir(parents=True, exist_ok=True)
                     temporary_metadata = metadata_path.with_suffix(".tmp")
@@ -3353,6 +3416,15 @@ def eval_policy(
                     video_frame_stride=video_frame_stride,
                     height=int(episode_frames.shape[1]), width=int(episode_frames.shape[2]),
                 )
+                fullskill_gripper_open_fraction = None
+                if fullskill_start_pixels is not None:
+                    from goal_overlay import fullskill_gripper_from_trace
+
+                    fullskill_gripper_open_fraction = fullskill_gripper_from_trace(
+                        trace, batch_index=local_i, n_video_frames=len(episode_frames),
+                        video_frame_stride=video_frame_stride,
+                        gripper_reference=getattr(policy, "fullskill_gripper_reference", None),
+                    )
                 expert_xyz_label = (
                     "Pred XYZ" if xyz_source == "predicted" or getattr(
                         policy.config, "uses_predicted_expert_xyz", False
@@ -3384,8 +3456,13 @@ def eval_policy(
                     input_uv_values=input_uv_values,
                     expert_xyz_label=expert_xyz_label,
                     top_uv_enabled=not callable(uses_vsa_top_view) or uses_vsa_top_view(),
+                    top_label=("TOP REFERENCE (before center crop)" if getattr(policy.config, "vsa_top_crop_enabled", False) else "VSA TOP INPUT"),
+                    input_uv_label=("UV (original frame)" if getattr(policy.config, "vsa_top_crop_enabled", False) else "Input UV"),
                     fullskill_start_pixels=fullskill_start_pixels,
                     fullskill_replan_pixels=fullskill_replan_pixels,
+                    fullskill_gripper_open_fraction=fullskill_gripper_open_fraction,
+                    fullskill_gripper_calibrated=getattr(policy, "fullskill_gripper_reference", None) is not None,
+                    fullskill_gripper_action=bool(getattr(policy.config, "bspline_gripper_action", False)),
                     bottleneck_overlays=bottleneck_overlays,
                 )
                 thread = threading.Thread(
@@ -3504,6 +3581,11 @@ def eval_policy(
                         "frames": batch_html_frames[local_i, :max_frame].copy(),
                         "trace": by_batch.get(local_i, []),
                         "gt_trace": gt_timeline.get(local_i, []),
+                        "gripper_signal": gripper_signals.get(local_i),
+                        "video_path": (
+                            str(videos_dir / f"eval_episode_{episode_index}.mp4")
+                            if episode_index < max_episodes_rendered else None
+                        ),
                     }
                 )
 

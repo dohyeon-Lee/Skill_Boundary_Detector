@@ -34,6 +34,55 @@ def settings():
     return M.Settings(reserve=100, stop_below=50, minimum=100, retry_margin=40, interval=.01, grace=.1)
 
 
+def test_initial_gpu_timeout_retries_before_any_trainer_starts(tmp_path, monkeypatch):
+    class SlowStartup(Probe):
+        calls = 0
+        def sample(self):
+            self.calls += 1
+            if self.calls < 3:
+                raise M.subprocess.TimeoutExpired(['nvidia-smi'], 5)
+            return super().sample()
+    waits = []
+    monkeypatch.setattr(M.time, 'sleep', waits.append)
+    probe = SlowStartup()
+    guard = M.Guard(['unused'], {}, tmp_path/'run', probe, settings(), M.Registry(tmp_path/'registry'))
+    assert probe.calls == 3 and waits == [1, 2]
+    assert guard.total == 1000 and guard.process is None and guard.attempt == 0
+
+
+def test_persistent_initial_gpu_timeout_is_bounded_and_reported(tmp_path, monkeypatch):
+    calls = []
+    class Unavailable(Probe):
+        def sample(self):
+            calls.append(True)
+            raise M.subprocess.TimeoutExpired(['nvidia-smi'], 5)
+    monkeypatch.setattr(M.time, 'sleep', lambda _: None)
+    with pytest.raises(M.subprocess.TimeoutExpired):
+        M.Guard(['unused'], {}, tmp_path/'run', Unavailable(), settings())
+    assert len(calls) == 3
+    status = M.read_json(tmp_path/'run/status.json')
+    assert status['state'] == 'FAILED' and '3/3' in status['reason']
+
+
+def test_initial_ambiguous_gpu_identity_is_not_retried(tmp_path, monkeypatch):
+    class Ambiguous(Probe):
+        def sample(self):
+            raise ValueError('Cannot identify one assigned GPU')
+    monkeypatch.setattr(M.time, 'sleep', lambda _: pytest.fail('Never retry ambiguous telemetry'))
+    with pytest.raises(ValueError, match='one assigned GPU'):
+        M.Guard(['unused'], {}, tmp_path/'run', Ambiguous(), settings())
+
+
+def test_initial_storage_error_is_never_retried(tmp_path, monkeypatch):
+    import errno
+    class DiskFull(Probe):
+        def sample(self):
+            raise OSError(errno.ENOSPC, 'No space left on device')
+    monkeypatch.setattr(M.time, 'sleep', lambda _: pytest.fail('Storage failures must never retry'))
+    with pytest.raises(OSError, match='No space left'):
+        M.Guard(['unused'], {}, tmp_path/'run', DiskFull(), settings())
+
+
 def test_default_budget_is_valid_without_environment_overrides(monkeypatch):
     for key in tuple(os.environ):
         if key.startswith('SBD_GPU_GUARD_'):

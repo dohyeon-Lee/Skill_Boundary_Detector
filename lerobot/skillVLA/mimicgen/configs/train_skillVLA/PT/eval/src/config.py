@@ -20,8 +20,8 @@ def module(path,name):
 
 def build_settings(cfg):
     if cfg.get('target_task')!='Coffee_D0': raise ValueError('This dataset and instruction are for Coffee_D0')
-    if cfg.get('oracle',{}).get('episode_exact') or cfg.get('initial_state_bank'):
-        raise ValueError('Coffee data has no demo-exact simulator state bank')
+    if cfg.get('initial_state_bank'):
+        raise ValueError('Coffee exact resets use the verified eval_init_states.npz episode map')
     models=[dict(row) for row in cfg['models']]
     train_config=cfg.get('vsa_training_config')
     if train_config:
@@ -51,7 +51,11 @@ def build_settings(cfg):
         row['model_dir']=vsa.name;row['outputs_root']=str(vsa.parents[2])
         row['checkpoint']=row.pop('vsa_checkpoint')
         for component in ['predictor','terminator']:
-            source=Path(row.pop(component+'_dir')).expanduser()
+            reference=row.pop(component+'_dir',None)
+            if not reference:
+                row.pop(component+'_checkpoint',None)
+                continue
+            source=Path(reference).expanduser()
             if len(source.parts)==1:source=stage1_run_dir(outputs,str(source),component.title())
             if not source.is_absolute():source=ROOT/source
             step=str(row.pop(component+'_checkpoint'))

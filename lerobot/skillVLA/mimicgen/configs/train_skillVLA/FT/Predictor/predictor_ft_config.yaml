@@ -31,7 +31,7 @@ training:
     predictor_lora_lr_scale: 10.0
     predictor_vlm_lr_scale: 1.0
     grad_clip_norm: 1.0
-  gradient_checkpointing: false
+  gradient_checkpointing: true
   checkpoint_archive: ''
   keep_checkpoints: -1
 

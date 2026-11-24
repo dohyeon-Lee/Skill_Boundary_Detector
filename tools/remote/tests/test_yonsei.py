@@ -38,6 +38,22 @@ def test_abc_dp_uses_native_training_resolver_without_build_stage_flags():
     assert extra == []
 
 
+def test_mimicgen_eval_ignores_inherited_libero_work_dir(tmp_path, monkeypatch):
+    script = tmp_path / 'lerobot/skillVLA/mimicgen/configs/train_skillVLA/FT/eval/submit_eval.sh'
+    script.parent.mkdir(parents=True)
+    resolver = script.parent / 'config.py'
+    resolver.write_text('')
+    config = script.parent / 'ft_eval_config.yaml'
+    config.write_text('{}')
+    monkeypatch.setenv('STAGE1_EVAL_WORK_DIR', '/old/libero/FT/eval')
+    monkeypatch.setattr(M, 'config_and_resolver', lambda *a: (config, resolver, []))
+    def resolve(command, **kwargs):
+        assert kwargs['env']['STAGE1_EVAL_WORK_DIR'] == str(script.parent)
+        return subprocess.CompletedProcess(command, 0, stdout='')
+    monkeypatch.setattr(M, 'run', resolve)
+    assert M.resolve_settings(script, [], {}, tmp_path) == (config, {})
+
+
 def test_yonsei_resources_replace_local_gpu_and_scheduler_without_changing_model():
     source={'server':'rllab','project_root':'/src','train_nodelist':'node200',
             'train_partition':['debug'],'train_qos':'base_qos','slurm_submit_mode':'srun_existing',

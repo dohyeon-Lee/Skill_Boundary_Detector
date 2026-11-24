@@ -576,6 +576,22 @@ def test_fsq_epoch_logs_resolve_output_and_progress_without_loading_checkpoints(
     assert slurm.training_progress({**row, 'job_name': 'FSQ_eval'}, {'/log': text}) == []
 
 
+def test_training_live_counter_requires_matching_run_and_output(tmp_path):
+    status = tmp_path / 'training_status.json'
+    live = status.with_name('training_progress.json')
+    output = str(tmp_path / 'model')
+    row = {**job(), 'outputs': [output], 'status_path': str(status), 'run_id': 'new-run'}
+    logs = {'/log': 'INFO cfg.steps=20000\n'}
+    live.write_text(json.dumps({'run_id': 'new-run', 'output': output, 'step': 2, 'total': 20000}))
+    assert slurm.training_progress(row, logs)[0]['step'] == 2
+    live.write_text(json.dumps({'run_id': 'old-run', 'output': output, 'step': 19000, 'total': 20000}))
+    assert slurm.training_progress(row, logs)[0]['step'] is None
+    event_progress = tmp_path / 'progress/new-run.json'
+    event_progress.parent.mkdir()
+    event_progress.write_text(json.dumps({'run_id': 'new-run', 'output': output, 'step': 5, 'total': 20000}))
+    assert slurm.training_progress(row, logs)[0]['step'] == 5
+
+
 def test_fsq_initialization_does_not_claim_calibration_is_a_finished_epoch():
     text = ('schedule : epochs=2000\n[FSQ-v3] trajectories=10258 train=9231 val=1027\n'
             '[FSQ-v3] z_head init calibration: samples=9231, codebook 7->54 active\n')

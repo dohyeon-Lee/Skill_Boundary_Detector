@@ -312,6 +312,8 @@ def map_sequences_to_tasks(
 
 
 def _task_name_to_id(suite_name: str) -> dict[str, int]:
+    if suite_name == 'Coffee_D0':
+        return {'Coffee_D0': 0}
     from libero.libero import benchmark
 
     suite = benchmark.get_benchmark_dict()[suite_name]()
@@ -334,6 +336,13 @@ def load_episode_exact_data(
     focus_by_skill = _skill_focus_uv(dataset_dir)
     end_state_by_skill = _skill_end_states(dataset_dir, focus_by_skill) if include_end_state else None
     init_data = np.load(str(init_states_path), allow_pickle=True)
+    coffee = suite_name == 'Coffee_D0'
+    if coffee and ('model_xml' not in init_data.files or
+                   str(init_data.get('environment', '')) != 'Coffee_D0'):
+        raise ValueError('Coffee exact map must contain verified Coffee_D0 states and model_xml')
+    model_by_episode = ({int(ep): str(xml) for ep, xml in
+                         zip(init_data['episode_index'], init_data['model_xml'], strict=True)}
+                        if coffee else {})
     init_by_episode = {
         int(episode): (state, str(scene_file))
         for episode, state, scene_file in zip(
@@ -388,6 +397,7 @@ def load_episode_exact_data(
                 {
                     "episode_index": episode,
                     "init_state": np.asarray(init_state, dtype=np.float64),
+                    **({'model_xml': model_by_episode[episode]} if coffee else {}),
                     "skills": skills,
                 }
             )

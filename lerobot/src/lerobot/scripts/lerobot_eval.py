@@ -192,10 +192,17 @@ def _apply_exact_init_states(
     is scored on identical scenes. Tasks with fewer than ``n_episodes`` matches are dropped, or their
     episodes are cycled when ``repeat`` (default: ``EPISODE_EXACT_REPEAT``) is on.
     """
-    from libero.libero import benchmark  # noqa: PLC0415
-
     if repeat is None:
         repeat = _exact_repeat_enabled()
+
+    if "Coffee_D0" in envs:
+        from lerobot.utils.mimicgen_init_states import apply_coffee_init_states
+
+        apply_coffee_init_states(envs, init_states_path, n_episodes, repeat)
+        logging.info("Coffee episode-exact state/XML records applied from %s", init_states_path)
+        return
+
+    from libero.libero import benchmark  # noqa: PLC0415
 
     data = np.load(str(init_states_path), allow_pickle=True)
     by_scene: dict[str, list[tuple[int, np.ndarray, dict | None]]] = {}

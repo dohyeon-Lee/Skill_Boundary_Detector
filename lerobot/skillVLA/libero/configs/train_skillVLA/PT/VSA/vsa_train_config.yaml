@@ -36,6 +36,10 @@ vision:
   dino_model: models/dinov3-vits16
   image_size: 224
   freeze: false
+  top_crop:
+    enabled: true
+    zoom: 1.1              # 학습: 샘플별 random crop / 평가: center crop
+                           # Top UV 조건·visual aux UV·이전 스킬 termination UV를 함께 변환. XYZ/wrist 유지.
 
 execution:
   action_steps: 5
@@ -50,6 +54,7 @@ mask_actions_after_skill_end: true
 bspline:
   tokens: 30
   weight: 1.0
+  gripper_action: true  # true: pose 6D + gripper action 1D / false: 기존 proprio 8D
 
 skill_flow:
   weight: 1.0
@@ -103,6 +108,6 @@ logging:
 
 slurm:
   gres: gpu:1
-  cpus: 64
+  cpus: 16 #64
   memory: 256G
   time: '48:00:00'

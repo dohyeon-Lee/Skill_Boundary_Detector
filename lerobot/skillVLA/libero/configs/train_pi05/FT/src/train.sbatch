@@ -18,6 +18,10 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 set -euo pipefail
+# Existing allocations may expose every host CPU. Bound native pools before
+# importing NumPy/Torch; SLURM_CPUS_PER_TASK alone does not constrain them.
+export OMP_NUM_THREADS="${FT_CPU_THREADS:-4}" MKL_NUM_THREADS="${FT_CPU_THREADS:-4}"
+export OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 mkdir -p logs
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"             # .../train_pi05/FT
@@ -32,6 +36,7 @@ if ! CONFIG_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${CONFIG_PY}" --config "${CONFIG_P
   exit 1
 fi
 eval "${CONFIG_EXPORTS}"
+export OMP_NUM_THREADS="${FT_CPU_THREADS}" MKL_NUM_THREADS="${FT_CPU_THREADS}"
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"
@@ -71,6 +76,10 @@ fi
 # PT-forgetting probe (skillVLA FT와 동일 인프라): 고정 PT-dataset 배치를 PROBE_EVERY 스텝마다
 # forward-only 재측정 → wandb probe/* + probe_forget/*. Empty root = probe off.
 PROBE_ARGS=()
+DATASET_ARGS=()
+if [ -n "${FT_DATASET_EPISODES:-}" ] && [ "${FT_DATASET_EPISODES}" != null ]; then
+  DATASET_ARGS=(--dataset.episodes="${FT_DATASET_EPISODES}")
+fi
 if [ -n "${FT_PROBE_DATASET_ROOT}" ]; then
   PROBE_ARGS=(
     --probe_dataset_root="${FT_PROBE_DATASET_ROOT}"
@@ -117,6 +126,10 @@ TRAIN_PI05_CONFIG="${CONFIG_PATH}" PYTORCH_ALLOC_CONF=expandable_segments:True p
   --policy.scheduler_decay_steps="${FT_DECAY_STEPS}" \
   --policy.scheduler_decay_lr="${FT_DECAY_LR}" \
   --num_workers="${FT_NUM_WORKERS}" \
+  --dataloader_persistent_workers="${FT_PERSISTENT_WORKERS}" \
+  --dataloader_pin_memory="${FT_PIN_MEMORY}" \
+  --dataloader_prefetch_factor="${FT_PREFETCH_FACTOR}" \
+  ${DATASET_ARGS[@]+"${DATASET_ARGS[@]}"} \
   ${PROBE_ARGS[@]+"${PROBE_ARGS[@]}"} \
   ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 

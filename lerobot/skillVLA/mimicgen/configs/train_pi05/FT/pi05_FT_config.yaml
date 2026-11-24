@@ -1,0 +1,43 @@
+# ./submit_train.sh --JOB_ID | ./submit_train.sh --yonsei | ./submit_train.sh --dry-run
+stage: ft
+
+# Coffee source와 앞에서부터 사용할 episode 수를 SkillVLA FT와 공유.
+# SBD/FSQ 없이 같은 원본 observation/action을 사용한다.
+comparison_config: train_skillVLA/FT/newtask_ft_common_config.yaml
+
+warm_start:
+  outputs_root: outputs_filtered  # LIBERO PT만 다른 저장소에서 가져옴
+  run: bs16_libero_90_full_full_base
+  checkpoint: 100000
+
+adaptation:
+  freeze_expert: false          # pi05는 action expert도 함께 FT
+
+training:
+  normalization_stats: pt       # SkillVLA FT와 동일: LIBERO PT 통계 유지
+  dataloader:
+    batch_size: 16
+    workers: 8
+    cpu_threads: 4              # 메인 Torch/BLAS pool. worker는 PyTorch가 1개로 제한.
+    persistent_workers: true    # 짧은 데모를 반복할 때 worker 재생성 방지
+    pin_memory: true
+    prefetch_factor: 2
+  optimizer: {base_lr: 2.5e-5}
+  gradient_checkpointing: {llm: true, vision: false, expert: false}
+
+  schedule:
+    steps: 20000
+    lr_mode: warmup_constant
+    warmup_steps: 500
+    log_every: 10
+    save_every: 10000
+    save_steps: [3000, 5000]
+
+  keep_checkpoints: 1
+  protect_checkpoints: [3000, 5000, 10000, 20000]
+
+logging:
+  wandb: {enable: true, project: VLA_Finetune}
+
+# GPU 종류/partition/qos/node는 global + servers/<server>.yaml을 따른다.
+slurm: {gres: 'gpu:1', cpus: 16, memory: 128G, time: '48:00:00'}
