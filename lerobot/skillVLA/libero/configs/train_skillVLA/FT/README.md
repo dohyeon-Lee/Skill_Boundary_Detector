@@ -15,7 +15,7 @@ VSA와 Predictor는 [`newtask_ft_common_config.yaml`](newtask_ft_common_config.y
 `SKILL_AUX_DRY_RUN=1 Predictor/submit_train.sh`로 제출 전 설정을 확인합니다.
 
 VSA는 GT skill·spatial target으로 학습하므로 Predictor와 동시에 학습할 수 있습니다.
-공통 YAML의 transition randomization을 사용하며, VSA는 일반 프레임 샘플링으로
+Transition randomization은 각 모델의 PT 체크포인트에서 상속하며, VSA는 일반 프레임 샘플링으로
 학습합니다. 공통 trainer는 W&B에 checkpoint weights를 올리지 않습니다.
 
 ## Dataset requirements
@@ -84,7 +84,9 @@ VLM과 vision encoder는 학습하며, 별도의 DINO 선택이나 LR-scale 옵�
 현재 VSA YAML에 노출하지 않습니다. Gradient checkpointing은
 `vlm`, `vision`, `action_expert`로 각각 설정합니다.
 
-데이터와 task별 episode 선택, transition randomization은 공통 YAML을 따릅니다.
+데이터와 task별 episode 선택은 공통 YAML을 따릅니다.
+Transition randomization의 범위·분포·gripper 보존은 각 warm-start 체크포인트에서
+상속하고, FT 데이터셋의 사전 계산 범위 안인지 제출 전에 검증합니다.
 VSA는 표준 프레임 샘플링을 사용합니다.
 저장 경로와 서버 선택은 global config를 따릅니다.
 

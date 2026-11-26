@@ -1690,7 +1690,10 @@ def build_settings(
     run_name = f"bs{batch_size}_{run_tag}_{lineage_name}_{target_mode}"
     run_name += training_episode_suffix(config, episodes)
     transition_jitter = (
-        resolve_transition_randomization(config, dataset)
+        resolve_transition_randomization(
+            config, dataset,
+            checkpoint_policy=predictor_source if initialization_mode == "ft" else None,
+        )
         if train_predictor
             else {
                 "jitter_pmax": 0,

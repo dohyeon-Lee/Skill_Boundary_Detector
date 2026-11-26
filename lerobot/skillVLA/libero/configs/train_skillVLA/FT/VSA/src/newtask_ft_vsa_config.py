@@ -332,7 +332,9 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     if dino_lr_scale <= 0:
         raise ValueError("adaptation.dino_lr_scale must be positive.")
 
-    transition_jitter = resolve_transition_randomization(config, contract)
+    transition_jitter = resolve_transition_randomization(
+        config, contract, checkpoint_policy=source,
+    )
 
     checkpoint_archive = str(_at(config, "training", "checkpoint_archive", default=""))
     keep_checkpoints = _at(config, "training", "keep_checkpoints", default=-1)

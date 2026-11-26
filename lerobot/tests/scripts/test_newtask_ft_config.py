@@ -123,6 +123,65 @@ def test_vsa_inherits_checkpoint_and_uses_new_dataset(tmp_path: Path) -> None:
     assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_FT/VSA"
 
 
+@pytest.mark.parametrize("component", ["VSA", "Predictor"])
+@pytest.mark.parametrize("variant", ["percent", "directional", "disabled", "overflow", "legacy_override"])
+def test_ft_inherits_transition_randomization_from_its_checkpoint(tmp_path, component, variant):
+    resolver = VSA if component == "VSA" else AUX
+    config = _vsa_setup(tmp_path) if component == "VSA" else _aux_setup(tmp_path, component)
+    checkpoint = Path(config["warm_start"][f"{component.lower()}_checkpoint"])
+    if not checkpoint.is_absolute():
+        checkpoint = tmp_path / checkpoint
+    policy_path = checkpoint / "config.json"
+    policy = json.loads(policy_path.read_text())
+    if component == "Predictor":
+        policy.update(AUX._predictor_contract({"skill_predictor": {"spatial_target": "uv"}}))
+    source = {
+        "transition_jitter_pmax": 0,
+        "transition_jitter_pmax_percent": 25.0,
+        "transition_jitter_preserve_gripper": True,
+        "transition_jitter_distribution": "uniform",
+        **{f"transition_jitter_{direction}_pmax": 0 for direction in
+           ("early_start", "late_start", "early_end", "late_end")},
+    }
+    info_path = tmp_path / "dataset/skillvla_dataset/new_task/FSQ333_ft/skillvla/meta/info.json"
+    info = json.loads(info_path.read_text())
+    info.update(skill_jitter_max_percent=35.0, skill_jitter_gripper_validity=True)
+    info_path.write_text(json.dumps(info))
+    if variant == "directional":
+        source.update(transition_jitter_pmax=7, transition_jitter_pmax_percent=0.0,
+                      transition_jitter_late_start_pmax=3,
+                      transition_jitter_early_end_pmax=7,
+                      transition_jitter_early_start_pmax=-1)
+    elif variant == "disabled":
+        source.update(transition_jitter_pmax_percent=0.0, transition_jitter_preserve_gripper=False)
+    elif variant == "overflow":
+        source["transition_jitter_pmax_percent"] = 40.0
+    elif variant == "legacy_override":
+        config["transition_randomization"] = {"enabled": False}
+    policy.update(source)
+    policy_path.write_text(json.dumps(policy))
+    if variant == "overflow":
+        with pytest.raises(ValueError, match="exceeds the built maximum"):
+            resolver.build_settings(config)
+        return
+    settings = resolver.build_settings(config)
+    if variant in {"disabled", "legacy_override"}:
+        assert settings["transition_jitter_pmax"] == 0
+        assert settings["transition_jitter_pmax_percent"] == 0.0
+        assert settings["transition_jitter_preserve_gripper"] is False
+    elif variant == "directional":
+        assert settings["transition_jitter_pmax"] == 7
+        assert settings["transition_jitter_early_start_pmax"] == 7
+        assert settings["transition_jitter_late_start_pmax"] == 3
+        assert settings["transition_jitter_late_end_pmax"] == 0
+        assert settings["transition_jitter_pmax_percent"] == 0.0
+        assert settings["transition_jitter_distribution"] == "uniform"
+    else:
+        for key, value in source.items():
+            assert settings[key] == value
+    assert json.loads(policy_path.read_text()) == policy
+
+
 def test_vsa_appends_common_suffix_after_component_suffix(tmp_path: Path) -> None:
     config = _vsa_setup(tmp_path)
     config["run"]["common_suffix"] = "shared"

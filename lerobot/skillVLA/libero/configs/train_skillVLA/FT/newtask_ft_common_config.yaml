@@ -12,7 +12,7 @@ dataset:
 
   # 전체 데이터로 빌드한 뒤 FT에 사용할 에피소드만 선택. VSA·Predictor 공통.
   episode_selection: per_task
-  n_episodes: 1  # task별 앞의 N개. all=전체. episode_ids 지정 시 무시.
+  n_episodes: 1  # task별 첫 1개씩, 총 10개. all=전체. episode_ids 지정 시 무시.
   episode_ids: []
   # 명시적으로 고를 때: 각 task 안에서 episode ID 순으로 세는 0-based 순번.
   # 바깥 목록은 task_index 오름차순(현재 0~9), 안쪽 []는 해당 task 제외.
@@ -27,14 +27,10 @@ sbd_preview:
     - {label: "full_full · ft · PT PCA", source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_grounded_pcapt}
     - {label: "full_full · ft_own · PT PCA", source: libero_10_full_full, run: FSQ333_contrastive_2000_ft_own_grounded_pcapt}
 
-transition_randomization:
-  enabled: true
-  percent: 25
-  distribution: half_normal  # half_normal | uniform
-  preserve_gripper: true
+# Transition randomization은 각 모델의 warm-start PT 체크포인트에서 상속.
 
 warm_start:
-  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_topcrop1p1_gripaction_base, checkpoint: "100000"}
+  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_base, checkpoint: "100000"}
   # Scalar = one Predictor FT; list = independent simultaneous FT on ONE GPU.
   # VSA ignores this Predictor selection.
   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip, checkpoint: "100000"}

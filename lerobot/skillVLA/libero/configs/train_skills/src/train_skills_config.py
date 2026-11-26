@@ -635,15 +635,36 @@ _TRANSITION_JITTER_DIRECTIONS = (
 
 
 def resolve_transition_randomization(
-    config: dict[str, Any], dataset_contract: dict[str, Any]
+    config: dict[str, Any], dataset_contract: dict[str, Any],
+    *, checkpoint_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve a training-time jitter window within the prebuilt dataset contract.
 
     The dataset stores the largest ISS window that can be sampled.  Training
     configs may choose any smaller directional window and either supported
     distribution without rebuilding the dataset.
+
+    FT inherits the source policy's effective window when the YAML does not
+    override it. Explicit settings in historical snapshots remain supported;
+    checkpoints without recorded jitter settings keep the legacy dataset fallback.
     """
     raw = config.get("transition_randomization", {})
+    if "transition_randomization" not in config and checkpoint_policy is not None:
+        source = checkpoint_policy
+        if any(key.startswith("transition_jitter_") for key in source):
+            raw = {}
+            common = int(source.get("transition_jitter_pmax", -1))
+            if common >= 0:
+                raw["pmax_step"] = common
+            raw["percent"] = source.get("transition_jitter_pmax_percent", 0.0)
+            raw["preserve_gripper"] = source.get("transition_jitter_preserve_gripper", False)
+            for name in _TRANSITION_JITTER_DIRECTIONS:
+                value = int(source.get(f"transition_jitter_{name}_pmax", -1))
+                if value >= 0:
+                    raw[f"{name}_pmax"] = value
+            distribution = source.get("transition_jitter_distribution", "")
+            if distribution:
+                raw["distribution"] = distribution
     if isinstance(raw, bool):
         raw = {"enabled": raw}
     if raw is None:
