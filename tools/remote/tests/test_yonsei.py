@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,90 @@ def test_abc_dp_uses_native_training_resolver_without_build_stage_flags():
     assert config == script.parent / 'dp_config.yaml'
     assert resolver == script.parent / 'src/train_dp_config.py'
     assert extra == []
+
+
+def test_droid_dp_uses_its_own_resolver_and_uppercase_stage():
+    script = M.ROOT / 'lerobot/skillVLA/droid/configs/train_skills/DP/submit_train_dp.sh'
+    config, resolver, extra = M.config_and_resolver(script, [], {})
+    assert config == script.parent / 'dp_config.yaml'
+    assert resolver == script.parent.parent / 'src/train_skills_config.py'
+    assert extra == ['--stage', 'DP']
+
+
+def test_droid_fsq_uses_native_resolver_and_transfers_both_inputs(tmp_path):
+    script = M.ROOT / 'lerobot/skillVLA/droid/configs/train_skills/FSQ/submit_train_fsq.sh'
+    config, resolver, extra = M.config_and_resolver(script, [], {})
+    assert config == script.parent / 'fsq_config.yaml'
+    assert resolver == script.parent.parent / 'src/train_skills_config.py'
+    assert extra == ['--stage', 'FSQ']
+    dataset = tmp_path / 'dataset_DROID/converted_joint_velocity'
+    skills = tmp_path / 'dataset_DROID/FSQ_dataset/converted_joint_velocity/FSQ_inputs/run/skillset'
+    output = tmp_path / 'outputs_DROID/FSQ/FSQ3332_delta_pose'
+    for path in (dataset, skills, output):
+        path.mkdir(parents=True)
+    settings = {'dataset_dir': str(dataset), 'skills_dir': str(skills),
+                'droid_output_dir': str(output), 'fsq_num_epochs': 2000}
+    assert set(M.input_paths(settings, tmp_path)) == {dataset, skills}
+
+
+def test_droid_fsq_eval_native_resolver_and_frozen_last(tmp_path, monkeypatch):
+    script = M.ROOT / 'lerobot/skillVLA/droid/configs/train_skills/FSQ/eval/submit_eval.sh'
+    config, resolver, extra = M.config_and_resolver(script, [], {})
+    assert resolver == script.parent / 'src/config.py' and extra == []
+    assert config == script.parent / 'eval_config.yaml'
+    assert M.selectors({'DROID_FSQ_EVAL_CONFIG': str(config)}) == {'DROID_FSQ_EVAL_CONFIG': str(config)}
+    monkeypatch.setattr(M, 'code_files', lambda root: set())
+    settings = {'droid_fsq_models_json': [{'run_name': 'joint', 'checkpoint': 100},
+                 {'run_name': 'pose', 'checkpoint': 200}]}
+    M.freeze(M.ROOT, '/remote/frozen', {}, tmp_path, config, set(), settings=settings)
+    copied = yaml.safe_load((tmp_path / config.relative_to(M.ROOT)).read_text())
+    assert copied['models'] == [{'run_name': 'joint', 'checkpoints': [100]},
+                                {'run_name': 'pose', 'checkpoints': [200]}]
+
+
+def test_droid_builtin_group_is_in_code_snapshot(tmp_path, monkeypatch):
+    group = Path('lerobot/skillVLA/droid/configs/dataset_groups/without_deformable.v1.json')
+    # A generic dataset_*/ ignore previously dropped this configuration folder.
+    assert group in M.code_files(M.ROOT)
+    monkeypatch.setattr(M, 'code_files', lambda root: {group})
+    M.freeze(M.ROOT, '/remote/frozen', {}, tmp_path, None, set())
+    assert (tmp_path / group).read_bytes() == (M.ROOT / group).read_bytes()
+
+
+def test_droid_dp_transfers_converted_corpus_not_external_raw_or_derived_view(tmp_path):
+    configs = M.ROOT / 'lerobot/skillVLA/droid/configs'
+    trainer = runpy.run_path(str(configs / 'train_skills/src/train_skills_config.py'))
+    config = trainer['load_config'](configs / 'train_skills/DP/dp_config.yaml')
+    source = tmp_path / 'dataset_DROID/converted'
+    source.mkdir(parents=True)
+    (source / 'conversion_manifest.json').write_text('{}')
+    # An existing local derived view must not be sent: its source path is local.
+    derived = source.with_name('converted_joint_velocity')
+    derived.mkdir()
+    config.update(project_root=str(tmp_path), source_dataset='converted',
+        target_dataset=derived.name, dataset_root='dataset_DROID')
+    config['droid_dataset']['group'] = 'all'
+    plan = trainer['resolve'](config, 'DP')
+    settings = {'dataset_dir': plan['source_dataset'], 'droid_output_dir': plan['output']}
+    assert M.input_paths(settings, tmp_path) == [source]
+    assert M.input_paths({'raw_root': '/data4/yeonsumia/raw',
+                         'calibration_root': '/data4/yeonsumia/calibration'}, tmp_path) == []
+
+
+def test_droid_resume_contract_survives_new_frozen_checkout_links(tmp_path):
+    configs = M.ROOT / 'lerobot/skillVLA/droid/configs'
+    trainer = runpy.run_path(str(configs / 'train_skills/src/train_skills_config.py'))
+    dataset = tmp_path / 'persistent/dataset'
+    dataset.mkdir(parents=True)
+    (dataset / 'training_view_manifest.json').write_text('{"source_sha256":"same-corpus"}')
+    aliases = [tmp_path / name for name in ('old-launch', 'new-launch')]
+    for path in aliases:
+        path.symlink_to(dataset, target_is_directory=True)
+    plan = dict(stage='DP', dataset=str(aliases[0]), idle_filter={}, fps=15,
+                action_dim=8, state_dim=8, output=str(tmp_path / 'outputs/run'))
+    trainer['_contract']({}, plan)
+    plan['dataset'] = str(aliases[1])
+    trainer['_contract']({}, plan)
 
 
 def test_mimicgen_eval_ignores_inherited_libero_work_dir(tmp_path, monkeypatch):
@@ -158,6 +243,8 @@ def test_real_staging_and_detached_runner_with_fake_transport(tmp_path,monkeypat
     assert 'yonsei\na b\n$(not a command)' in (work/'console.log').read_text()
     assert (remote/'dataset_filtered/train/data.txt').read_text()=='tiny training input'
     assert unrelated.read_text()=='existing remote work'
+    assert (Path(manifest['project']) / 'outputs_DROID').is_symlink()
+    assert (Path(manifest['project']) / 'outputs_DROID').resolve() == remote / 'outputs_DROID'
     frozen=yaml.safe_load((Path(manifest['project'])/config.relative_to(root)).read_text())
     assert frozen['slurm']['gres']=='gpu:1'
     assert (Path(manifest['project'])/dep/'__init__.py').read_text()=='FROZEN_CODE=True\n'
@@ -212,7 +299,7 @@ def test_remote_start_links_eval_results_to_normal_workspace(tmp_path):
     'abc/configs/train_skills/FSQ/eval/submit_eval.sh',
     'abc/configs/train_skillVLA/PT/Predictor/submit_train.sh',
     'libero/configs/train_skillVLA/FT/VSA/submit_train.sh',
-    'libero/configs/train_skillVLA/PT/Terminator/src/submit_auxiliary.sh',
+    'libero/configs/train_skillVLA/PT/src/auxiliary/submit_auxiliary.sh',
     'libero/configs/train_skillVLA/build_data/src/submit_build_skillset.sh',
     'libero/configs/train_skills/build_data/src/submit_build_skillset.sh',
     'libero/configs/train_cyclic/pi05/FT/submit_train.sh',

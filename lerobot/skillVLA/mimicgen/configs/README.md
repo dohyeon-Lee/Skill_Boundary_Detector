@@ -17,7 +17,7 @@ Coffee 5개 에피소드의 DP/SBD 부분 평가는 완료했다. 전체 SBD·Sk
 | 1 | `generate_training_dataset/download_dataset` | `./prepare_dataset.sh` | `dataset_mimicgen/coffee_d0_full_full` (이미 준비됨) |
 | 2 | `train_skillVLA/build_data` | `./submit_build_all.sh --JOBID` | 전체 SBD → FSQ 코드 → SkillVLA parquet, ISS, 시작/종료 UV |
 | 4 | `train_skillVLA/FT/VSA` | `./submit_train.sh --JOBID` | LIBERO VSA/PT에서 Coffee만으로 FT |
-| 4 | `train_skillVLA/FT/Predictor`, `FT/Terminator` | 각각 `./submit_train.sh --JOBID` | Coffee Predictor/Terminator FT |
+| 4 | `train_skillVLA/FT/Predictor` | `./submit_train.sh --JOBID` | Coffee Predictor FT |
 | 5 | `train_skillVLA/FT/eval` | `./submit_eval.sh --JOBID` | Coffee 시뮬레이터 평가 + HTML/영상/통계 |
 
 `submit_build_all.sh --74714` 한 번이면 기존 allocation의 GPU 한 개에서 모든 단계가 순서대로 실행된다.
@@ -25,8 +25,8 @@ SBD는 전체 에피소드 완료 여부와 검출기 설정을 검증한 뒤 �
 SBD 실패 시 FSQ와 SkillVLA 단계는 시작하지 않는다. 같은 설정의 FSQ 인코딩과 최종 결과도 완료 시 건너뛴다.
 앞단계 SBD를 별도로 실행할 필요는 없다. 필요한 경우 `train_skills/build_data/submit_build_data.sh`로 SBD만 실행할 수 있다.
 제출 시 SBD recipe를 SkillVLA YAML snapshot 안에 함께 저장하므로, 대기 중 live YAML 변경의 영향을 받지 않는다.
-FT eval은 기본적으로 세 컴포넌트의 **5k 체크포인트**를 쓰고, run 이름은 해당 FT 학습 YAML에서 계산한다.
-`PT/eval`은 기본 LIBERO PT 모델 세 개를 Coffee에서 평가하는 zero-shot 구성이다.
+FT eval의 VSA·Predictor checkpoint는 평가 YAML에서 선택하고, VSA 내장 termination을 사용할 수 있다.
+`PT/eval`은 LIBERO PT 모델을 Coffee에서 평가하는 zero-shot 구성이다.
 Coffee 자체 PT 모델을 평가하려면 이 폴더의 기본 YAML에서 모델 경로를 선택한다.
 
 추가 워크플로:
@@ -35,7 +35,7 @@ Coffee 자체 PT 모델을 평가하려면 이 폴더의 기본 YAML에서 모�
 - `train_skills/FSQ/submit_train_fsq.sh`: Coffee SBD skillset으로 자체 FSQ 학습.
 - `train_skills/DP/eval/submit_eval.sh`: 선택한 Coffee 에피소드의 SBD 부분빌드 및 영상 HTML.
 - `train_skills/FSQ/eval/submit_eval.sh`: Coffee에서 학습한 FSQ의 코드북·실제 데이터 영상 갤러리.
-- `train_skillVLA/PT/{VSA,Predictor,Terminator}/submit_train.sh`: Coffee 자체 PT.
+- `train_skillVLA/PT/{VSA,Predictor}/submit_train.sh`: Coffee 자체 PT.
 - 위 학습/빌드/평가 SH의 `--dry-run`: 설정과 경로 확인. 필요한 이전 단계 결과물은 존재해야 한다.
 - `--yonsei-plan`: 전송/실행 계획만 확인. `--yonsei`는 공통 Yonsei 전송/실행/결과 회수 기능을 사용한다. 원격에도 `bash setup_env.sh --mimicgen-only`가 선행되어야 한다.
 
@@ -107,3 +107,6 @@ Coffee HF 데이터에는 각 데모의 완전한 simulator 초기 상태가 없
 평가는 같은 seed의 Coffee_D0 random reset과 학습된 Predictor/Terminator를 사용한다.
 전체 Coffee 학습/rollout 성공률과 대규모 성능은 아직 측정하지 않았다.
 CoffeePreparation의 simulator 클래스는 소스에 존재하지만, 별도 데이터·task instruction 전처리는 이번 Coffee_D0 통합 범위에 포함하지 않는다. VLA 환경 설정은 Coffee_D0만 허용한다.
+
+별도 Terminator PT/FT 진입점은 제거했다. Predictor와 VSA FT가 쓰는 공통 코드는
+LIBERO `train_skillVLA/PT/src/auxiliary/`에 있다. 기존 외부 Terminator 체크포인트 평가는 유지한다.

@@ -1,6 +1,10 @@
-# LIBERO 표준 nonproprio 9+9 VSA + detach된 termination 전용 bottleneck
-# VLM 각 층 → 전용 reader 18층 → 종료 확률. Action Expert 연결 없음.
-# 데이터셋·transition randomization은 ../stage1_common_config.yaml을 따름.
+# LIBERO VSA PT — 아래 두 옵션으로 세 모델을 선택.
+# 모델                               top_crop.enabled   bspline.gripper_action
+# termbn_detach                       false              false
+# termbn_detach_topcrop1p1_gripaction   true               true
+# termbn_detach_gripaction             false              true   (현재)
+# 이름의 topcrop1p1 / gripaction은 자동 추가됨.
+# 데이터셋·transition randomization·기본 모델은 ../stage1_common_config.yaml에서 설정.
 stage1_common: true
 stage1_component: VSA
 
@@ -8,7 +12,7 @@ run:
   suffix: base
 
 
-# Termination 실험 설정
+# Termination 전용 18층 bottleneck (토큰 8개, 폭 256)
 # 기존 스킬 랜덤화·이전 스킬 UV·종료 후 10스텝 정답 규칙 유지.
 # 전용 분기만 학습하며, 본류와 gradient clipping도 분리.
 vlm_termination:
@@ -19,25 +23,17 @@ vlm_termination:
   post_end_steps: 10       # 스킬 종료 후 추가 양성 구간
 
 
-# termbn_detach: 토큰 8개·폭 256·VLM과 같은 층 수의 독립 bottleneck.
 architecture:
   name: UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach
-  end_pose_mode: xyz
-  expert_variant: gemma_300m
   attention_backend: eager
-  max_state_dim: 32
-  max_action_dim: 32
   chunk_size: 10
   visual_bottleneck_tokens: 100
   visual_bridge_last_n_layers: 9
   spatial_loss_weight: 0.1
 
 vision:
-  dino_model: models/dinov3-vits16
-  image_size: 224
-  freeze: false
   top_crop:
-    enabled: true
+    enabled: false
     zoom: 1.1              # 학습: 샘플별 random crop / 평가: center crop
                            # Top UV 조건·visual aux UV·이전 스킬 termination UV를 함께 변환. XYZ/wrist 유지.
 
@@ -45,27 +41,13 @@ execution:
   action_steps: 5
 
 
-# Action·full-skill 학습 (기존 통합 모델과 동일)
-action_conditioning:
-  training_skill_source: gt
-
+# Action·full-skill 학습 (GT skill/UV 사용)
 mask_actions_after_skill_end: true
 
 bspline:
   tokens: 30
   weight: 1.0
   gripper_action: true  # true: pose 6D + gripper action 1D / false: 기존 proprio 8D
-
-skill_flow:
-  weight: 1.0
-  chunk_multiplier: 3
-  latent_best_of_n:
-    enabled: false
-    candidates: 5
-    top_k: 1
-    timesteps: 2
-    ranking: main
-    fp32: true
 
 # 학습·저장
 training:
@@ -95,10 +77,6 @@ training:
     log_every: 100
     save_every: 10000
 
-  vsa_debug:
-    every: 0
-    initial: []
-
 
 # 로깅·실행 자원
 logging:
@@ -108,6 +86,6 @@ logging:
 
 slurm:
   gres: gpu:1
-  cpus: 16 #64
+  cpus: 16
   memory: 256G
   time: '48:00:00'

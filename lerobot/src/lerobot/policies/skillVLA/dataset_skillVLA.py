@@ -45,6 +45,7 @@ from lerobot.policies.skillVLA.skill_jitter import (
 SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
+SKILL_START_PROPRIO = "skill_start_proprio"
 SKILL_START_STATE_NORMALIZED = "skill_start_state_normalized"
 SKILL_START_FRAME = "skill_start_frame"
 SKILL_START_REQUESTED_FRAME = "skill_start_requested_frame"
@@ -252,9 +253,10 @@ class _SkillEndStateStore:
         Use the historical exclusive frame_end convention: an internal skill
         targets the boundary state, and the episode's last endpoint is clamped.
         """
+        state_key = dataset.meta.info.get('skill_spatial_state_key', 'observation.state')
         states = np.asarray(
-            dataset.hf_dataset.select_columns(["observation.state"])
-            .with_format("numpy")[:]["observation.state"],
+            dataset.hf_dataset.select_columns([state_key])
+            .with_format("numpy")[:][state_key],
             dtype=np.float32,
         )
         if states.ndim != 2 or states.shape[1] < 3:
@@ -500,6 +502,12 @@ class SkillVLADataset(LeRobotDataset):
         kwargs["episodes"] = sorted(valid) if requested is None else [e for e in requested if e in valid]
         super().__init__(*args, **kwargs)
         info = self.meta.info
+        self._droid_start_proprio_cache = None
+        if info.get('environment_type') == 'droid':
+            # The VLM sees joint proprio, while raw skill-start XYZ/rotation
+            # and all spatial losses use EEF pose. Never normalize EEF with joint stats.
+            primary = self.hf_dataset.select_columns(['observation.state']).with_format('numpy')[:]['observation.state']
+            self._droid_start_proprio_cache = np.asarray(primary, dtype=np.float32)
         self._canonical_skill_action_max_length = int(
             info.get("skill_observed_max_length", 0)
             if canonical_max_length_override is None
@@ -542,12 +550,14 @@ class SkillVLADataset(LeRobotDataset):
             raise ValueError("Bspline targets require include_predictor_start_inputs=True for skill selection.")
         if (self._include_chunk_end_state_target or self._bspline_skill_state_tokens
                 or self._include_preskill_plan_inputs):
+            state_key = info.get('skill_spatial_state_key', 'observation.state')
             values = (
-                self.hf_dataset.select_columns(["observation.state"])
-                .with_format("numpy")[:]["observation.state"]
+                self.hf_dataset.select_columns([state_key])
+                .with_format("numpy")[:][state_key]
             )
             chunk_end_states = np.asarray(values, dtype=np.float32)
-            if chunk_end_states.ndim != 2 or chunk_end_states.shape[1] != 8:
+            spatial_dim = 6 if info.get('environment_type') == 'droid' and state_key == 'observation.states.ee_state' else 8
+            if chunk_end_states.ndim != 2 or chunk_end_states.shape[1] != spatial_dim:
                 raise ValueError(
                     "LIT chunk-end supervision requires grounded observation.state "
                     f"with exactly 8 values, got {chunk_end_states.shape}."
@@ -563,9 +573,12 @@ class SkillVLADataset(LeRobotDataset):
             if actions is None:
                 values = self.hf_dataset.select_columns(["action"]).with_format("numpy")[:]["action"]
                 actions = torch.from_numpy(np.asarray(values, dtype=np.float32))
-            if actions.ndim != 2 or actions.shape[1] != 7 or len(actions) != len(self._chunk_end_state_cache):
+            gripper_index = int(info.get('skill_gripper_action_index', 6))
+            action_dim = 8 if info.get('environment_type') == 'droid' else 7
+            if (actions.ndim != 2 or actions.shape[1] != action_dim or not 0 <= gripper_index < action_dim
+                    or len(actions) != len(self._chunk_end_state_cache)):
                 raise ValueError("Gripper-action Bspline targets require aligned 7D actions and 8D states.")
-            self._bspline_gripper_action_cache = actions[:, 6].clone().contiguous()
+            self._bspline_gripper_action_cache = actions[:, gripper_index].clone().contiguous()
         self._wrist_camera_mirror_x = bool(info.get("wrist_camera_mirror_x", True))
         iss_path = self._resolve_iss_path(info.get("skill_initial_state_path"), self.root)
         self._iss = (
@@ -1332,6 +1345,9 @@ class SkillVLADataset(LeRobotDataset):
                 start_state.clone() if torch.is_tensor(start_state)
                 else torch.from_numpy(start_state)
             )
+            if self._droid_start_proprio_cache is not None:
+                start_index = item_index - frame_index + predictor_start_frame
+                item[SKILL_START_PROPRIO] = torch.from_numpy(self._droid_start_proprio_cache[start_index].copy())
             item[SKILL_CODE] = torch.tensor(skill_code, dtype=torch.long)
             if getattr(self, "_include_preskill_plan_inputs", False):
                 self._add_preskill_plan_inputs(item, ep_idx, kp, predictor_start_frame, ifs, ss)

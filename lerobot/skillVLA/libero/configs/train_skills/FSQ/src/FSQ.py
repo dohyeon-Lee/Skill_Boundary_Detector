@@ -3235,7 +3235,7 @@ class SplineFSQAEConfig:
     format_version: int = FORMAT_VERSION
     action_dim: int = 7
     action_space: str = "dataset"
-    """Raw dataset/absolute_joint targets or DP-style delta_joint action sequences."""
+    """Raw dataset/absolute_joint, ABC delta_joint, or 7D EEF delta_pose sequences."""
     action_encoder_mode: str = "original"
     """original: joint encoder; separate: private encoders; separate_full: private encoders and pooling."""
     enc_dim: int = 8
@@ -3497,6 +3497,12 @@ class SplineFSQAE(nn.Module):
             or not cfg.reconstructor_only or cfg.autoencoder_mode not in {"action", "norm_action"}
         ):
             raise ValueError("delta_joint FSQ requires the ABC 14D action-sequence reconstructor-only preset.")
+        if getattr(cfg, "action_space", "dataset") == "delta_pose" and (
+            cfg.action_dim != 7 or cfg.state_dim != 7 or cfg.encoder_arch != "action_seq"
+            or not cfg.reconstructor_only or cfg.autoencoder_mode not in {"action", "norm_action"}
+            or tuple(cfg.action_gripper_indices) != (6,)
+        ):
+            raise ValueError("delta_pose FSQ requires 7D EEF targets/states and gripper axis 6 in the action-sequence reconstructor-only preset.")
         cfg.action_encoder_mode = str(getattr(cfg, "action_encoder_mode", "original")).strip().lower()
         if cfg.action_encoder_mode not in {"original", "separate", "separate_full"}:
             raise ValueError("action_encoder_mode must be original|separate|separate_full.")
@@ -6825,11 +6831,11 @@ class FSQTrajectoryDataset(Dataset):
                 preserve_gripper=self.cfg.boundary_aug_preserve_gripper,
             )
             if self.cfg.encoder_arch == "action_seq":
-                if getattr(self.cfg, "action_space", "dataset") == "delta_joint":
-                    from action_representation import unpack_delta_joint_context
+                if getattr(self.cfg, "action_space", "dataset") in {"delta_joint", "delta_pose"}:
+                    from action_representation import unpack_delta_action_context
 
-                    augmented = unpack_delta_joint_context(
-                        augmented, self.cfg.action_dim, self.cfg.action_gripper_indices
+                    augmented = unpack_delta_action_context(
+                        augmented, self.cfg.action_dim, self.cfg.action_gripper_indices, self.cfg.action_space
                     )
                 augmented_length = len(augmented)
                 item["augmented_action_seq"] = self._padded_encoder_action_sequence(
@@ -8010,7 +8016,7 @@ def train_spline_fsqae(
             boundary_source = (
                 selected_actions if cfg.encoder_arch == "action_seq" else selected_segments
             )
-            if getattr(cfg, "action_space", "dataset") == "delta_joint":
+            if getattr(cfg, "action_space", "dataset") in {"delta_joint", "delta_pose"}:
                 from action_representation import pack_action_state_context
 
                 boundary_source = [
@@ -8246,7 +8252,8 @@ def train_spline_fsqae(
                 f"current={cfg.reconstructor_output_mode!r}."
             )
         old_space = getattr(resume_cfg, "action_space", "dataset")
-        if (old_space == "delta_joint") != (getattr(cfg, "action_space", "dataset") == "delta_joint"):
+        new_space = getattr(cfg, "action_space", "dataset")
+        if old_space != new_space and ({old_space, new_space} & {"delta_joint", "delta_pose"}):
             raise ValueError("Cannot resume FSQ across absolute and delta action spaces; use a new run.")
         for probe, default in (
             ("encoder_arch", "spline"),
@@ -8604,6 +8611,10 @@ def train_spline_fsqae(
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
             optimizer.step()
+            # Shared-allocation admission waits until the first real update
+            # has passed initialization and its transient memory peak.
+            from lerobot.utils.gpu_memory_guard import mark_ready
+            mark_ready()
         if cfg.reconstructor_only or not cfg.terminator_termination:
             end_metrics = {}
         elif cfg.state_rnn_terminator:
@@ -8815,7 +8826,7 @@ def train_spline_fsqae(
                     "axis-near="
                     f"{boundary_margin_metrics['per_axis_near_boundary_pct']:.1f}%"
                 )
-            print(message)
+            print(message, flush=True)
 
     if cfg.save_best_model:
         print(f"[FSQ-v3] done; best val-select={best_val:.6f} -> {save_path}")

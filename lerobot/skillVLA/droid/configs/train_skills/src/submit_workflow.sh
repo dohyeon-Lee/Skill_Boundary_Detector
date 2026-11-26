@@ -32,7 +32,9 @@ droid_submit() {
   source "${shared}/submit_job.sh"
   local folder="${configs}/train_skills/${stage}" script
   if [[ "${stage}" == DP ]]; then script="${folder}/src/train_dp.sbatch"; else script="${folder}/src/train_fsq.sbatch"; fi
-  local -a options=(--job-name="DROID_${stage}" --gres=gpu:1 --cpus-per-task="${DROID_CPUS}" --mem="${DROID_MEM}" --time="${DROID_TIME}")
+  local label="DROID_${stage}"
+  [[ "${stage}" != FSQ ]] || label+="_${DROID_FSQ_ACTION_SPACE}"
+  local -a options=(--job-name="${label}" --gres=gpu:1 --cpus-per-task="${DROID_CPUS}" --mem="${DROID_MEM}" --time="${DROID_TIME}")
   [[ -z "${DROID_PARTITION}" ]] || options+=(--partition="${DROID_PARTITION}")
   [[ -z "${DROID_QOS}" ]] || options+=(--qos="${DROID_QOS}")
   [[ -z "${DROID_NODELIST}" ]] || options+=(--nodelist="${DROID_NODELIST}")

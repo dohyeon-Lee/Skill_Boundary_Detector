@@ -120,3 +120,15 @@ def test_yonsei_progress_reads_coffee_report_src_folder(tmp_path):
                                       "tasks": [0], "labels": ["pi05"], "episodes": 5})
     assert result["completed"] == 2 and result["total"] == 5
     assert result["success_pct"] == 50.
+
+
+def test_pi05_same_count_different_explicit_episode_ids_have_different_outputs(tmp_path, monkeypatch):
+    cfg, _ = fixture_config(tmp_path, monkeypatch)
+    comparison = tmp_path / "comparison.yaml"
+    comparison.write_text(yaml.safe_dump({"dataset": {"source": "coffee", "episode_ids": [2, 5]}}))
+    first = ft.build_settings(cfg)
+    comparison.write_text(yaml.safe_dump({"dataset": {"source": "coffee", "episode_ids": [5, 8]}}))
+    second = ft.build_settings(cfg)
+    assert first["ft_run_name"] != second["ft_run_name"]
+    assert "ep2_ids" in first["ft_run_name"]
+    assert second["ft_dataset_episodes"] == [5, 8]

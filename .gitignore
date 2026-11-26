@@ -5,6 +5,9 @@ dataset_*/
 # RunPod: setup_env.sh links these in from the Global volume (symlinks need no trailing slash)
 /dataset
 /dataset_*
+# DROID selection manifests are versioned configuration, not dataset storage.
+!/lerobot/skillVLA/droid/configs/dataset_groups/
+!/lerobot/skillVLA/droid/configs/dataset_groups/*.json
 libero_dataset/
 libero_small_dataset/
 libero_10_old/

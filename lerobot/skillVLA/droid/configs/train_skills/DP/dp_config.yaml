@@ -5,7 +5,7 @@
 # delta_pose: consecutive base-frame EEF XYZ/SO(3) deltas + absolute gripper (7D).
 # This DP-only choice creates a separate data view/output; no video re-encoding.
 # New run names use delta_joint for joint_velocity, or delta_pose for EEF.
-dp_action_space: joint_velocity   # joint_velocity | delta_pose
+dp_action_space: delta_pose   # joint_velocity | delta_pose
 
 # Our initial SBD DP choices, not a claim about pi05's observation history.
 dp_n_obs_steps: 30                # 2 seconds at 15Hz
@@ -19,6 +19,7 @@ dp_amp: false
 dp_steps: 100000
 dp_batch_size: 256
 dp_num_workers: 8
+# DP runtime caches state/action windows in CPU RAM and keeps spawned workers alive.
 dp_save_freq: 10000
 dp_log_freq: 200
 dp_seed: 42

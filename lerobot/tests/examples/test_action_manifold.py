@@ -1,7 +1,9 @@
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 _BUILD_SRC = (
     Path(__file__).resolve().parents[2]
@@ -22,6 +24,7 @@ from action_manifold import (  # noqa: E402
     compute_action_divergence,
     compute_delta_bic,
     compute_denoising_gain,
+    get_or_fit_action_pca,
     make_pca_action_probes,
     relative_action_mask,
     to_model_action_chunk,
@@ -41,6 +44,32 @@ def _fit_pca(
         metadata={"test": True},
         scale_mode=scale_mode,
     )
+
+
+def test_pt_pca_reuse_keeps_the_exact_projection_and_rejects_stale_cache(tmp_path):
+    pt = _fit_pca(np.random.default_rng(1).normal(size=(50, 3)), scale_mode=PCA_SCALE_STD)
+    pt = replace(pt, metadata={'dataset': 'pt', 'normalizer_stats_sha256': 'same', 'descriptor_horizon': 24})
+    source = tmp_path / 'pt.npz'
+    pt.save(source)
+    expected = {**pt.metadata, 'dataset': 'coffee', 'episode_ids': [0]}
+    target = tmp_path / 'coffee.npz'
+    def no_fit():
+        pytest.fail('FT must never fit a target PCA')
+    reused = get_or_fit_action_pca(target, expected, no_fit, reference_path=source)
+    for name in ('mean', 'scale', 'components', 'explained_variance', 'explained_variance_ratio'):
+        np.testing.assert_array_equal(getattr(pt, name), getattr(reused, name))
+    assert reused.metadata['dataset'] == 'coffee'
+    assert reused.metadata['pca_reference_sha256']
+    get_or_fit_action_pca(target, expected, no_fit, reference_path=source)
+    # A target-fitted cache cannot masquerade as the PT projection.
+    with pytest.raises(ValueError, match='metadata does not match'):
+        get_or_fit_action_pca(target, expected, no_fit)
+    for key, value in [('normalizer_stats_sha256', 'different'), ('descriptor_horizon', 1)]:
+        with pytest.raises(ValueError, match=f'incompatible at {key}'):
+            get_or_fit_action_pca(tmp_path / 'invalid.npz', {**expected, key: value}, no_fit,
+                                 reference_path=source)
+    with pytest.raises(ValueError, match='changed since submission'):
+        get_or_fit_action_pca(target, expected, no_fit, reference_path=source, reference_sha256='wrong')
 
 
 def test_pca_probe_has_fixed_per_dimension_rms_and_preserves_temporal_differences():

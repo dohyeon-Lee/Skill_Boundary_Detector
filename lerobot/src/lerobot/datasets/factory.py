@@ -689,6 +689,19 @@ def make_dataset(cfg: TrainPipelineConfig) -> ABCNativeDataset | LeRobotDataset 
                 video_keys_to_load=video_keys_to_load,
                 **dataset_kwargs,
             )
+            droid_stage = getattr(cfg, "droid_idle_filter", {})
+            if (
+                isinstance(dataset, LeRobotDataset)
+                and droid_stage.get("workflow_domain") == "droid"
+                and droid_stage.get("stage") == "DP"
+                and getattr(cfg.policy, "type", None) == "diffusion"
+                and getattr(cfg.policy, "state_only", False)
+            ):
+                # Dense numeric DROID histories need no per-window Arrow/torch
+                # conversion. Cache only these small columns, never camera data.
+                columns = [key for key in (OBS_STATE, ACTION) if key in (delta_timestamps or {})]
+                dataset.cache_delta_columns(columns)
+                logging.info("Cached DROID DP temporal columns in CPU RAM: %s", columns)
             if (
                 isinstance(dataset, LeRobotDataset)
                 and getattr(cfg.policy, "type", None) == "skill_aux"

@@ -60,10 +60,26 @@ allocation, `skillvla_time` covers the whole pipeline rather than each stage.
 
 The selected FSQ run's `fsq_meta.json` and training `skillset_manifest.json` are
 the source of truth for probe generation, Gaussian sampling/include-mean/seed,
-denoising, PCA/action conventions, GMM, scoring, smoothing, terminal masking and
+denoising, PCA/action conventions, GMM, scoring, smoothing, initial/terminal masking and
 boundary rules. `pt`/`ft`/`ft_own`/`ft_epi` retain their documented threshold
 selection. These settings are passed to the actual Python CLI in initial,
 curve-only, cached-curve and missing-episode retry jobs; they are not just exports.
+
+Initial masking is inherited in frames from the FSQ manifest's detector settings.
+Legacy manifests without `initial_mask_frames` mean **0 (disabled)**, matching
+their original curves and PT threshold. New manifests record their mask length
+explicitly. Every segmentation/retry CLI receives this value, and the contract
+checks it before GPU work; checkpoint history and current YAML defaults cannot
+silently add a mask to a legacy FT recipe. A missing legacy mask never validates
+a nonzero mask.
+
+`PCA: ft` (default) keeps fitting PCA on the target dataset. `PCA: pt` reuses
+`action_probe_pca.npz` from the matching completed SkillVLA PT build, independently
+of the threshold mode: `ft` still shares PT's threshold, while `ft_own` still
+computes the target dataset's mean. PT PCA reuse adds `_pcapt` to both the final
+dataset and intermediate segmentation folders. Its SHA-256 is pinned in the
+submission snapshot and segmentation contract, so incompatible caches cannot
+be reused. When building the PT reference itself, use `PCA: ft`.
 
 Before submitting or skipping stages, the build validates the inherited recipe
 against existing segmentation artifacts. Strict SkillVLA curves carry a recipe

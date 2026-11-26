@@ -3199,10 +3199,19 @@ def _language_oracle_maps(
             load_sequences_by_language(
                 spec["skill_dataset_dir"],
                 **({"include_end_state": True} if _needs_gt_end_state(spec) else {}),
+                **({"episode_ids": spec["gt_reference_episode_ids"]}
+                   if spec.get("gt_reference_episode_ids") else {}),
             ),
         )
         for spec in specs
     ]
+    for spec in specs:
+        if spec.get("allow_unaligned_gt"):
+            log.warning(
+                "[%s] random environment resets; GT skill/UV templates from episodes %s "
+                "are references, not matched simulator states.",
+                spec["label"], spec.get("gt_reference_episode_ids") or "dataset order",
+            )
     # Every panel that reads its skill from the predictor and its boundary from the
     # terminator ignores the GT sequence, so a suite with no GT coverage can still be
     # evaluated on a synthetic placeholder instead of losing the task outright.
@@ -4694,6 +4703,9 @@ def _panel_signature(spec: dict, task_names: set[str], cfg) -> dict:
         # Never resume those results as if they used the full episode budget.
         "final_skill_completion_contract": "success_or_episode_horizon_v1",
     }
+    if spec.get("allow_unaligned_gt"):
+        signature["allow_unaligned_gt"] = True
+        signature["gt_reference_episode_ids"] = spec.get("gt_reference_episode_ids", [])
     if _episode_exact_repeat():
         # Only when on, so caches written before this option still resume.
         signature["episode_exact_repeat"] = True

@@ -4822,3 +4822,34 @@ def test_an_ordinary_predictor_panel_is_still_asked_for_its_own_skill() -> None:
     wrapper.select_action(_batch())
 
     assert expert.asked_with is None
+
+
+def test_random_gt_references_preserve_requested_episode_order(monkeypatch):
+    import pandas as pd
+    rows = pd.DataFrame({"episode_index": [2, 3, 4], "task_index": [0, 0, 0]})
+    monkeypatch.setattr(eval_oracle, "_skill_rows", lambda _: (rows, 27))
+    monkeypatch.setattr(eval_oracle, "_skill_focus_uv", lambda _: None)
+    monkeypatch.setattr(eval_oracle, "_decode_skills", lambda row, *args: [{"token": int(row["episode_index"]), "gt_length": 10, "focus_uv": [.2, .3]}])
+    monkeypatch.setattr(pd, "read_parquet", lambda _: pd.DataFrame({"task_index": [0]}, index=["coffee"]))
+    result = eval_oracle.load_sequences_by_language("unused", episode_ids=[4, 2])
+    assert [skills[0]["gt_reference_episode_index"] for skills in result["coffee"]] == [4, 2]
+    assert result["coffee"][0][0]["focus_uv"] == [.2, .3]
+    with pytest.raises(ValueError, match="GT reference episodes missing"):
+        eval_oracle.load_sequences_by_language("unused", episode_ids=[11])
+
+
+def test_random_gt_templates_do_not_install_exact_initial_states(monkeypatch):
+    seen = {}
+    def load(dataset, **kwargs):
+        seen.update(kwargs)
+        return {"coffee": [[{"token": ep, "focus_uv": [.2, .3]}] for ep in kwargs["episode_ids"]]}
+    monkeypatch.setattr(run_eval, "load_sequences_by_language", load)
+    env = object()
+    envs = {"Coffee_D0": {0: env}}
+    maps = run_eval._language_oracle_maps(envs, [{
+        "label": "random", "skill_dataset_dir": "unused", "skill_source": "gt",
+        "advance_mode": "own", "allow_unaligned_gt": True, "gt_reference_episode_ids": [4, 2],
+    }], {0: "coffee"}, 2)
+    assert seen["episode_ids"] == [4, 2]
+    assert [skills[0]["token"] for skills in maps[0][("Coffee_D0", 0)]] == [4, 2]
+    assert envs["Coffee_D0"][0] is env

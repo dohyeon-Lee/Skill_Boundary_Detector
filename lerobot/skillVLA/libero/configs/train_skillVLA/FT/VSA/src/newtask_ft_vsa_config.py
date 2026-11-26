@@ -19,7 +19,6 @@ from pathlib import Path
 from lerobot.configs.uv_fullskill import UV_BSPLINE_SKILL_LABELS, UV_BSPLINE_SKILL_WOVIS_LABELS
 from lerobot.utils.checkpoint_retention import validate_retention_mode
 from lerobot.utils.gradient_checkpointing import parse_checkpointing
-from lerobot.configs.transition_oversampling import TransitionOversamplingConfig
 
 _HERE = Path(__file__).resolve()
 _TRAIN_SKILLVLA = _HERE.parents[3]
@@ -35,6 +34,7 @@ from train_skills_config import (  # noqa: E402
     resolve_skillvla_dataset_run,
     resolve_transition_randomization,
     resolve_training_episodes,
+    training_episode_suffix,
 )
 
 DEFAULT_CONFIG_PATH = _HERE.parent.parent / "vsa_ft_config.yaml"
@@ -60,8 +60,8 @@ _STAGE1 = _load_sibling(
     "stage1_train_config", _TRAIN_SKILLVLA / "PT/src/stage1_train_config.py"
 )
 _AUX = _load_sibling(
-    "terminator_train_config",
-    _TRAIN_SKILLVLA / "PT/Terminator/src/terminator_train_config.py",
+    "auxiliary_train_config",
+    _TRAIN_SKILLVLA / "PT/src/auxiliary/auxiliary_train_config.py",
 )
 _at = _STAGE1._at
 
@@ -333,7 +333,6 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         raise ValueError("adaptation.dino_lr_scale must be positive.")
 
     transition_jitter = resolve_transition_randomization(config, contract)
-    oversampling = TransitionOversamplingConfig.from_mapping(config.get("transition_oversampling"))
 
     checkpoint_archive = str(_at(config, "training", "checkpoint_archive", default=""))
     keep_checkpoints = _at(config, "training", "keep_checkpoints", default=-1)
@@ -352,8 +351,10 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     decay_steps = int(_at(config, "training", "schedule", "lr_decay_steps", default=steps))
     batch_size = int(_at(config, "training", "dataloader", "batch_size", default=32))
     num_workers = int(_at(config, "training", "dataloader", "workers", default=8))
-    persistent_workers = as_bool(_at(config, "training", "dataloader", "persistent_workers", default=False))
-    worker_context = str(_at(config, "training", "dataloader", "multiprocessing_context", default="") or "").strip()
+    # Keep worker startup/reuse operational defaults out of the public YAML.
+    # Explicit values in historical snapshots still restore their old behavior.
+    persistent_workers = as_bool(_at(config, "training", "dataloader", "persistent_workers", default=num_workers > 0))
+    worker_context = str(_at(config, "training", "dataloader", "multiprocessing_context", default="spawn" if num_workers > 0 else "") or "").strip()
     prefetch_factor = int(_at(config, "training", "dataloader", "prefetch_factor", default=4))
     if worker_context not in {"", "spawn", "fork", "forkserver"}:
         raise ValueError("training.dataloader.multiprocessing_context must be spawn|fork|forkserver.")
@@ -409,12 +410,25 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         run_name += "_novisaux"
     if source.get("vlm_termination_enabled", False) and not termination_loss:
         run_name += "_notermloss"
-    run_name += oversampling.suffix
-    if episodes is not None:
-        run_name += f'_ep{len(episodes)}'
+    run_name += training_episode_suffix(config, episodes)
     suffix = _suffix(config)
     if suffix:
         run_name += f"_{suffix}"
+    if len(run_name) > 240 and config.get('dataset', {}).get('episode_ids'):
+        # Long inherited PT names must still leave room for explicit selection
+        # identity. Retain both ends and bind the full name with a fingerprint.
+        import hashlib
+        digest = hashlib.sha256(run_name.encode()).hexdigest()[:10]
+        run_name = f'{run_name[:156]}_run{digest}_{run_name[-64:]}'
+    elif len(run_name) > 240:
+        # Preserve the source model's trailing architecture probes and the FT
+        # recipe. Bind the omitted middle to a digest so long PT names remain
+        # distinct without requiring a manually maintained output alias.
+        import hashlib
+        digest = hashlib.sha256(run_name.encode()).hexdigest()[:10]
+        prefix = run_name[:64].rsplit('_', 1)[0]
+        suffix = run_name[-148:].split('_', 1)[-1]
+        run_name = f'{prefix}_run{digest}_{suffix}'
     if len(run_name) > 240:
         raise ValueError(f"Run name exceeds the filesystem limit ({len(run_name)} chars): {run_name}")
 
@@ -454,10 +468,6 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "dsbc_enabled": dsbc_enabled,
         "dino_lr_scale": dino_lr_scale,
         "transition_jitter_pmax": transition_jitter["jitter_pmax"],
-        "transition_oversampling_enabled": oversampling.enabled,
-        "transition_oversampling_percent": oversampling.percent,
-        "transition_oversampling_distribution": oversampling.distribution,
-        "transition_oversampling_weight": oversampling.weight,
         "transition_jitter_pmax_percent": transition_jitter["jitter_pmax_percent"],
         "transition_jitter_preserve_gripper": transition_jitter["jitter_preserve_gripper"],
         "transition_jitter_early_start_pmax": transition_jitter["jitter_early_start_pmax"],

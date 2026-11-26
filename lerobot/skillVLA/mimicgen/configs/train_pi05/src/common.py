@@ -57,6 +57,17 @@ def load_config(path):
     return cfg
 
 
+def _yaml_values(value):
+    """Keep resolved filesystem paths portable in frozen workflow YAMLs."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _yaml_values(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_yaml_values(item) for item in value]
+    return value
+
+
 def command_line(default, prepare, build):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, default=default)
@@ -70,11 +81,11 @@ def command_line(default, prepare, build):
             raise FileNotFoundError(f'FT checkpoint not ready: {settings["policy_path"]}; no job was submitted')
         args.freeze.mkdir(parents=True, exist_ok=False)
         frozen = args.freeze / args.config.name
-        frozen.write_text(yaml.safe_dump({**cfg, "_resolved_pi05": True}, sort_keys=False))
+        frozen.write_text(yaml.safe_dump(_yaml_values({**cfg, "_resolved_pi05": True}), sort_keys=False))
         # submit_job reads this global layer for the scheduler, using the frozen profile.
-        (args.freeze / "global_config.yaml").write_text(yaml.safe_dump({
+        (args.freeze / "global_config.yaml").write_text(yaml.safe_dump(_yaml_values({
             **cfg, "server": cfg["server"],
-        }, sort_keys=False))
+        }), sort_keys=False))
         settings["frozen_config"] = str(frozen)
     if args.shell:
         module("pi05_shell", SHARED / "train_pi05/PT/src/train_pi05_config.py").print_shell(settings)

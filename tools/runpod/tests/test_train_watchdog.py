@@ -65,7 +65,7 @@ def test_launch_reuses_live_watchdog_and_validates_pod(prepared, monkeypatch):
 def test_submitter_attaches_watchdog_only_to_local_runpod(tmp_path, on_pod):
     import os
     import subprocess
-    source = wd.ROOT / 'lerobot/skillVLA/libero/configs/train_skillVLA/PT/Terminator/src/submit_auxiliary.sh'
+    source = wd.ROOT / 'lerobot/skillVLA/libero/configs/train_skillVLA/PT/src/auxiliary/submit_auxiliary.sh'
     tail = source.read_text().split('WATCHDOG_BUNDLE=""', 1)[1]
     fake_python = tmp_path / 'python'
     fake_python.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$CALLS"\nif [ "$2" = prepare ]; then echo /fake/bundle; fi\n')

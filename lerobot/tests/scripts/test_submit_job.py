@@ -325,6 +325,31 @@ def test_without_slurm_the_dataset_is_staged_once_and_reused(tmp_path: Path) -> 
     assert stage(SLURM_JOB_ID="123").parent.name.endswith("_skillvla_123")      # Slurm: per job, as before
 
 
+def test_droid_local_staging_materializes_relative_video_links(tmp_path):
+    run = tmp_path / 'dataset/run'
+    (run / 'skillvla/data').mkdir(parents=True)
+    videos = tmp_path / 'converted/videos'
+    videos.mkdir(parents=True)
+    (videos / 'episode.mp4').write_bytes(b'video')
+    (run / 'skillvla/videos').symlink_to('../../../converted/videos')
+    (run / 'skillvla/data/a.parquet').write_text('data')
+    (run / 'skill_initial_state.npz').write_bytes(b'pose')
+    (run / 'nonidle_frames.npz').write_bytes(b'filter')
+    env = {k: v for k, v in os.environ.items() if not k.startswith('SLURM_')}
+    env.update(SKILLVLA_LOCAL_STAGE_ROOT=str(tmp_path / 'stage'),
+               SKILLVLA_STAGE_DEREFERENCE_SYMLINKS='true')
+    command = 'source "$1"; stage_skillvla_dataset_on_node "$2" test; echo "$STAGED_SKILLVLA_DATASET_DIR"'
+    result = subprocess.run(['bash', '-c', command, '_', str(STAGE), str(run / 'skillvla')],
+                            env=env, text=True, capture_output=True, check=True)
+    staged = Path(result.stdout.strip())
+    assert not (staged / 'videos').is_symlink()
+    assert (staged / 'videos/episode.mp4').read_bytes() == b'video'
+    assert (staged.parent / 'skill_initial_state.npz').read_bytes() == b'pose'
+    assert (staged.parent / 'nonidle_frames.npz').read_bytes() == b'filter'
+    assert (run / 'skillvla/videos').is_symlink()
+    assert (videos / 'episode.mp4').read_bytes() == b'video'
+
+
 def test_additional_steps_do_not_replace_another_steps_dataset(tmp_path):
     datasets=[]
     for index in (1,2):

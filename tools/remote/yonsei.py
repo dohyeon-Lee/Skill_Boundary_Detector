@@ -32,7 +32,8 @@ CODE_SUFFIXES = {'.py', '.sh', '.sbatch', '.yaml', '.yml', '.json', '.toml',
                  '.md', '.txt', '.cfg', '.ini', '.xml', '.urdf', '.obj', '.stl', '.mjcf', '.csv'}
 SKIP_PARTS = {'.git', '.venv', '__pycache__', '.cache', '.config_snapshots', '.hf_configs',
               'checkpoints', 'partial_build', 'logs', 'logs_train', 'wandb', 'outputs',
-              'outputs_filtered', 'outputs_ABC', 'dataset', 'dataset_filtered', 'dataset_ABC', 'models'}
+              'outputs_filtered', 'outputs_ABC', 'outputs_DROID', 'dataset', 'dataset_filtered',
+              'dataset_ABC', 'dataset_DROID', 'models'}
 SELECTORS = {'TRAIN_DATA', 'SOURCE_DATA', 'STAGE1_ARCHITECTURE_OVERRIDE',
              'TERMINATOR_ARCHITECTURE_OVERRIDE', 'SKILL_AUX_PREDICTOR_MODE_OVERRIDE',
              'EVAL_MAX_CONCURRENT', 'STAGE1_EVAL_JOB_NAME', 'EVAL_NODE_LOCAL_VENV'}
@@ -64,7 +65,7 @@ def selectors(env):
     # or a caller's scheduler/partition/venv overrides.
     selected = {k: v for k, v in env.items() if k in SELECTORS or
             (k.endswith(('_CONFIG', '_CONFIG_RESOLVER', '_DRY_RUN')) and
-             k.startswith(('ABC_', 'TRAIN_', 'STAGE1_', 'SKILL_', 'NEWTASK_',
+             k.startswith(('ABC_', 'DROID_', 'TRAIN_', 'STAGE1_', 'SKILL_', 'NEWTASK_',
                            'PI05_', 'LIBERO_', 'FSQ_', 'FT_', 'XYZ_', 'ATTENTION_',
                            'FILTERED_', 'ORIGINAL_', 'GROOT_', 'MOLMOACT2_')))}
     for key, value in list(selected.items()):
@@ -96,7 +97,7 @@ def parse_flags(args):
 def config_and_resolver(script, args, env, root=ROOT):
     """Use the same config resolvers as native launchers, without submitting jobs."""
     rel = script.relative_to(root).as_posix()
-    family = 'mimicgen' if '/mimicgen/' in rel else ('abc' if '/abc/' in rel else 'libero')
+    family = next((name for name in ('droid', 'mimicgen', 'abc') if f'/{name}/' in rel), 'libero')
     cfg = TREE / family / 'configs'
     parent = script.parent
     variable, default, resolver, extra = '', '', None, []
@@ -122,14 +123,12 @@ def config_and_resolver(script, args, env, root=ROOT):
         elif '/PT/VSA/' in rel:
             variable, default = 'STAGE1_TRAIN_CONFIG', 'vsa_train_config.yaml'
             resolver = common / 'PT/src/stage1_train_config.py'
-        elif any('/' + part + '/' in rel for part in ('Predictor', 'Terminator')):
+        elif '/Predictor/' in rel or '/PT/src/auxiliary/' in rel:
             variable = 'SKILL_AUX_TRAIN_CONFIG'
-            component = 'predictor' if '/Predictor/' in rel else 'terminator'
-            default = component + ('_ft_config.yaml' if '/FT/' in rel else '_train_config.yaml')
-            resolver = common / 'PT/Terminator/src/terminator_train_config.py'
-        elif '/FT/Joint/' in rel:
-            variable, default = 'NEWTASK_FT_JOINT_CONFIG', 'joint_ft_config.yaml'
-            resolver = common / 'FT/Joint/src/newtask_ft_joint_config.py'
+            default = 'predictor_ft_config.yaml' if '/FT/' in rel else 'predictor_train_config.yaml'
+            resolver = common / 'PT/src/auxiliary/auxiliary_train_config.py'
+            if '/PT/src/auxiliary/' in rel:
+                parent = common / 'PT/Predictor'
         elif '/build_data/' in rel:
             variable = 'ABC_SKILLVLA_CONFIG' if family == 'abc' else 'TRAIN_SKILLVLA_CONFIG'
             default = 'train_skillVLA_config.yaml'
@@ -206,6 +205,15 @@ def config_and_resolver(script, args, env, root=ROOT):
         elif '/train_skillVLA/build_data/' in rel:
             variable, default = 'MIMICGEN_BUILD_CONFIG', 'build_data_config.yaml'
             resolver = parent / 'src/build_dataset.py'
+    if family == 'droid' and '/train_skills/' in rel:
+        if '/FSQ/eval/' in rel:
+            variable, default = 'DROID_FSQ_EVAL_CONFIG', 'eval_config.yaml'
+            resolver, extra = parent / 'src/config.py', []
+        elif '/eval/' not in rel and any(f'/{stage}/' in rel for stage in ('DP', 'FSQ')):
+            stage = 'FSQ' if '/FSQ/' in rel else 'DP'
+            variable, default = '', stage.lower() + '_config.yaml'
+            resolver = root / cfg / 'train_skills/src/train_skills_config.py'
+            extra = ['--stage', stage]
     if script.name == 'make_together.sh':
         default = 'together_config.yaml'
     elif script.name == 'run_visualize.sh':
@@ -290,8 +298,8 @@ def asset_relative(path, root=ROOT):
         return path.relative_to(root)
     except ValueError:
         pass
-    for part in ('models', 'dataset', 'dataset_filtered', 'dataset_ABC', 'outputs',
-                 'outputs_filtered', 'outputs_ABC', 'libero_original_dataset', 'third_party'):
+    for part in ('models', 'dataset', 'dataset_filtered', 'dataset_ABC', 'dataset_DROID', 'outputs',
+                 'outputs_filtered', 'outputs_ABC', 'outputs_DROID', 'libero_original_dataset', 'third_party'):
         base = root / part
         if base.is_symlink():
             try:
@@ -548,6 +556,12 @@ def freeze(root, destination, profile, selected, config, extra_files, settings=N
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.suffix in {'.yaml', '.yml'} and TREE in rel.parents and 'servers' not in rel.parts:
             data = yaml.safe_load(src.read_text())
+            if src == config and settings and '/droid/' in src.as_posix() and '/FSQ/eval/' in src.as_posix():
+                resolved = settings['droid_fsq_models_json']
+                resolved = json.loads(resolved) if isinstance(resolved, str) else resolved
+                names = list(dict.fromkeys(row['run_name'] for row in resolved))
+                data['models'] = [dict(run_name=name, checkpoints=[row['checkpoint'] for row in resolved
+                    if row['run_name'] == name]) for name in names]
             if (src == config and settings and '/mimicgen/' in src.as_posix()
                     and '/train_pi05/' in src.as_posix() and '/eval/' in src.as_posix()):
                 # Resolve the auto FT run on the source; evaluation needs the FT
@@ -725,7 +739,8 @@ def launch(script, args, root=ROOT, env=None):
     links = ['.venv', '.venv_mimicgen', '.venv_groot_lerobot', '.venv_molmoact2', 'models', 'third_party', 'libero_original_dataset',
              'tools/lerobot-libero', 'tools/openpi', 'lerobot/libero']
     links += sorted({n.split('/')[0] for n in names if n.startswith(('dataset', 'outputs'))})
-    links += ['dataset_filtered','dataset_ABC','dataset_mimicgen','outputs_filtered','outputs_ABC','outputs_mimicgen']
+    links += ['dataset_filtered','dataset_ABC','dataset_mimicgen','dataset_DROID',
+              'outputs_filtered','outputs_ABC','outputs_mimicgen','outputs_DROID']
     # Small banks/references live alongside code, outside the root data links.
     links += [n for n in names if not n.startswith(('dataset','outputs','models','third_party','libero_original_dataset'))]
     started = rpc(host, base, 'start', work=work, links=links, manifest=manifest)

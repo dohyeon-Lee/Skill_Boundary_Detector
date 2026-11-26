@@ -1,0 +1,131 @@
+[cpu] threads=4, interop=1, budget=8, episode_workers=2
+[worker 0] cache-only scope: 62 episodes; global calibration remains {'source': 'selected', 'expected_episodes': 125}; no local threshold or report will be published
+Threshold calibration: 62 episodes; report: 62 episodes
+Loading weights from local directory
+  [scheduler] DDIM, steps=10
+[worker 0] policy ready
+[probe 1/1] iid96_r8_true_h18_current_gt · ep0
+[probe 1/1] iid96_r8_true_h18_current_gt · ep4
+[probe 1/1] iid96_r8_true_h18_current_gt · ep5
+[probe 1/1] iid96_r8_true_h18_current_gt · ep6
+[probe 1/1] iid96_r8_true_h18_current_gt · ep9
+[probe 1/1] iid96_r8_true_h18_current_gt · ep32
+[probe 1/1] iid96_r8_true_h18_current_gt · ep35
+[probe 1/1] iid96_r8_true_h18_current_gt · ep36
+[probe 1/1] iid96_r8_true_h18_current_gt · ep39
+[probe 1/1] iid96_r8_true_h18_current_gt · ep50
+[probe 1/1] iid96_r8_true_h18_current_gt · ep51
+[probe 1/1] iid96_r8_true_h18_current_gt · ep52
+[probe 1/1] iid96_r8_true_h18_current_gt · ep58
+[probe 1/1] iid96_r8_true_h18_current_gt · ep61
+[probe 1/1] iid96_r8_true_h18_current_gt · ep73
+[probe 1/1] iid96_r8_true_h18_current_gt · ep78
+[probe 1/1] iid96_r8_true_h18_current_gt · ep81
+[probe 1/1] iid96_r8_true_h18_current_gt · ep86
+[probe 1/1] iid96_r8_true_h18_current_gt · ep94
+[probe 1/1] iid96_r8_true_h18_current_gt · ep97
+[probe 1/1] iid96_r8_true_h18_current_gt · ep100
+[probe 1/1] iid96_r8_true_h18_current_gt · ep116
+[probe 1/1] iid96_r8_true_h18_current_gt · ep119
+[probe 1/1] iid96_r8_true_h18_current_gt · ep122
+[probe 1/1] iid96_r8_true_h18_current_gt · ep126
+[probe 1/1] iid96_r8_true_h18_current_gt · ep135
+[probe 1/1] iid96_r8_true_h18_current_gt · ep138
+[probe 1/1] iid96_r8_true_h18_current_gt · ep150
+[probe 1/1] iid96_r8_true_h18_current_gt · ep163
+[probe 1/1] iid96_r8_true_h18_current_gt · ep166
+[probe 1/1] iid96_r8_true_h18_current_gt · ep176
+[probe 1/1] iid96_r8_true_h18_current_gt · ep182
+[probe 1/1] iid96_r8_true_h18_current_gt · ep197
+[probe 1/1] iid96_r8_true_h18_current_gt · ep210
+[probe 1/1] iid96_r8_true_h18_current_gt · ep217
+[probe 1/1] iid96_r8_true_h18_current_gt · ep233
+[probe 1/1] iid96_r8_true_h18_current_gt · ep240
+[probe 1/1] iid96_r8_true_h18_current_gt · ep253
+[probe 1/1] iid96_r8_true_h18_current_gt · ep322
+[probe 1/1] iid96_r8_true_h18_current_gt · ep391
+[probe 1/1] iid96_r8_true_h18_current_gt · ep442
+[probe 1/1] iid96_r8_true_h18_current_gt · ep448
+[probe 1/1] iid96_r8_true_h18_current_gt · ep462
+[probe 1/1] iid96_r8_true_h18_current_gt · ep464
+[probe 1/1] iid96_r8_true_h18_current_gt · ep513
+[probe 1/1] iid96_r8_true_h18_current_gt · ep540
+[probe 1/1] iid96_r8_true_h18_current_gt · ep546
+[probe 1/1] iid96_r8_true_h18_current_gt · ep668
+[probe 1/1] iid96_r8_true_h18_current_gt · ep744
+[probe 1/1] iid96_r8_true_h18_current_gt · ep797
+[probe 1/1] iid96_r8_true_h18_current_gt · ep825
+[probe 1/1] iid96_r8_true_h18_current_gt · ep881
+[probe 1/1] iid96_r8_true_h18_current_gt · ep882
+[probe 1/1] iid96_r8_true_h18_current_gt · ep889
+[probe 1/1] iid96_r8_true_h18_current_gt · ep1089
+[probe 1/1] iid96_r8_true_h18_current_gt · ep1446
+[probe 1/1] iid96_r8_true_h18_current_gt · ep1656
+[probe 1/1] iid96_r8_true_h18_current_gt · ep2124
+[probe 1/1] iid96_r8_true_h18_current_gt · ep2167
+[probe 1/1] iid96_r8_true_h18_current_gt · ep4400
+[probe 1/1] iid96_r8_true_h18_current_gt · ep4449
+[probe 1/1] iid96_r8_true_h18_current_gt · ep4626
+[cluster 1/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep0
+[cluster 2/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep4
+[cluster 3/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep5
+[cluster 4/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep6
+[cluster 5/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep9
+[cluster 6/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep32
+[cluster 7/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep35
+[cluster 8/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep36
+[cluster 9/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep39
+[cluster 10/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep50
+[cluster 11/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep51
+[cluster 12/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep52
+[cluster 13/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep58
+[cluster 14/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep61
+[cluster 15/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep73
+[cluster 16/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep78
+[cluster 17/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep81
+[cluster 18/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep86
+[cluster 19/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep94
+[cluster 20/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep97
+[cluster 21/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep100
+[cluster 22/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep116
+[cluster 23/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep119
+[cluster 24/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep122
+[cluster 25/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep126
+[cluster 26/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep135
+[cluster 27/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep138
+[cluster 28/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep150
+[cluster 29/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep163
+[cluster 30/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep166
+[cluster 31/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep176
+[cluster 32/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep182
+[cluster 33/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep197
+[cluster 34/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep210
+[cluster 35/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep217
+[cluster 36/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep233
+[cluster 37/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep240
+[cluster 38/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep253
+[cluster 39/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep322
+[cluster 40/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep391
+[cluster 41/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep442
+[cluster 42/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep448
+[cluster 43/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep462
+[cluster 44/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep464
+[cluster 45/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep513
+[cluster 46/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep540
+[cluster 47/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep546
+[cluster 48/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep668
+[cluster 49/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep744
+[cluster 50/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep797
+[cluster 51/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep825
+[cluster 52/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep881
+[cluster 53/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep882
+[cluster 54/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep889
+[cluster 55/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep1089
+[cluster 56/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep1446
+[cluster 57/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep1656
+[cluster 58/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep2124
+[cluster 59/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep2167
+[cluster 60/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep4400
+[cluster 61/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep4449
+[cluster 62/62] iid96_r8_true_h18_current_gt + k5_unanchored · ep4626
+[worker 0] raw and GMM caches ready; no local threshold/report generated

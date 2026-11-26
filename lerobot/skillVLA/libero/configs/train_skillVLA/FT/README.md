@@ -1,328 +1,115 @@
 # SkillVLA FT
 
-Adapts a trained Stage-1 system to a new-task dataset. It mirrors `PT/`:
-three independent component jobs plus one Joint job share [`newtask_ft_common_config.yaml`](newtask_ft_common_config.yaml)
-(new dataset + the three source checkpoints). This is the current fine-tuning
-pipeline. The code folder was renamed from `NewTask_FT` to `FT`, and its output
-group is now `skillVLA_FT`. Existing checkpoints, run names, eval results, logs,
-and snapshots are preserved. Historical `skillVLA_NewTask_FT` paths remain
-readable. Internal `newtask_ft_*` fields, YAML filenames, and W&B project names
-stay unchanged so saved configs and W&B resumes remain compatible. The obsolete
-Stage-2/DSBC FT implementation was removed before this rename.
-
-Resume launchers override the saved `output_dir` with the current local run
-directory, so old checkpoint JSON does not recreate the former output group.
-On other servers, move the real `skillVLA_NewTask_FT` checkpoint directory to
-`skillVLA_FT` separately before resuming: ignored output data is not moved by
-Git. Existing Hugging Face remote folders are not renamed by this local change.
+VSA와 Predictor는 [`newtask_ft_common_config.yaml`](newtask_ft_common_config.yaml)의
+데이터 선택과 각 PT 체크포인트를 사용해 독립적으로 FT합니다.
 
 | Component | Config | Launcher | Output |
 | --- | --- | --- | --- |
 | VSA | `VSA/vsa_ft_config.yaml` | `VSA/submit_train.sh` | `outputs_root/skillVLA_FT/VSA/<run>` |
 | Predictor | `Predictor/predictor_ft_config.yaml` | `Predictor/submit_train.sh` | `outputs_root/skillVLA_FT/Predictor/<run>` |
-| Terminator | `Terminator/terminator_ft_config.yaml` | `Terminator/submit_train.sh` | `outputs_root/skillVLA_FT/Terminator/<run>` |
-| Joint | `Joint/joint_ft_config.yaml` | `Joint/submit_train.sh` | `outputs_root/skillVLA_FT/Joint/<run>` |
 
-VSA training conditions on GT skills and GT spatial targets, so the three jobs
-can run in parallel. `NEWTASK_FT_DRY_RUN=1 VSA/submit_train.sh` resolves and
-prints the VSA job without submitting it.
+현재 VSA는 내장 termination reader를 사용합니다. 별도 Terminator 학습과 Joint FT
+진입점은 제거했습니다. 기존 체크포인트와 평가 결과는 유지하며, 과거 모델의 평가도
+저장된 계약대로 지원합니다. Predictor 공통 코드는 `../PT/src/auxiliary/`에 있습니다.
+`NEWTASK_FT_DRY_RUN=1 VSA/submit_train.sh` 또는
+`SKILL_AUX_DRY_RUN=1 Predictor/submit_train.sh`로 제출 전 설정을 확인합니다.
 
-`transition_oversampling` in the shared YAML controls VSA and standalone
-Terminator frame sampling:
-`enabled: true`, `percent: 25`, `distribution: uniform`, `weight: 2.0` gives
-boundary frames twice the per-frame weight. Before a boundary, the window uses
-the next skill's length; after it, the previous skill's length (half-up rounding).
-The final skill also oversamples its last `percent` percent using its own length,
-including episodes containing only one skill. No frames from another episode
-are included, and overlapping internal/end windows still get just one weight.
-Gripper validity is not consulted and overlapping windows count once. Existing
-transition randomization still runs normally on each selected frame. Enabled
-runs add `_os25x2` to both VSA and Terminator output names (before any user
-suffix) to distinguish them from baseline outputs. Terminator's tagged
-episode-final post-end positives remain available at unit weight. Missing settings
-or `enabled: false` use the original sampler, RNG behavior and run naming;
-the sampling settings are checkpointed and forwarded on resume/retry.
-
-VSA, Predictor, Terminator and Joint use the shared trainer, which never uploads
-checkpoint weights or adapters to W&B, including when resuming old configs with
-`wandb.disable_artifact=false`. W&B metrics/media, local checkpoint saves and
-server-to-server archival are unchanged. This applies at the next trainer launch;
-running processes and previously uploaded artifacts are untouched.
+VSA는 GT skill·spatial target으로 학습하므로 Predictor와 동시에 학습할 수 있습니다.
+공통 YAML의 transition randomization을 사용하며, VSA는 일반 프레임 샘플링으로
+학습합니다. 공통 trainer는 W&B에 checkpoint weights를 올리지 않습니다.
 
 ## Dataset requirements
+
+Run `./visualize_sbd.sh` from this directory to compare the saved boundaries
+and FSQ codes configured under `sbd_preview.builds` in the common YAML. The
+defaults compare the original `full_1`, `full_full ft`, and `full_full ft_own`
+builds on the episodes selected by `dataset`. Each episode has one common
+video and three time-aligned plots/tracks; clicking a track/plot seeks the
+video. Subset-local episode IDs are mapped back through `source_episode_indices`
+so the columns always refer to the same original recording. An unavailable
+episode in the old `full_1` build is marked missing, never replaced by a
+different episode. `--all-episodes` browses the entire current build without
+changing the training selection; `--dry-run` validates the mapping without
+rendering. This uses the project venv and CPU only, and neither runs DP nor
+resegments the data. HTML goes under `FT/outputs/sbd_comparison_*`, with videos
+and SVGs stored separately under `src/` to keep the main report small.
+
+LIBERO can build `libero_10_full_full` once and select training episodes in
+`newtask_ft_common_config.yaml`. With `dataset.episode_selection: per_task`,
+`n_episodes: 1` selects the first episode in each task, ordered by the dataset's
+episode IDs. `n_episodes: all` uses the full build. A nonempty nested
+`episode_ids` overrides the count: one inner list per task in ascending
+`task_index` order, containing **zero-based positions within that task**.
+For example, `[[0, 2], [1]]` selects the first and third episodes of the first
+task and the second episode of the next task; `[]` skips that task. Missing
+task lists and unavailable positions fail before submission. VSA and Predictor receive the same resolved global episode IDs. Output names add
+`_ep<count>_pertask` and an ID hash for explicit selections. MimicGen's default
+`global` selection continues to use a flat list of global episode IDs.
+
+The configured source/run must already have a complete SkillVLA build; episode
+selection does not build missing data. Use the same segmentation and PT
+normalization statistics when comparing this selection with `libero_10_full_1`.
 
 * Source checkpoints are named as `{run, checkpoint}` in the shared YAML and located automatically.
 * Labeled by the same FSQ model as the source checkpoints. This is verified
   from `fsq_source.json` on both sides; the checkpoints' `skill_code_space_id`
   is then kept even though the new run tag differs.
 * Same FSQ levels, state/action dimensions, and `proprio_grounding`.
-* Arch5--Arch13 and foveated checkpoints need `skill_focus_uv.npz`
-  (`focus_uv.enabled=true` at build time).
+* 세 VSA 모델 모두 `skill_focus_uv.npz`가 필요합니다
+  (`focus_uv.enabled=true`로 빌드).
 
-## VSA (Arch4--Arch13 only)
+## VSA: 세 가지 Term bottleneck 모델의 FT
 
-The whole model contract is inherited from `warm_start.vsa_checkpoint` through
-`--policy.path`; the YAML cannot restate it.
+`VSA/vsa_ft_config.yaml` 하나로 PT의 세 모델을 모두 FT합니다.
+`newtask_ft_common_config.yaml`의 `warm_start.vsa_checkpoint`에서
+`termbn_detach`, `termbn_detach_topcrop1p1_gripaction`, `termbn_detach_gripaction`
+중 원하는 PT run과 checkpoint를 선택합니다.
 
-Direct/Residual checkpoints also retain their `18-N` base + `N` terminal layer
-split. Default FT freezes those `18-N` base layers and trains the `N` terminal
-layers; a `_layerN` run tag from Stage-1 is retained in the FT run lineage.
+Architecture, 9+9 split, detach termination reader, Top crop 설정,
+full-skill gripper 표현(8D proprio / 7D action), normalization 통계와
+loss coefficient는 선택한 PT 체크포인트에서 상속합니다.
+FT YAML에서 이를 다시 정의하지 않습니다. 결과 폴더에는 원본 PT run의
+식별자가 유지되며, 긴 이름은 기존 규칙에 따라 일부를 hash로 줄입니다.
 
-`policy.newtask_ft_enabled=true` freezes every parameter on the skill-only
-trajectory route: Expert motion-core layers `1..(18 - visual_bridge_last_n_layers)`,
-the final Expert norm, action in/out projections, the time MLP, the skill
-broadcast, and the Expert-side end-pose AdaRMS of Arch9--Arch11. Cond-Gemma and
-its condition inputs, the recurrent bottleneck, the visual bridge, the terminal
-bridge Expert layers, and the UV/XYZ/termination heads train. DINO is frozen
-by default; standalone VSA FT does not expose DSBC variants.
+현재 adaptation 설정:
 
-Consequences:
+- `freeze_expert: true`: Expert 전 층·Action I/O·full-skill head를 동결합니다.
+- `skill_flow_loss: true`: full-skill loss의 gradient는 동결된 Expert를 통과해
+  학습 가능한 visual bridge·bottleneck·VLM으로 전달됩니다.
+- `visual_aux_loss: true`: 기존 Top/Wrist/XYZ auxiliary supervision을 유지합니다.
+- `termination_loss: true`: 독립된 detach termination reader를 함께 FT합니다.
+  false이면 termination supervision을 끄며 출력 이름에 `_notermloss`를 붙입니다.
 
-* `adaptation.train_bridge_layers_and_head: true` with `freeze_expert: false`
-  trains exactly the Expert transformer layers selected by the model's actual
-  visual bridge connections and `action_out_proj`. It freezes every other
-  Expert layer, final norm, Action input, time/skill/goal projections and
-  fullskill heads. This is independent of the 1+17 or 9+9 input split: the
-  π0.5 VLM `_wovis_last` models train L18 only, while non-`_wovis` models also
-  train the prefix layer that reads start vision. Cond/bottleneck/bridges and
-  auxiliary heads keep their normal FT trainability; `train_dino` still selects
-  DINO/SigLIP training. Skill supervision remains independent, and is disabled
-  automatically for independent `_wovis` planners whose fullskill path stays
-  frozen. The mode conflicts with `freeze_expert`, `freeze_skill_core`,
-  `full_unfreeze`, and Joint FT. Runs gain `_bridgehead`; preflight prints an
-  automatic layer count and model initialization logs the exact layer indices.
-* Vanila models support all-Expert-frozen FT with `freeze_expert: true`,
-  including the all-18-layer visual-input variants (no separate motion-only
-  prefix). Use `train_dino: true` to additionally train DINO, and leave
-  `skill_flow_loss: false`: Vanila has no fullskill route. Visual auxiliary
-  supervision, Cond/bottleneck/bridges and inherited normalization are retained.
-* `adaptation.full_unfreeze: true` restores the normal PT trainability of the
-  entire Action model: all Expert layers, final norm, Action I/O, time/skill/goal
-  projections, fullskill heads, Cond, bottleneck and bridges. Combine with
-  `train_dino: true` to train DINO too. This conflicts with `freeze_expert` and
-  `freeze_skill_core`; do not additionally set `unfreeze_action_head`. FSQ and
-  external Predictor/Terminator modules remain frozen (this is VSA-only FT).
-  Fullskill and visual-auxiliary losses follow their independent switches;
-  `_wovis` fullskill loss is NOT auto-disabled because the plan route now trains.
-  Runs gain `_full`, the effective skill-loss suffix, and optionally `_dino`.
-* `adaptation.train_dino: true` additionally unfreezes DINO, independently of
-  the Expert freezing choice. `adaptation.dino_lr_scale` defaults to `1.0`
-  and multiplies the base learning rate for the separate DINO optimizer group.
-  For the original all-Expert-frozen experiment, keep `freeze_expert: true`
-  and enable this switch: all Expert layers/heads stay frozen, while DINO,
-  Cond, bottleneck, bridges and normal visual auxiliary heads train. DINO
-  gradient checkpointing follows `training.gradient_checkpointing`. Runs gain
-  `_dino` before the custom suffix; saved `freeze_vision_encoder: false` and
-  `dino_lr_scale` retain the contract on resume/evaluation. Old snapshots keep
-  their previous behavior and names; Joint FT's fixed DINO setting is unchanged.
-* Independent-planner models support `adaptation.freeze_skill_core: true`
-  with `freeze_expert: false`. Fullskill prefix layers/heads and shared
-  time/skill/goal projections stay frozen, except the last prefix Expert
-  layer is trainable when it receives start vision. In the 9+9 models this
-  trains L9--L18 for ordinary/`_nouv`, or L10--L18 for `_wovis`/`_wovis_nouv`.
-  Action-only input/output projections and final norm train alongside Cond,
-  bottleneck, bridges and visual auxiliaries; DINO follows `train_dino`. Fullskill
-  heads remain frozen. Skill loss can train the visual interface/L9, but is
-  automatically disabled for `_wovis` (no trainable fullskill path). Runs
-  gain `_skillcore`, plus the effective skill-loss suffix. This opt-in mode
-  is persisted in policy checkpoints and is not available for Joint FT.
-* `adaptation.visual_aux_loss: true` (default) preserves visual supervision and
-  the historical output name. Set it to `false` to skip start/current Top/Wrist
-  patch and vision endpoint XYZ/UV losses, including separate start-image XYZ
-  supervision. Loss-off runs gain `_novisaux` before the custom suffix in their
-  output/W&B name. Architecture, input conditioning, inherited coefficients,
-  Action/fullskill losses and nonvisual auxiliaries are unchanged. This is a
-  standalone VSA FT probe; saved policy configs retain the choice on resume.
-* `adaptation.skill_flow_loss: false` skips skill auxiliary supervision and
-  its dataset targets. Setting it to `true` enables full-skill action flow
-  loss for Vis/canonical models, or normalized proprio spline MSE for Bspline
-  models (never an extra canonical flow pass for Bspline).
-  With `adaptation.freeze_expert: true`, **all Expert layers, final norm,
-  action I/O and Bspline plan generator/head remain frozen**. Gradients still
-  pass through them into trainable skill-side visual bridges, Cond and
-  bottleneck tokens. The run gains `_frozenexpert_skillflow` or
-  `_frozenexpert_skillbspline`, keeping it separate from loss-off checkpoints.
-  With `freeze_expert: false` and `freeze_skill_core: false`, enabling the loss preserves the previous
-  behavior: all Expert layers, final norm/action head (plus the Bspline plan
-  generator/head when applicable) train. Route input projections remain frozen;
-  DINO follows `train_dino`. For independent `_wovis` planners (including `_wovis_nouv`),
-  `freeze_expert: true` automatically resolves `skill_flow_loss: true` to
-  `false`: there is no trainable fullskill path. This skips fullskill targets
-  and loss computation, and omits the skill-loss run-name suffix. The reason
-  is logged. Direct policy configs and resumed checkpoints apply the same rule.
-  Action and visual auxiliary training are unchanged. Other models without
-  trainable visual inputs do not gain signal just by computing a frozen loss.
-  Visual skill trajectories are not guaranteed to stay identical to PT even
-  with frozen Expert weights, because the visual inputs/bridges can adapt.
-* State/action normalization is inherited from the source checkpoint instead
-  of being recomputed from the new dataset, because the frozen core and action
-  head live in those coordinates. Transition jitter follows the new dataset.
-* Arch0--Arch3 and latent Best-of-N checkpoints are rejected.
+VLM과 vision encoder는 학습하며, 별도의 DINO 선택이나 LR-scale 옵션은
+현재 VSA YAML에 노출하지 않습니다. Gradient checkpointing은
+`vlm`, `vision`, `action_expert`로 각각 설정합니다.
 
-### VSA FT checkpoint retention
-
-The training YAMLs default to `checkpoint_archive: ""`, `keep_checkpoints: 1`,
-and `protect_checkpoints: [3000, 5000, 10000]`. After a complete save and `last`
-update, keep the newest resumable checkpoint plus those protected steps.
-At 4k this leaves 3k/4k; at 5k it leaves 3k/5k; at 10k it leaves 3k/5k/10k.
-Model, processor, optimizer and RNG files are checked before pruning. An
-incomplete save never removes the last good recovery checkpoint. The same
-options are passed on fresh and resumed runs. `keep_checkpoints: -1` keeps all.
-
-For optional remote offload, set `checkpoint_archive: scratch2` (or `scratch`)
-and `protect_checkpoints: []`. This separate mode archives every completed
-save, retains every step remotely, and removes older local saves only after
-remote verification. Do not offload to the same storage on Yonsei itself.
-See [server-sync archive details](../../../../../../tools/server_sync/README.md#학습-중-체크포인트-자동-보관-predictor--vsa-ft)
-for SSH requirements, logs, and retry commands. No UI process is needed.
-
-## Predictor / Terminator
-
-Thin wrappers around the unified auxiliary trainer (`../PT/Terminator/src/`) in
-`mode: ft`. Contract and batch size come from the component checkpoint, the
-dataset source is appended to the run lineage, and `newtask_ft: true` selects
-the component's own checkpoint from the shared YAML and the
-`skillVLA_FT` output group.
-
-Predictor FT also inherits the warm-start checkpoint's normalization statistics,
-including proprio quantiles used for the VLM state prompt. New-task statistics
-do not replace those bounds, even when the VLM is trainable. They remain fixed
-and are saved with every checkpoint, so evaluation uses the same input scale.
-Resuming uses the **resumed checkpoint's own** statistics, not the original PT
-source or freshly computed target statistics; old FT runs are not silently
-converted. Scratch Predictor PT and Terminator-only training are unchanged.
-`run.suffix` only changes the output name; it does not choose normalization
-statistics. Choose a fresh suffix to restart from PT instead of resuming an
-existing output. Existing outputs are not renamed or deleted.
-
-### Predictor VLM adaptation
-
-`Predictor/predictor_ft_config.yaml` selects the VLM training scope with
-`predictor_ft.unfreeze` (reader/skill/XYZ heads continue training in every case):
-
-| `unfreeze` | Trainable VLM base parameters |
-| --- | --- |
-| `none` | None |
-| `all` | Vision tower, image-language projector, and language model |
-| `vision_encoder` | SigLIP vision tower **and** image-language projector; language-model base frozen |
-
-`predictor_ft.lora` is unchanged. LoRA can accompany `none` or `vision_encoder`;
-it trains language-model adapters without unfreezing language-model base weights.
-`all` requires LoRA disabled. Vision-only training still backpropagates **through**
-the frozen language model to the image stack; it does not detach that computation.
-Vision/projector parameters use the existing `predictor_vlm_lr_scale` optimizer
-group. `gradient_checkpointing: true` checkpoints both the frozen language-model
-backward path and the trainable vision tower in this mode.
-
-Run names distinguish `_fullvlm`, `_frozenvlm`, `_visionencoder`, and optional
-`_lora`. `none` is equivalent to the previous `freeze_vlm: true` with LoRA
-disabled. Omitted adaptation fields inherit the warm-start contract.
-Old snapshots containing `freeze_vlm` remain readable; do not combine the old
-switch with `unfreeze`. Saved checkpoints retain the training scope for resume
-and evaluation, including the fine-tuned vision/projector weights.
-
-### Two FT Predictors on one GPU
-
-`warm_start.predictor_checkpoint` accepts either the existing scalar checkpoint
-selector or a list in `newtask_ft_common_config.yaml`. The Predictor component
-inherits this selection without its own checkpoint block. The current list
-contains the `mode3_uvclip` and `mode3_preskill_uvclip` PT 100k checkpoints,
-with `predictor_ft.unfreeze: all` for both. Each worker inherits its own source
-contract and PT statistics, optimizer, W&B run, checkpoint/resume path, and
-output directory. FT modes must be distinct. Remove an entry to train only one.
-VSA and Terminator ignore the shared Predictor list; Joint still needs a single
-Predictor checkpoint and does not expand into a Predictor group.
-
-Use `training.dataloader.gpus: 1` and `slurm.gres: gpu:1`; the models share one
-allocated GPU. Batch size and loader workers are **per model**; Slurm CPU/RAM
-are totals. The current setup is batch 16 and six loader workers per model,
-16 CPUs / 192G RAM total, and FT 10k. Node selection follows the server config
-(currently `node200` in `skillVLA/servers/rllab.yaml`). Dataset staging happens once;
-worker logs are `logs/predictor_group_<job_id>/<mode>.{out,err}`. Existing
-scalar configs and already-submitted snapshots retain their behavior.
-
-Preview both workers without submitting:
+데이터와 task별 episode 선택, transition randomization은 공통 YAML을 따릅니다.
+VSA는 표준 프레임 샘플링을 사용합니다.
+저장 경로와 서버 선택은 global config를 따릅니다.
 
 ```bash
-cd lerobot/skillVLA/libero/configs/train_skillVLA/FT/Predictor
-SKILL_AUX_DRY_RUN=1 bash submit_train.sh
+cd lerobot/skillVLA/libero/configs/train_skillVLA/FT/VSA
+./submit_train.sh
+# 기존 할당 사용: ./submit_train.sh --JOB_ID
+# 연세 서버 사용: ./submit_train.sh --yonsei
 ```
 
-Mode3 UV warm starts also work in standalone Predictor FT: spatial targets are
-inherited, UV labels follow the same randomized image crop, and inference
-restores the original-frame UV for a UV-based VSA. UV needs the new-task
-dataset's existing Top-camera `skill_focus_uv.npz`; no raw start XYZ is needed
-for the UV branch. Predictor normalization inheritance is unchanged.
+총 20k steps, 최신 체크포인트 1개와 `[3000, 5000, 10000, 20000]`을 보관합니다.
+20k 종료까지 해당 보호 step에서도 저장하며, 완료된 저장을 확인한 뒤 이전
+일반 체크포인트를 정리합니다. 재실행 시 기존 `last`의 optimizer·RNG도 복원합니다.
 
-## Joint
+## Predictor
 
-Joint warm-starts VSA, Predictor, and (by default) Terminator together. Predictor
-outputs condition VSA differentiably according to the configured Joint routes.
-Terminator receives a separate current-skill start view and detached Predictor
-skill/XYZ outputs; its loss, optimizer group, and gradient clipping are isolated
-from Predictor/VSA. Set `terminator.enabled: false` for the two-model ablation.
-
-The VSA warm start may be an existing canonical model (Both3/LIT/etc.) or
-`direct_patch_1..6` / `residual_patch_1..6`, including `_dGD` and non-default terminal
-layer counts such as 9+9. Canonical models retain their original full-skill route.
-Window models use their actual current-proprio-conditioned 4H motion prefix for
-both local-code candidate ranking and differentiable STE route supervision;
-the 4H padding mask applies to loss only. The prefix/norm/shared head stay frozen,
-but gradients can still reach Predictor skill/XYZ inputs. `_dGD` still blocks the
-action-to-base path; it does not block the separate Predictor route objective.
-There is no extra ordinary VSA skill-flow update in Joint.
-
-DINO stays frozen and Joint has no DSBC support or user-facing VSA adaptation
-switches. The same dataset and common warm-start selectors are used; no dataset
-rebuild or additional architecture selector is required.
-
-Newterm7 retains its start-proprio/goal inputs and its disabled current-proprio input.
-Its k-frame post-end positives use detached Predictor skill/XYZ from each past
-occurrence's own start view and state prompt. Conflicting same predicted codes are
-excluded. Frozen DINO features are reused for the current and past conditions.
-Episode endpoints get k extra current-condition loss weights rather than duplicated
-Joint samples, so VSA/Predictor sampling is unchanged. This matches the intended
-terminal-positive emphasis, not identical minibatch ordering to standalone Newterm.
-Terminator history/masking variants remain unsupported in Joint.
+`Predictor/submit_train.sh`는 `../PT/src/auxiliary/submit_auxiliary.sh`를 사용합니다.
+PT 구조·정규화 통계를 선택한 Predictor 체크포인트에서 상속하고, 데이터와 episode
+선택은 공통 YAML을 따릅니다. `warm_start.predictor_checkpoint`에 여러 체크포인트를
+지정하면 한 GPU에서 독립적인 FT를 병렬 실행합니다. VSA는 이 Predictor 선택을 무시합니다.
+각 모델의 batch·worker 수는 component YAML에서 정하며, GPU·CPU·메모리는 합산해 확보합니다.
 
 ## Evaluation
 
-`eval/` evaluates the adapted system in closed loop. It is the Stage-1 eval engine
-(`../PT/eval/src`) run with [`eval/ft_eval_config.yaml`](eval/ft_eval_config.yaml); `logs/`
-and `outputs/` are written under `eval/`.
-
-```bash
-eval/submit_eval.sh                        # submit
-STAGE1_EVAL_DRY_RUN=1 eval/submit_eval.sh  # resolve + print the plan only
-```
-
-* Every `models[]` entry selects `vsa_dir`, `predictor_dir`, and `terminator_dir`, each with its own
-  checkpoint. Run names are searched in the separate FT folders, the Joint folder, and Stage-1
-  compatibility locations. Multiple entries are evaluated side by side.
-* Set `predictor_dir: joint` and `predictor_checkpoint: ""` to use the co-trained Predictor
-  already inside each selected VSA checkpoint. A `vsa_checkpoint` list then sweeps VSA and
-  Predictor together without a separate Predictor overlay. `terminator_dir` may still select
-  an external Terminator at a fixed checkpoint. Non-Joint checkpoints reject this selector.
-  To deliberately mix checkpoints/components, keep naming the real Predictor/Terminator runs
-  and their separate checkpoint steps as before.
-* `predictor_dir: gt` selects GT skill and XYZ, while `terminator_dir: gt` selects GT transitions;
-  leave that role's checkpoint blank.
-* A `vsa_checkpoint` list automatically adds checkpoint-vs-success-rate line charts:
-  `checkpoint_success_rates.png` overlays every model's overall SR, and
-  `checkpoint_task_success_rates/*.png` contains one separate chart per model with one line
-  per task. The x-axis is the numeric training step (including 0k); the y-axis is SR (%).
-  No extra YAML switch is needed, for separate or Joint FT runs. Evaluation behavior and
-  existing bar charts are unchanged.
-* `vsa_checkpoint: ["000000", "001000", "005000"]` includes a 0k VSA baseline:
-  `000000` resolves the warm-start VSA recorded in the FT checkpoint configs.
-  The original checkpoint must also be available locally. Predictor/Terminator
-  selectors are kept as specified; this is zero-shot VSA, not necessarily a
-  zero-shot three-component system. Without `gt_dataset`, the 0k panel inherits
-  the FT run's new-task dataset. Ordinary Stage-1 step-zero checkpoints still load normally.
-  With `predictor_dir: joint`, virtual 0k also resolves the recorded pre-FT Predictor
-  (`skill_predictor_checkpoint_path`); both original warm starts must be downloaded.
-  A real Joint `000000` checkpoint, if present, loads its own saved VSA/Predictor normally.
-* `gt_dataset` names the new-task SkillVLA run so every panel — including an original Stage-1
-  checkpoint trained on another suite — uses the same scenes and GT sequences.
-* `libero_10_full_1` has one demo per task. With `oracle.repeat_episodes: true`, that exact scene can
-  be replayed for every requested episode; set it to `false` when only one rollout is desired.
+`eval/ft_eval_config.yaml` 하나에서 VSA/Predictor checkpoint와 평가 조건을 선택하고
+`eval/submit_eval.sh`를 실행합니다. 현재 세 VSA 모델은 `advance_mode: own`으로
+내장 termination 확률을 사용합니다. 기존 외부 Terminator 또는 Joint checkpoint를
+읽는 평가 코드는 과거 결과 재현을 위해 유지합니다.

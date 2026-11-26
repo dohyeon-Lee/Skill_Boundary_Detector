@@ -213,6 +213,8 @@ class SkillAuxConfig(PreTrainedConfig):
     tokenizer_max_length: int = 200
 
     gradient_checkpointing: bool = False
+    gradient_checkpointing_llm: bool | None = None
+    gradient_checkpointing_vision: bool | None = None
     optimizer_lr: float = 2.5e-5
     optimizer_betas: tuple[float, float] = (0.9, 0.95)
     optimizer_eps: float = 1e-8

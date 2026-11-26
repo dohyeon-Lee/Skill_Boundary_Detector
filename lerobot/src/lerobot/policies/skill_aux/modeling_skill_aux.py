@@ -229,8 +229,18 @@ class SkillAuxPolicy(PreTrainedPolicy):
                 self.model.skill_predictor.set_train_vision_encoder(True)
             for parameter in self.model.skill_predictor.auxiliary_parameters():
                 parameter.requires_grad_(True)
-            if config.gradient_checkpointing:
-                self.model.skill_predictor.gradient_checkpointing_enable()
+            llm_checkpointing = (
+                config.gradient_checkpointing if config.gradient_checkpointing_llm is None
+                else config.gradient_checkpointing_llm
+            )
+            vision_checkpointing = (
+                config.gradient_checkpointing if config.gradient_checkpointing_vision is None
+                else config.gradient_checkpointing_vision
+            )
+            if llm_checkpointing or vision_checkpointing:
+                self.model.skill_predictor.gradient_checkpointing_enable(
+                    llm=llm_checkpointing, vision=vision_checkpointing,
+                )
         if self.model.fsq_term_train is not None:
             self.model.fsq_term_train.to(dtype=torch.float32)
         if self.model.fsq_image_term_train is not None:
@@ -1832,15 +1842,17 @@ class SkillAuxPolicy(PreTrainedPolicy):
         mapped: dict[str, Tensor] = {}
         with safe_open(str(weights_path), framework="pt", device="cpu") as checkpoint:
             keys = set(checkpoint.keys())
+            source_keys = {key.removeprefix('model.'): key for key in keys}
+            keys = set(source_keys)
             for key in keys:
                 if key.startswith(raw_prefix):
                     target = target_prefix + key.removeprefix(raw_prefix)
                     if target in expected or target.replace(".weight", ".base.weight") in expected:
-                        mapped[target] = checkpoint.get_tensor(key)
+                        mapped[target] = checkpoint.get_tensor(source_keys[key])
             embedding = target_prefix + "language_model.embed_tokens.weight"
             lm_head = "paligemma_with_expert.paligemma.lm_head.weight"
             if embedding not in mapped and lm_head in keys:
-                mapped[embedding] = checkpoint.get_tensor(lm_head)
+                mapped[embedding] = checkpoint.get_tensor(source_keys[lm_head])
         mapped, routed = route_plain_to_base(mapped, set(self.state_dict()))
         missing = expected - set(mapped)
         if missing:

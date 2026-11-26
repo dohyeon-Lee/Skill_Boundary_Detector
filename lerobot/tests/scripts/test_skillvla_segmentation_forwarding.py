@@ -136,6 +136,7 @@ def test_actual_launcher_argv_inherits_fsq_without_python_defaults(tmp_path, nam
     parsed = tyro.cli(Args, args=call['args'])
     contract = json.loads(s['skillset_contract_json'])
     validate_args(parsed, contract)
+    assert parsed.initial_mask_frames == s['skillset_initial_mask_frames'] == 0
     assert parsed.probe_generation=='scheduler_gaussian' and parsed.denoise_output=='pred_original_sample'
     assert parsed.gaussian_include_mean is include_mean and parsed.gmm_weighted is include_mean
     assert parsed.curves_only == (phase=='CURVES_ONLY')
@@ -197,7 +198,7 @@ def test_proof_survives_cleanup_but_cannot_hide_changed_settings(tmp_path):
 def test_cached_curve_and_threshold_must_prove_the_recipe(tmp_path):
     s=settings_for(tmp_path);c=json.loads(s['skillset_contract_json']);p=tmp_path/'curve.npz'
     fields=dict(curve_schema_version=3,denoising_gain=[1],denoising_gain_sg=[1],delta_bic=[1],delta_bic_sg=[1],
-                tail_excluded_frames=0,last_valid_anchor=0)
+                tail_excluded_frames=0,last_valid_anchor=0,initial_mask_frames=0,threshold_valid_start=0)
     np.savez(p,**fields)
     assert _curve_has_current_metrics(p) and not _curve_has_current_metrics(p,c)
     np.savez(p,**fields,segmentation_contract_sha256=fingerprint(c))
@@ -209,6 +210,35 @@ def test_cached_curve_and_threshold_must_prove_the_recipe(tmp_path):
     validate_threshold(threshold,ft,'PT reference')
     with pytest.raises(ValueError,match='contract mismatch'):validate_threshold({},ft,'old PT reference')
     with pytest.raises(ValueError,match='gmm_weighted'):validate_threshold(threshold,changed,'bad reference')
+
+
+def test_legacy_pt_threshold_inherits_no_initial_mask_and_still_rejects_new_mask(tmp_path):
+    settings = settings_for(tmp_path)
+    contract = json.loads(settings['skillset_contract_json'])
+    legacy = copy.deepcopy(contract['segmentation'])
+    legacy['detector'].pop('initial_mask_frames')
+    payload = {'segmentation_contract': legacy, 'boundary_threshold_mode': 'global_mean',
+               'boundary_threshold_scale': 1.0, 'global_threshold': 0.0033}
+    path = tmp_path / 'pt_threshold.json'
+    path.write_text(json.dumps(payload))
+    args = Args(dataset_dir='unused', policy_path=str(settings['dp_policy_path']), output_dir='unused',
+                initial_mask_frames=0, segmentation_contract_json=json.dumps(contract))
+    assert _load_global_threshold(str(path), args) == 0.0033
+    masked = copy.deepcopy(contract)
+    masked['segmentation']['detector']['initial_mask_frames'] = 20
+    with pytest.raises(ValueError, match='initial_mask_frames'):
+        validate_threshold(payload, masked, path)
+    # Keep the independent provenance guard for legacy callers without a contract.
+    args.segmentation_contract_json = ''
+    args.initial_mask_frames = 20
+    with pytest.raises(ValueError, match='predates the history mask'):
+        _load_global_threshold(str(path), args)
+    # A matching hash must not conceal a curve generated with a different mask.
+    curve = tmp_path / 'wrong_mask.npz'
+    np.savez(curve, initial_mask_frames=20, segmentation_contract_sha256=fingerprint(contract))
+    with np.load(curve, allow_pickle=False) as values:
+        with pytest.raises(ValueError, match='initial_mask_frames mismatch'):
+            validate_curve(values, contract, curve)
 
 
 def test_incomplete_fsq_manifest_is_not_filled_with_legacy_gaussian_defaults(tmp_path):
@@ -227,3 +257,49 @@ def test_old_pt_snap_reference_cannot_seed_corrected_ft_labels(tmp_path):
     (p.parent/'segmentation_contract.json').write_text(json.dumps({'contract':c,'stage':'encoded'}))
     ft=copy.deepcopy(c);ft['segmentation']['dataset_name']='libero_10_full_1';ft['segmentation']['detector']['boundary_threshold_mode']='episode_mean'
     validate_snap_reference(str(p),ft)
+
+
+@pytest.mark.parametrize('phase', ['', 'CURVES_ONLY', 'USE_CACHED_CURVES'])
+def test_pt_pca_reaches_real_worker_cli(tmp_path, phase):
+    import hashlib
+    s = settings_for(tmp_path)
+    pca = tmp_path / 'PT_action_probe_pca.npz'
+    pca.write_bytes(b'PT PCA artifact')
+    s['skillset_pca_reference_path'] = str(pca)
+    s['skillset_pca_reference_sha256'] = hashlib.sha256(pca.read_bytes()).hexdigest()
+    from sbd_build_contract import from_settings
+    s['skillset_contract_json'] = json.dumps(from_settings(s))
+    call = record_launcher(tmp_path, s, 'build_skillset.sbatch', phase=phase)[0]
+    args = tyro.cli(Args, args=call['args'])
+    assert args.pca_reference_path == str(pca)
+    assert args.pca_reference_sha256 == s['skillset_pca_reference_sha256']
+    validate_args(args, json.loads(s['skillset_contract_json']))
+
+
+def test_pt_pca_threshold_snap_and_cache_provenance(tmp_path):
+    import hashlib
+    from sbd_build_contract import validate_pca_reference
+    s = settings_for(tmp_path)
+    pt = json.loads(s['skillset_contract_json'])
+    ft = copy.deepcopy(pt)
+    ft['segmentation']['dataset_name'] = 'libero_10_full_1'
+    pca = tmp_path / 'action_probe_pca.npz'
+    pca.write_bytes(b'PT PCA artifact')
+    digest = hashlib.sha256(pca.read_bytes()).hexdigest()
+    ft['segmentation']['probe']['pca_reference_sha256'] = digest
+    # PT's threshold and vocabulary remain usable without adding FT provenance to PT.
+    validate_threshold({'segmentation_contract': pt['segmentation']}, ft, tmp_path / 'threshold.json')
+    # FT-own's threshold refers to the original PCA, not the locally rewrapped PCA file.
+    validate_threshold({'segmentation_contract': ft['segmentation']}, ft, 'own_threshold.json')
+    latents = tmp_path / 'pt/skill_latents.npz'
+    latents.parent.mkdir(); latents.touch()
+    (latents.parent / 'segmentation_contract.json').write_text(json.dumps({'contract': pt}))
+    validate_snap_reference(str(latents), ft)
+    assert fingerprint(ft) != fingerprint(pt)
+    stale = tmp_path / 'curve.npz'
+    np.savez(stale, segmentation_contract_sha256=fingerprint(pt))
+    with np.load(stale) as curve, pytest.raises(ValueError, match='Cached curve contract'):
+        validate_curve(curve, ft, stale)
+    pca.write_bytes(b'changed')
+    with pytest.raises(ValueError, match='PCA is missing or changed'):
+        validate_pca_reference(pca, ft)

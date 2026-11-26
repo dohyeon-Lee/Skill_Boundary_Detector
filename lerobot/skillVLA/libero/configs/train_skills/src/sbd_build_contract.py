@@ -23,6 +23,7 @@ GAUSSIAN_FIELDS = {
     'denoise_steps': ('denoise_steps', int), 'denoise_output': ('denoise_output', str),
 }
 DETECTOR_FIELDS = {
+    'initial_mask_frames': ('initial_mask_frames', int),
     'noise_scheduler_type': ('noise_scheduler_type', str), 'num_inference_steps': ('num_inference_steps', int),
     'eval_at_step': ('dn_step', int), 'replan_interval': ('replan_interval', int),
     'n_gmm_components': ('n_gmm', int), 'smooth_window': ('smooth_window', int),
@@ -56,6 +57,8 @@ def from_settings(settings):
         return {key: typed(settings['skillset_' + name], cast) for key, (name, cast) in mapping.items()}
     probe, detector = fields(PROBE_FIELDS), fields(DETECTOR_FIELDS)
     probe['exclude_indices'] = csv(settings['skillset_probe_exclude_indices'], int)
+    if settings.get('skillset_pca_reference_sha256'):
+        probe['pca_reference_sha256'] = settings['skillset_pca_reference_sha256']
     if settings['skillset_mode'] == 'gaussian_x0hat':
         probe.update(fields(GAUSSIAN_FIELDS)); detector.update(fields(GMM_FIELDS))
     return {
@@ -86,6 +89,10 @@ def fingerprint(contract):
 def assert_subset(expected, observed, where='contract'):
     for key, value in expected.items():
         actual = observed.get(key) if isinstance(observed, dict) else None
+        # Legacy manifests/contracts predate initial masking and mean zero.
+        # A missing field must never validate a nonzero history mask.
+        if key == 'initial_mask_frames' and isinstance(observed, dict) and key not in observed:
+            actual = 0
         if isinstance(value, dict):
             assert_subset(value, actual, where + '.' + key)
         elif actual != value:
@@ -126,6 +133,8 @@ def validate_args(args, contract):
         for key, (name, cast) in mapping.items():
             observed[dest][key] = typed(getattr(args, aliases.get(name, name)), cast)
     observed['probe']['exclude_indices'] = csv(args.probe_exclude_indices, int)
+    if getattr(args, 'pca_reference_sha256', ''):
+        observed['probe']['pca_reference_sha256'] = args.pca_reference_sha256
     for key in ('mode', 'gripper_mode', 'gripper_threshold'):
         observed['action'][key] = getattr(args, 'action_mode' if key == 'mode' else key)
     for key, cast in [('relative_exclude_joints', str), ('gripper_indices', int), ('gripper_values', float)]:
@@ -137,11 +146,26 @@ def validate_curve(curve, contract, path):
     observed = str(curve['segmentation_contract_sha256'].item()) if 'segmentation_contract_sha256' in curve else None
     if observed != fingerprint(contract):
         raise ValueError(f'Cached curve contract mismatch/missing: {path}. Regenerate curves with the intended settings.')
+    expected_mask = contract['segmentation']['detector'].get('initial_mask_frames')
+    if expected_mask is not None:
+        actual_mask = int(curve['initial_mask_frames'].item()) if 'initial_mask_frames' in curve else 0
+        if actual_mask != expected_mask:
+            raise ValueError(f'Cached curve initial_mask_frames mismatch: {path}: {actual_mask} != {expected_mask}')
 
 
 def validate_threshold(payload, contract, path):
     expected = dict(contract['segmentation']); expected.pop('dataset_name')
+    # A native PT PCA has no cross-dataset reference field. FT can use that
+    # very artifact while sharing PT's threshold; verify its bytes separately.
+    expected['probe'] = dict(expected['probe'])
+    pca_hash = expected['probe'].pop('pca_reference_sha256', '')
     actual = dict(payload.get('segmentation_contract') or {}); actual.pop('dataset_name', None)
+    if pca_hash:
+        actual_hash = actual.get('probe', {}).get('pca_reference_sha256', '')
+        if actual_hash:
+            assert_subset({'probe': {'pca_reference_sha256': pca_hash}}, actual, str(path))
+        else:
+            validate_pca_reference(Path(path).with_name('action_probe_pca.npz'), contract)
     # A PT threshold can deliberately be shared by FT, but its detector/probe
     # recipe must match. An empty legacy provenance is not proof of agreement.
     assert_subset(expected, actual, str(path))
@@ -177,11 +201,18 @@ def validate_snap_reference(path, contract):
     assert_subset({k: contract['fsq'][k] for k in ('run', 'checkpoint')}, source['fsq'], str(marker))
     expected = json.loads(json.dumps(contract['segmentation']))
     expected.pop('dataset_name')
+    expected['probe'].pop('pca_reference_sha256', None)
     # FT-own/episode thresholds may intentionally differ from PT. Probe and
     # score generation must still match the FSQ recipe used by the PT labels.
     for key in ('boundary_threshold_mode', 'boundary_threshold_scale'):
         expected['detector'].pop(key)
     assert_subset(expected, source['segmentation'], str(marker))
+
+
+def validate_pca_reference(path, contract):
+    expected = contract['segmentation']['probe'].get('pca_reference_sha256', '')
+    if expected and (not path or hashlib.sha256(Path(path).read_bytes()).hexdigest() != expected):
+        raise ValueError(f'PT PCA is missing or changed since submission: {path}')
 
 
 def check_run(skillset, run_dir, contract, stage):
@@ -219,8 +250,10 @@ def main():
     parser.add_argument('--stage', choices=['preflight', 'skillset', 'encoded', 'final', 'record-encoded', 'record-final'], required=True)
     parser.add_argument('--threshold-reference', default='')
     parser.add_argument('--snap-reference', default='')
+    parser.add_argument('--pca-reference', default='')
     args = parser.parse_args()
     contract = json.loads(args.contract_json)
+    validate_pca_reference(args.pca_reference, contract)
     if args.threshold_reference:
         path = Path(args.threshold_reference)
         validate_threshold(json.loads(path.read_text()), contract, path)

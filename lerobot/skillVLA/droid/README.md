@@ -13,8 +13,11 @@ droid/
     ├── train_skills/
     │   ├── DP/             # dp_config.yaml, submit_train_dp.sh, src/train_dp.sbatch
     │   ├── build_data/     # SBD using the shared single-GPU episode workers
-    │   ├── FSQ/            # fsq_config.yaml, submit_train_fsq.sh, src/train_fsq.sbatch
+    │   ├── FSQ/            # training + eval/ (checkpoint/video/codebook HTML)
     │   └── src/            # DROID resolver, frozen-config submission, shared trainers
+    ├── train_skillVLA/
+    │   ├── build_data/     # FSQ encode + calibrated UV/EEF targets, no video re-encode
+    │   └── PT/             # common YAML + VSA / Predictor / Terminator launchers
     └── generate_training_dataset/
         ├── download_dataset/
         │   ├── dataset_config.yaml
@@ -52,8 +55,79 @@ References: [model config](https://github.com/Physical-Intelligence/openpi/blob/
 Controller defaults and the eight `idle_filter` switches live in
 `configs/global_config.yaml`. DP and FSQ choices live in their own YAMLs.
 FSQ chunk length inherits global `vla_chunk_size` unless explicitly overridden.
-Future VLA launchers should use `vla_chunk_size` and `vla_replan_steps`;
-VLA training/deployment launchers are not implemented here yet.
+FSQ's `fsq_action_space` independently selects `joint_velocity` (default, 8D)
+or `delta_pose` (7D XYZ/rotation-vector increments plus absolute gripper).
+Changing it preserves the SBD boundary selection in `skillset_seg_name`:
+there is no need to repeat the DP or segmentation build. Pose-space FSQ reads
+the preserved EEF targets/states from the same converted episodes, checks
+alignment against the source skill actions, and reuses the DP convention:
+first target relative to the current measured pose, then consecutive target
+increments in the base frame using SO(3) composition. Boundary augmentation
+recomputes that first anchor after moving a boundary. Gripper axis is 7 for
+velocity and 6 for pose, and always remains absolute.
+Pose models and normalization statistics have separate output paths; switching
+representation cannot resume the other representation's checkpoint. Existing
+joint configs/checkpoints keep their original names. FSQ requires the SBD
+completion marker before submission and uses the selected global dataset group
+and its FSQ idle-filter flag for either action representation.
+VLA PT launchers inherit `vla_chunk_size` and `vla_replan_steps` directly.
+Real-robot deployment and DROID VLA FT/evaluation are separate follow-up work.
+
+## FSQ → SkillVLA data → PT
+
+Select one saved FSQ in
+`configs/train_skillVLA/build_data/train_skillVLA_config.yaml`. The current
+selection is the pose-space 3332 epoch2000 model; the builder verifies its
+immutable FSQ training contract, source dataset/group and completed SBD
+manifest before submission. FSQ representation does not change the VLA's
+joint-velocity8 action or joint-position8 proprio interface.
+
+```bash
+cd lerobot/skillVLA/droid/configs/train_skillVLA/build_data
+./submit_build_all.sh --dry-run
+./submit_build_all.sh --74999
+
+# Put the verified build's reported folder name into PT/stage1_common_config.yaml.
+cd ../PT/VSA
+./submit_train.sh --dry-run
+./submit_train.sh --74999
+# PT/Predictor uses the same submit_train.sh interface; VSA predicts termination internally.
+```
+
+Each build publishes one `dataset_DROID/skillvla/<training_dataset>/<run>/`
+folder containing `skill_latents.npz`, `FSQ.pt`, `skill_initial_state.npz`,
+`skill_focus_uv.npz`, portable `nonidle_frames.npz`, the annotated `skillvla/`
+view and `build_verified.json`. It retains complete episode/frame IDs, marks
+unselected/skill-less episodes as excluded, and fits action/state statistics
+on selected training episodes. Data and completion contracts prevent mixing
+another FSQ or group into an existing output. Resume reuses the encoded tokens.
+
+Both exterior views and wrist source videos/calibration remain available.
+Training reads exterior_1 + wrist without re-encoding; measured EEF XYZ and
+rotation-vector pose6 provide spatial supervision and fullskill pose targets.
+Gripper action is the eighth controller dimension and stays absolute [0,1];
+the fullskill target is EEF pose6 + that command. Joint proprio is never used
+as XYZ. UV uses resized/letterboxed camera intrinsics and per-episode exterior
+calibration without mirroring DROID images. The shared historical LIBERO
+projector's mirror is canceled in the stored camera matrix.
+
+PT initializes VSA VLM (SigLIP + Gemma) and Action Expert from the
+[official LeRobot pi05_droid conversion](https://huggingface.co/lerobot/pi05_droid),
+stored at `models/pi05_droid`; download provenance pins revision
+`72824c0a93f00ce5bb8bedb7feb58953ba1da364` and verifies the published weight SHA256.
+This VSA has no separate DINO encoder. Predictor uses the same pretrained VLM;
+the standalone Term1 uses its registered DINO-S architecture.
+
+The initial VSA matches the LIBERO 9+9 noproprio detached-termination model:
+expert is trainable, fullskill uses the gripper action, oversampling is off,
+and all gradient checkpointing flags are false. Common scalar-metric batching
+and cached gradient-clipping groups apply through the shared trainer. Prefetch4,
+pinned memory and persistent data workers avoid repeated worker startup.
+DROID staging materializes the converted video links on node-local storage;
+when that storage lacks room, training reads the verified shared dataset instead.
+The global `PT_VSA/PT_PRED/PT_TERM` idle switches filter training starts only;
+saved trajectories, action chunks and FSQ/SBD boundaries stay intact. Checkpoint
+resume restores optimizer/scheduler/RNG through the standard shared launcher.
 
 DP demonstration-boundary evaluation is available in
 [`configs/train_skills/DP/eval`](configs/train_skills/DP/eval/README.md).
@@ -67,6 +141,8 @@ one global threshold and video/skill-bar/curve HTML reports.
 cd lerobot/skillVLA/droid/configs/train_skills/DP
 ./submit_train_dp.sh --dry-run
 ./submit_train_dp.sh --75000       # explicit existing allocation, or omit for server-default submission
+./submit_train_dp.sh --yonsei-plan # inspect remote inputs/resources; no SSH or submission
+./submit_train_dp.sh --yonsei      # stage inputs and submit on Yonsei
 
 cd ../build_data
 ./submit_build_data.sh --dry-run
@@ -80,12 +156,24 @@ cd ../FSQ
 Dry runs only print plans, including missing prerequisites; they never submit
 jobs or create a training view. Actual submission fails before GPU scheduling
 if conversion/skillset prerequisites are missing. Nothing chains automatically.
+DROID DP's `--yonsei` sends the completed converted corpus under `dataset_DROID`
+when it is absent remotely. It does not copy the external `yeonsumia` raw or
+calibration roots. The action-specific training view is constructed on Yonsei.
+Dataset groups select training episodes after transfer; they do not trim the
+transferred corpus. Existing remote inputs are reused by the shared dispatcher.
 Training uses shared server profiles, srun/tmux or the explicit existing job,
 normal Slurm Desk records and the server's memory guard. Each submission freezes
 the component YAML, global switches and server profiles. DP resumes its own
 `checkpoints/last` model/optimizer/scheduler/RNG, and FSQ resumes its latest
 periodic checkpoint with the shared trainer's resume semantics. Changed
 data/model/filter contracts cannot silently reuse the same run.
+
+DROID state-only DP caches its numeric state/action windows in CPU RAM and
+keeps spawned DataLoader workers alive across dataset passes. The cache leaves
+sample values, episode selection and padding unchanged; it never loads camera
+frames. These runtime settings also apply when resuming an older checkpoint,
+without replacing its optimizer, scheduler, RNG state or W&B run. Worker reuse
+does not promise the same later random-number consumption as recreating workers.
 
 DP creates `dataset_DROID/droid_success_5k_joint_velocity` from the completed
 conversion on its worker. Only numeric parquet action/state columns and their
@@ -123,11 +211,24 @@ an incompatible checkpoint. To analyze that DP later, explicitly select its
 EEF view and corresponding checkpoint in the SBD configuration.
 
 Outputs default to `outputs_DROID/DP/<run>` and `outputs_DROID/FSQ/<run>`.
+FSQ checkpoint evaluation is implemented in
+[`configs/train_skills/FSQ/eval`](configs/train_skills/FSQ/eval/README.md).
+Its compact YAML selects runs/epochs, gallery tasks and camera. Joint-velocity
+and delta-pose checkpoints share the launcher and preserve their own training
+contracts; quantizer levels are read automatically. GPU encoding and the shared
+interactive codebook/skill-video report run in one selected allocation, with
+resume support and results directly under that `eval/outputs` folder.
 SBD uses `dataset_DROID/FSQ_dataset/<dataset>/FSQ_inputs/<seg>/skillset`.
-Its default Gaussian probes, dataset-global threshold, power2/SG7-order4,
-replan8/NMS23/min-skill10 are initial DROID choices that can be edited in
-`build_data_config.yaml`; action mode is `dataset`, never delta-joint.
-Gripper snapping uses [0,1] with threshold 0.5. If selecting another DP
+`build_data_config.yaml` exposes the DP checkpoint, boundary controls and
+worker/CPU budget. The current Joint recipe uses power1/SG13-order10,
+replan8/NMS23/min-skill10, with both initial and terminal masks off.
+Fixed Gaussian probe, PCA, GMM and storage settings use internal defaults in
+`configs/src/build_data_defaults.py` and the shared Gaussian resolver.
+Data and group follow the global dataset selection; threshold calibration
+uses that whole group. Output names follow the resolved boundary controls
+automatically. Older detailed snapshots and explicit output suffixes retain
+their existing names and settings. Action mode is `dataset`, never
+delta-joint; gripper snapping uses [0,1] with threshold 0.5. If selecting another DP
 experiment or changing its horizon, update `dp_run_name` in build_data and
 the corresponding `skillset_seg_name` in FSQ as with the other environments.
 

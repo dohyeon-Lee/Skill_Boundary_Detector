@@ -1,7 +1,10 @@
 # target_dataset inherits global droid_dataset.
+# Independent of the DP used to find boundaries. Gripper stays absolute.
+fsq_action_space: joint_velocity  # joint_velocity (8D) | delta_pose (7D EEF)
 fsq_dataset_root: FSQ_dataset
 fsq_inputs_name: FSQ_inputs
-skillset_seg_name: seg_{target_dataset}_future_only_obs30_future18_transformer_constLR_small{droid_group_suffix}_ck100000_gaussian_x0hat_globalmean_100p
+# Input: the current Joint DP100k / SG13-order10 / no-mask SBD build.
+skillset_seg_name: seg_{source_dataset}_delta_joint_future_only_obs30_future18_transformer_constLR_small{droid_group_suffix}_ck100000_gaussian_x0hat_globalmean_100p_h18_r8_k5_nms23_sg13p10_pow1_imask0_tmask0
 skillset_name: skillset
 
 fsq_run_name: FSQ333_contrastiveON_routeON_loss_{target_dataset}

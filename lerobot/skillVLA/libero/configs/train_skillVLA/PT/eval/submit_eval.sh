@@ -8,6 +8,22 @@ set -euo pipefail
 # Optional --JOB_ID reuses that Slurm allocation.
 source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
 
+# Optional Slurm dependency, also forwarded by --yonsei. Keep it out of the
+# persistent evaluation YAML so later launches do not inherit an old job ID.
+EVAL_DEPENDENCY=""
+for argument in "$@"; do
+  [[ "${argument}" != -- ]] || break
+  case "${argument}" in
+    --dependency=*)
+      [ -z "${EVAL_DEPENDENCY}" ] || { echo "Specify only one --dependency." >&2; exit 2; }
+      EVAL_DEPENDENCY="${argument#--dependency=}"
+      [[ "${EVAL_DEPENDENCY}" =~ ^(afterok|afterany):[1-9][0-9]*(:[1-9][0-9]*)*$ ]] || {
+        echo "Use --dependency=afterok:JOB_ID or --dependency=afterany:JOB_ID." >&2
+        exit 2
+      }
+      ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
@@ -79,6 +95,13 @@ case "${EVAL_SLURM_SUBMIT_MODE}" in
   sbatch|srun|srun_existing) ;;
   *) echo "Unknown slurm_submit_mode: ${EVAL_SLURM_SUBMIT_MODE}" >&2; exit 2 ;;
 esac
+if [ -n "${EVAL_DEPENDENCY}" ] && {
+  [ "${EVAL_SLURM_SUBMIT_MODE}" != sbatch ] ||
+  [ "$(submit_job_scheduler)" != slurm ] || [ -n "${SLURM_JOB_ID:-}" ];
+}; then
+  echo "--dependency requires a new Slurm sbatch evaluation." >&2
+  exit 2
+fi
 PLANNED_GPUS="${EVAL_NUM_GPUS}"
 [ -z "${SLURM_JOB_ID:-}" ] || PLANNED_GPUS=1
 if [ "${EVAL_SLURM_SUBMIT_MODE}" != sbatch ]; then PLANNED_GPUS=1; fi
@@ -121,6 +144,7 @@ SBATCH_ARGS=(
 )
 [ -z "${EVAL_NODELIST}" ] || SBATCH_ARGS+=(--nodelist="${EVAL_NODELIST}")
 [ -z "${EVAL_EXCLUDE_NODES}" ] || SBATCH_ARGS+=(--exclude="${EVAL_EXCLUDE_NODES}")
+[ -z "${EVAL_DEPENDENCY}" ] || SBATCH_ARGS+=(--dependency="${EVAL_DEPENDENCY}")
 
 cd "${STAGE1_EVAL_WORK_DIR}"
 mkdir -p logs
@@ -133,6 +157,7 @@ echo "  GPUs   : ${EVAL_PHYSICAL_GPU_COUNT} physical (requested ${EVAL_NUM_GPUS}
 echo "  workers: ${EVAL_LOGICAL_WORKER_COUNT} total, max ${EVAL_MAX_WORKERS_PER_GPU}/GPU"
 echo "  load   : max ${EVAL_MAX_UNITS_PER_GPU} task/panel pairs per GPU"
 echo "  config Python: ${BOOTSTRAP_PYTHON}"
+[ -z "${EVAL_DEPENDENCY}" ] || echo "  dependency: ${EVAL_DEPENDENCY}"
 
 if [ "${STAGE1_EVAL_DRY_RUN:-0}" = 1 ]; then
   echo "Dry run: nothing submitted."

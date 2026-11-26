@@ -49,8 +49,8 @@ def resample_skill_with_gripper_action(trajectory, gripper_action, tokens: int =
     """
     states = np.asarray(trajectory, dtype=np.float32)
     commands = np.asarray(gripper_action, dtype=np.float32)
-    if states.ndim != 2 or states.shape[1] != 8 or commands.shape != (len(states),):
-        raise ValueError("Mixed Bspline targets require aligned (time, 8) states and (time,) commands.")
+    if states.ndim != 2 or states.shape[1] not in (6, 8) or commands.shape != (len(states),):
+        raise ValueError("Mixed Bspline targets require aligned pose6 or state8 and (time,) commands.")
     if not np.isfinite(commands).all() or np.any(np.abs(commands) > 1.00001):
         raise ValueError("Gripper commands must be finite raw actions in [-1, 1].")
     pose = resample_skill_proprio(states[:, :6], tokens, gripper_axes=())

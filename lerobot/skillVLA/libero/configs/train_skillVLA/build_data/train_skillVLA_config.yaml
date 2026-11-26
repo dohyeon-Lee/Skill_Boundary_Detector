@@ -4,8 +4,21 @@
 # Source
 # Keep corrected PT/FT builds and their _work caches separate from old data.
 skillvla_dataset_root: skillvla
-source_dataset: libero_10_full_1
-skillvla_data_mode: ft  # pt | ft | ft_own | ft_epi
+source_dataset: libero_10_full_full
+
+# 이 한 항목만 바꿔 두 빌드를 각각 실행. YAML을 따로 복제할 필요 없음.
+# ft: PT에서 계산한 SBD 평균 임계값 사용.
+# ft_own: libero_10_full_full 전체의 SBD 평균 임계값 계산.
+skillvla_data_mode: ft  # ft | ft_own (그 외: pt | ft_epi)
+
+# PCA 선택은 평균 임계값 선택(skillvla_data_mode)과 독립적.
+# ft: 대상 데이터에서 계산(기존 방식). pt: 같은 FSQ의 PT 빌드 PCA 재사용.
+# pt 선택 시 결과와 중간 캐시에 _pcapt 자동 추가. PT 자체를 빌드할 때는 ft 사용.
+PCA: pt  # pt | ft
+
+# 출력 이름 (두 모드 모두 같은 PT PCA 사용, 결과/중간 캐시 분리):
+# ft     -> FSQ333_contrastive_2000_ft_grounded_pcapt
+# ft_own -> FSQ333_contrastive_2000_ft_own_grounded_pcapt
 
 skillset_tasks_per_job: 5
 skillset_array_throttle: 0        # 0 = unlimited
@@ -14,6 +27,8 @@ skillset_single_gpu_workers: 8    # 0 = existing GPU array; 1+ = workers sharing
 
 # FSQ encoder
 # Reuse the original PT FSQ encoder and its training segmentation recipe.
+# Initial mask도 FSQ skillset manifest에서 상속. 구 표준 기록의 누락값은 0(비활성).
+# DP history(20)를 새 기본 mask로 추가하지 않음.
 fsq_run_name: FSQ333_contrastiveON_routeON_loss_new
 fsq_checkpoint: 2000                # epoch | best
 fsq_snap_to_supported: true

@@ -4,19 +4,15 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   source "$(dirname "${BASH_SOURCE[0]}")/../../../../../remote.sh"
 fi
 # Submit SkillVLA Stage-1 VSA training (policy.type=skill_expert).
-# Usage: ./submit_train.sh [arch0|arch0_skill|arch0_skill_chunk|arch1|arch1_skill|arch1_skill_chunk|arch2|arch2_skill|arch2_skill_chunk|arch3|arch3_skill|arch3_skill_chunk|arch4|arch4_skill|arch4_skill_chunk|arch5|arch5_skill|arch5_skill_chunk|arch6|arch6_skill|arch6_skill_chunk]
-# Also accepts fullskill_1/2, fullskill_vis_{1,2}_{firstlayer,lastlayer},
-# fullskill_bspline_{2,3,4,5,6}_{firstlayer,lastlayer} (split selected by visual_bridge_last_n_layers),
-# fullskill_bspline_3_{firstlayer,lastlayer}_{lastvis,lastvis_first,lastvis_last},
-# residual_patch_1..6 / direct_patch_1..6, optionally suffixed _dGD.
-# Omit the argument to use architecture.name (a scalar, or a concurrent list).
-# An explicit architecture argument selects only that model, even for a list YAML.
+# Usage: ./submit_train.sh [--JOB_ID] [--config YAML]
+# Select the three termbn_detach variants using vision.top_crop and
+# bspline.gripper_action in vsa_train_config.yaml.
+# Explicit architecture overrides are validated by the shared resolver.
 #   (login) resolve config + check the skillvla dataset → sbatch train.sbatch
 # The skillvla dataset comes from configs/train_skillVLA/build_data (run that first if missing).
 set -euo pipefail
 # Optional --JOB_ID reuses that Slurm allocation.
 source "$(dirname "${BASH_SOURCE[0]}")/../../../src/submit_args.sh"
-
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # PT/VSA
 STAGE1_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"                  # shared Stage-1 code: PT/src
@@ -133,8 +129,11 @@ if [ -n "${TRAIN_EXCLUDE_NODES}" ]; then
   SBATCH_ARGS+=(--exclude="${TRAIN_EXCLUDE_NODES}")
 fi
 
-cd "${SCRIPT_DIR}"
+cd "${STAGE1_SUBMIT_DIR:-${SCRIPT_DIR}}"
 mkdir -p logs
+if [ -n "${STAGE1_JOB_NAME:-}" ]; then
+  SBATCH_ARGS+=(--job-name="${STAGE1_JOB_NAME}")
+fi
 
 echo "Submit Stage-1 ${ARCHITECTURE_LABEL} (skill_expert)"
 echo "  run      : ${PT_RUN_NAME}"
@@ -155,7 +154,7 @@ if [ "${STAGE1_GROUP_RUNS_JSON}" != "[]" ]; then
   # Freeze worker launchers as well as YAML while this allocation waits in queue.
   STAGE1_GROUP_WORKER_SCRIPT="${STAGE1_JOB_SCRIPT}"
   STAGE1_GROUP_RUNNER="$(dirname "${CONFIG_PATH}")/run_vsa_group.py"
-  cp "${STAGE1_DIR}/Terminator/src/run_predictor_group.py" "${STAGE1_GROUP_RUNNER}"
+  cp "${STAGE1_DIR}/src/auxiliary/run_predictor_group.py" "${STAGE1_GROUP_RUNNER}"
   echo "  parallel : one allocation; all architecture.name entries share its GPU"
   echo "  runs     : ${STAGE1_GROUP_RUNS_JSON}"
   SBATCH_ARGS+=(--job-name=VSA_group)

@@ -1,13 +1,13 @@
-# 모델: top crop 1.1 + full-skill gripper action PT 50k
+# 모델: top crop 1.1 + full-skill gripper action PT 100k
 # 기존 mode2 Predictor 100k + VSA 내장 종료 신호
 model_defaults:
   focus_source: predictor
   pose_source: auto
   expert_xyz_source: auto
 models:
-  - label: termbn_detach_topcrop1p1_gripaction_50k
+  - label: termbn_detach_topcrop1p1_gripaction_100k
     model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_topcrop1p1_gripaction_base
-    checkpoint: '050000'
+    checkpoint: '100000'
     external_predictor_model: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
     external_predictor_checkpoint: '100000'
     skill_source: external
@@ -15,7 +15,7 @@ models:
     end_mode: termination
 
 # 결과 저장: eval/outputs/<output_name>
-output_name: pt_nonproprio_termbn_detach_topcrop1p1_gripaction_50k_Predmode2PT100k_10eps_th05
+output_name: pt_nonproprio_termbn_detach_topcrop1p1_gripaction_100k_Predmode2PT100k_10eps_th05
 resume: true
 
 # 평가 데이터와 초기 상태

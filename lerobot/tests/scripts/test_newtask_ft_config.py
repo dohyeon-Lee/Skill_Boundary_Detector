@@ -21,11 +21,7 @@ def _load(name: str, path: Path):
 
 
 VSA = _load("newtask_ft_vsa_config", CONFIGS / "FT/VSA/src/newtask_ft_vsa_config.py")
-AUX = _load("terminator_train_config_newtask", CONFIGS / "PT/Terminator/src/terminator_train_config.py")
-JOINT = _load(
-    "newtask_ft_joint_config",
-    CONFIGS / "FT/Joint/src/newtask_ft_joint_config.py",
-)
+AUX = _load("terminator_train_config_newtask", CONFIGS / "PT/src/auxiliary/auxiliary_train_config.py")
 
 
 def _dataset(root: Path, source: str, run: str, *, fsq=("fsq_run", "2000"), focus_uv=True, levels=(3, 3, 3)) -> Path:
@@ -198,13 +194,17 @@ def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, 
     match = re.search(r"(?ms)^TRAIN_ARGS\+=\(\n.*?^\)", script)
     assert match is not None
     # The common append must be outside/after the fresh-vs-resume conditional.
-    assert match.start() > script.rindex("\nfi\n")
+    setup_end = script.index("# Operational settings")
+    assert script[:setup_end].rstrip().endswith("fi")
+    assert match.start() > setup_end
     assert match.end() < script.index("PYTORCH_ALLOC_CONF=")
     env = dict(os.environ)
     env.pop("CHECKPOINT_ARCHIVE", None)
     env.pop("KEEP_CHECKPOINTS", None)
     env.pop("PROTECT_CHECKPOINTS", None)
     env['GRADIENT_CHECKPOINTING'] = str(checkpointing).lower()
+    env.update(NUM_WORKERS='8', DATALOADER_PREFETCH_FACTOR='4',
+               DATALOADER_PERSISTENT_WORKERS='false')
     if archive_enabled:
         env.update(CHECKPOINT_ARCHIVE="scratch2", KEEP_CHECKPOINTS="1")
     initial = "--resume=true" if resume else "--policy.path=/source/pretrained_model"
@@ -214,10 +214,9 @@ def test_vsa_launcher_passes_archive_settings_on_fresh_and_resumed_runs(resume, 
     )
     assert result.stdout.split("\0")[:-1] == [
         initial,
-        "--transition_oversampling.enabled=false",
-        "--transition_oversampling.percent=25",
-        "--transition_oversampling.distribution=uniform",
-        "--transition_oversampling.weight=2",
+        "--num_workers=8",
+        "--dataloader_persistent_workers=false",
+        "--dataloader_prefetch_factor=4",
         *['--policy.' + name + '=' + str(checkpointing).lower() for name in (
             'gradient_checkpointing', 'action_expert_checkpointing', 'skill_planner_checkpointing',
             'vlm_checkpointing', 'vision_checkpointing')],
@@ -247,58 +246,10 @@ def test_vsa_vision_only_checkpointing_reaches_launcher(tmp_path):
         assert '--policy.' + name + '_checkpointing=false' in result.stdout.splitlines()
 
 
-def test_vsa_transition_oversampling_opt_out_preserves_original_conditions(tmp_path):
-    config = _vsa_setup(tmp_path)
-    baseline = VSA.build_settings(config)
-    config['transition_oversampling'] = {'enabled': False, 'percent': 25, 'distribution': 'uniform', 'weight': 2.0}
-    assert VSA.build_settings(config) == baseline
-    config['transition_oversampling']['enabled'] = True
-    on = VSA.build_settings(config)
-    assert on['run_name'] == baseline['run_name'].replace('_t1', '_os25x2_t1')
-    assert on['transition_oversampling_enabled'] and on['transition_oversampling_weight'] == 2.0
-    changed = {k for k in baseline if baseline[k] != on[k]}
-    assert changed == {'transition_oversampling_enabled', 'run_name', 'output_dir'}
-    config['transition_oversampling']['enabled'] = False
-    assert VSA.build_settings(config) == baseline
 
 
-def test_terminator_transition_oversampling_names_and_opt_out(tmp_path):
-    config = _aux_setup(tmp_path, 'Terminator')
-    config['run'] = {'suffix': 'lab'}
-    baseline = AUX.build_settings(config)
-    config['transition_oversampling'] = {'enabled': False, 'percent': 25, 'weight': 2}
-    assert AUX.build_settings(config) == baseline
-    config['transition_oversampling']['enabled'] = True
-    on = AUX.build_settings(config)
-    assert on['run_name'] == baseline['run_name'].removesuffix('_lab') + '_os25x2_lab'
-    assert on['output_dir'].name == on['run_name']
-    assert on['transition_oversampling_enabled']
-    assert on['terminator_post_end_steps'] == baseline['terminator_post_end_steps']
-    config['transition_oversampling']['enabled'] = False
-    assert AUX.build_settings(config) == baseline
 
 
-@pytest.mark.parametrize('resume', [False, True])
-@pytest.mark.parametrize('enabled', [False, True])
-def test_vsa_transition_oversampling_yaml_values_reach_actual_cli(tmp_path, resume, enabled):
-    config = _vsa_setup(tmp_path)
-    config['transition_oversampling'] = {'enabled': enabled, 'percent': 25, 'distribution': 'uniform', 'weight': 2.0}
-    settings = VSA.build_settings(config)
-    env = dict(os.environ)
-    for key in ['enabled', 'percent', 'distribution', 'weight']:
-        value = settings['transition_oversampling_' + key]
-        env['TRANSITION_OVERSAMPLING_' + key.upper()] = str(value).lower() if isinstance(value, bool) else str(value)
-    script = (CONFIGS / 'FT/VSA/src/train.sbatch').read_text()
-    block = re.search(r'(?ms)^TRAIN_ARGS\+=\(\n.*?^\)', script).group()
-    assert script.index(block) > script.rindex('\nfi\n')
-    initial = '--resume=true' if resume else '--policy.path=/source/pretrained_model'
-    result = subprocess.run(['bash', '-c', f"set -eu\nTRAIN_ARGS=({initial})\n{block}\nprintf '%s\\0' \"${{TRAIN_ARGS[@]}}\""],
-                            env=env, capture_output=True, text=True, check=True)
-    args = result.stdout.split('\0')[:-1]
-    assert '--transition_oversampling.enabled=' + str(enabled).lower() in args
-    assert '--transition_oversampling.percent=25' in args
-    assert '--transition_oversampling.distribution=uniform' in args
-    assert '--transition_oversampling.weight=2.0' in args
 
 
 def test_vsa_ft_local_retention_resolves_protected_steps_without_archiving(tmp_path):
@@ -466,9 +417,107 @@ def test_ft_episode_limit_is_ordered_and_has_its_own_output(tmp_path, component)
     assert json.loads(limited['dataset_episodes']) == sorted(ids)[:10]
     assert '_ep10' in limited['run_name']
     assert limited['output_dir'] != full['output_dir']
+    cfg['dataset']['episode_ids'] = [42, 7]
+    selected = resolver.build_settings(cfg)
+    assert json.loads(selected['dataset_episodes']) == [7, 42]
+    assert '_ep2_ids' in selected['run_name']
+    cfg['dataset']['episode_ids'] = [19, 7]
+    other = resolver.build_settings(cfg)
+    assert selected['output_dir'] != other['output_dir']
+    cfg['dataset']['episode_ids'] = [7, 42]
+    assert resolver.build_settings(cfg)['output_dir'] == selected['output_dir']
+    cfg['dataset']['episode_ids'] = []
     cfg['dataset']['n_episodes'] = 13
     with pytest.raises(ValueError, match='exceeds the 12 available episodes'):
         resolver.build_settings(cfg)
+
+
+@pytest.mark.parametrize('ids,message', [([0, 0], 'unique'), ([True], 'unique'), ([99], 'unavailable')])
+def test_explicit_episode_selection_rejects_invalid_or_missing_ids(tmp_path, ids, message):
+    import pandas as pd
+
+    metadata = tmp_path / 'meta/episodes'
+    metadata.mkdir(parents=True)
+    pd.DataFrame({'episode_index': [0, 7]}).to_parquet(metadata / 'file.parquet')
+    with pytest.raises(ValueError, match=message):
+        VSA.resolve_training_episodes({'dataset': {'episode_ids': ids}}, tmp_path)
+
+
+def _per_task_metadata(dataset, *, statistics=True):
+    import pandas as pd
+
+    # Interleaved global IDs and non-contiguous task IDs expose mistakes that
+    # assume contiguous per-task episodes or use the outer list index as task ID.
+    pairs = pd.DataFrame({
+        'episode_index': [90, 31, 4, 40, 8, 3, 21, 50, 12],
+        'task_index': [9, 7, 2, 9, 7, 2, 7, 9, 2],
+    })
+    metadata = pairs[['episode_index']].copy()
+    if statistics:
+        for bound in ('min', 'max'):
+            metadata[f'stats/task_index/{bound}'] = [[task] for task in pairs['task_index']]
+    directory = dataset / 'meta/episodes'
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata.to_parquet(directory / 'file.parquet')
+    if not statistics:
+        (dataset / 'data').mkdir()
+        # Multiple frames per episode must not count as multiple episodes.
+        pd.concat([pairs, pairs]).to_parquet(dataset / 'data/file.parquet')
+
+
+@pytest.mark.parametrize('component', ['VSA', 'Predictor', 'Terminator'])
+def test_ft_selects_each_task_and_keeps_selection_in_output_name(tmp_path, component):
+    resolver = VSA if component == 'VSA' else AUX
+    cfg = _vsa_setup(tmp_path) if component == 'VSA' else _aux_setup(tmp_path, component)
+    if component == 'Predictor':
+        checkpoint = Path(cfg['warm_start']['predictor_checkpoint']) / 'config.json'
+        source = json.loads(checkpoint.read_text())
+        source.update(AUX._predictor_contract({'skill_predictor': {'spatial_target': 'uv'}}))
+        checkpoint.write_text(json.dumps(source))
+    dataset = resolver.build_settings(cfg)['skillvla_dataset_dir']
+    _per_task_metadata(dataset)
+    cfg['dataset'].update(episode_selection='per_task', n_episodes=1, episode_ids=[])
+    first = resolver.build_settings(cfg)
+    assert json.loads(first['dataset_episodes']) == [3, 8, 40]
+    assert '_ep3_pertask' in first['run_name']
+
+    # Local ordinals, not global IDs; [] deliberately omits one task.
+    cfg['dataset']['episode_ids'] = [[2, 0], [], [1]]
+    explicit = resolver.build_settings(cfg)
+    assert json.loads(explicit['dataset_episodes']) == [3, 12, 50]
+    assert '_ep3_pertask_ids' in explicit['run_name']
+    assert explicit['output_dir'] != first['output_dir']
+    cfg['dataset']['episode_ids'] = [[0, 2], [], [1]]
+    assert resolver.build_settings(cfg)['output_dir'] == explicit['output_dir']
+    cfg['dataset']['episode_ids'] = [[0, 1], [], [1]]
+    assert resolver.build_settings(cfg)['output_dir'] != explicit['output_dir']
+
+    cfg['dataset'].update(n_episodes='all', episode_ids=[])
+    assert json.loads(resolver.build_settings(cfg)['dataset_episodes']) is None
+
+
+@pytest.mark.parametrize('statistics', [True, False])
+def test_per_task_selection_sorts_actual_episode_ids(tmp_path, statistics):
+    _per_task_metadata(tmp_path, statistics=statistics)
+    cfg = {'dataset': {'episode_selection': 'per_task', 'n_episodes': 2}}
+    assert VSA.resolve_training_episodes(cfg, tmp_path) == [3, 4, 8, 21, 40, 50]
+
+
+@pytest.mark.parametrize('options,message', [
+    ({'episode_ids': [0, 1, 2]}, 'one list'),
+    ({'episode_ids': [[0], [0]]}, 'one list per task'),
+    ({'episode_ids': [[0, 0], [0], [0]]}, 'unique'),
+    ({'episode_ids': [[True], [0], [0]]}, 'unique'),
+    ({'episode_ids': [[3], [0], [0]]}, 'task 2 has 3 episodes'),
+    ({'episode_ids': [[], [], []]}, 'no training episodes'),
+    ({'n_episodes': 4}, 'exceeds task 2'),
+    ({'n_episodes': 0}, 'positive integer'),
+])
+def test_invalid_per_task_selection_fails_before_submission(tmp_path, options, message):
+    _per_task_metadata(tmp_path)
+    cfg = {'dataset': {'episode_selection': 'per_task', 'n_episodes': 1, **options}}
+    with pytest.raises(ValueError, match=message):
+        VSA.resolve_training_episodes(cfg, tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -501,18 +550,13 @@ def test_aux_can_skip_fsq_verification(tmp_path: Path) -> None:
 
 def test_shipped_yaml_layers_resolve_common_file() -> None:
     from_loader = VSA.load_stage1_component_config(CONFIGS / "FT/VSA/vsa_ft_config.yaml")
-    assert from_loader["newtask_ft"] is True
+    assert from_loader["stage1_component"] == "VSA"
     assert from_loader["dataset"]["source"]
     assert "vsa_checkpoint" in from_loader["warm_start"]
-    for name in ("Predictor/predictor_ft_config.yaml", "Terminator/terminator_ft_config.yaml"):
+    for name in ("Predictor/predictor_ft_config.yaml",):
         merged = VSA.load_stage1_component_config(CONFIGS / "FT" / name)
         assert merged["mode"] == "ft" and merged["newtask_ft"] is True
         assert "stage1_common" not in merged and "newtask_ft_common" not in merged
-    joint = VSA.load_stage1_component_config(
-        CONFIGS / "FT/Joint/joint_ft_config.yaml"
-    )
-    assert joint["stage1_component"] == "Joint"
-    assert joint["loss"]["xyz_to_skill"] is False
 
 
 def test_vsa_rebases_fsq_path_recorded_on_another_cluster(tmp_path: Path) -> None:
@@ -529,200 +573,18 @@ def test_vsa_step_label(step: str, label: str) -> None:
     assert VSA._step_label(step) == label
 
 
-def _joint_setup(tmp_path: Path, *, label="arch13_skill", terminator_contract=None) -> dict:
-    config = _vsa_setup(tmp_path, label=label)
-    pt_run = tmp_path / "dataset/skillvla_dataset/pt_source/FSQ333_pt"
-    predictor_contract = AUX._predictor_contract(
-        {
-            "skill_predictor": {
-                "spatial_target": "xyz",
-                "freeze_vlm": True,
-                "lora": {"enabled": False},
-            }
-        }
-    )
-    _checkpoint(
-        tmp_path,
-        "skillVLA_stage1/Predictor",
-        "predictor_xyz",
-        {
-            "type": "skill_aux",
-            "train_skill_predictor": True,
-            "skill_fsq_levels": [3, 3, 3],
-            "skill_vocab_size": 27,
-            "skill_code_space_id": "FSQ333_pt",
-            "fsq_path": str(pt_run / "FSQ.pt"),
-            "tokenizer_max_length": 200,
-            **predictor_contract,
-        },
-    )
-    _checkpoint(
-        tmp_path,
-        "skillVLA_stage1/Terminator",
-        "terminator_base",
-        {
-            "type": "skill_aux",
-            "train_terminator": True,
-            "skill_fsq_levels": [3, 3, 3],
-            "skill_vocab_size": 27,
-            "skill_code_space_id": "FSQ333_pt",
-            "fsq_path": str(pt_run / "FSQ.pt"),
-            "terminator_context": "proprio",
-            "terminator_cameras": "top",
-            "terminator_arch": "fusion",
-            "terminator_vision_backbone": "dino",
-            "terminator_freeze_vision_encoder": True,
-            "terminator_termination_only": True,
-            **(terminator_contract or {}),
-        },
-    )
-    config.update(
-        {
-            "stage1_component": "Joint",
-            "warm_start": {
-                "vsa_checkpoint": {"run": "bs32_pt_run", "checkpoint": "050000"},
-                "predictor_checkpoint": {"run": "predictor_xyz", "checkpoint": "050000"},
-                "terminator_checkpoint": {"run": "terminator_base", "checkpoint": "050000"},
-            },
-            "loss": {"route_timesteps": 2, "xyz_to_skill": False},
-            "training": {
-                "dataloader": {
-                    "batch_size": 16,
-                    "workers": 24,
-                    "gpus": 1,
-                    "prefetch_factor": 2,
-                    "pin_memory": True,
-                    "persistent_workers": True,
-                },
-                "gradient_checkpointing": False,
-            },
-            "slurm": {"cpus": 32, "memory": "160G"},
-        }
-    )
-    return config
 
 
-def test_joint_resolves_two_warm_starts_and_uses_its_own_output_group(tmp_path: Path) -> None:
-    config = _joint_setup(tmp_path)
-    settings = JOINT.build_settings(config)
-    assert settings["predictor_checkpoint_path"].name == "pretrained_model"
-    assert settings["skill_predictor_end_state_mode"] == "xyz"
-    assert settings["skill_predictor_freeze_vlm"] is True
-    assert settings["joint_xyz_to_skill"] is False
-    assert settings["newtask_joint_terminator_enabled"] is True
-    assert settings["train_terminator"] is True
-    assert settings["terminator_checkpoint_path"].name == "pretrained_model"
-    assert settings["batch_size"] == 16
-    assert settings["num_workers"] == 24
-    assert settings["dataloader_prefetch_factor"] == 2
-    assert settings["dataloader_pin_memory"] is True
-    assert settings["dataloader_persistent_workers"] is True
-    assert settings["gradient_checkpointing"] is False
-    assert settings["train_cpus_per_task"] == 32
-    assert settings["train_mem"] == "160G"
-    assert settings["output_dir"].parent == tmp_path / "outputs/skillVLA_FT/Joint"
-    assert "dsbc_enabled" not in settings
-    config["predictor"] = {"freeze_vlm": False, "vlm_lr_scale": 0.05}
-    unfrozen = JOINT.build_settings(config)
-    assert unfrozen["skill_predictor_freeze_vlm"] is False
-    assert unfrozen["skill_predictor_detach_vlm"] is False
-    assert unfrozen["skill_predictor_vlm_lr_scale"] == pytest.approx(0.05)
-    config["terminator"] = {"enabled": False}
-    config["warm_start"].pop("terminator_checkpoint")
-    without_terminator = JOINT.build_settings(config)
-    assert without_terminator["newtask_joint_terminator_enabled"] is False
-    assert without_terminator["train_terminator"] is False
-    assert "_term" not in without_terminator["run_name"]
 
 
-@pytest.mark.parametrize("predictor_mode", [None, "mode2", "mode1_preskill", "mode2_preskill"])
-def test_joint_inherits_predictor_architecture_with_legacy_default(tmp_path, predictor_mode):
-    config = _joint_setup(tmp_path)
-    path = (
-        tmp_path / "outputs/skillVLA_stage1/Predictor/predictor_xyz"
-        / "checkpoints/050000/pretrained_model/config.json"
-    )
-    source = json.loads(path.read_text())
-    if predictor_mode is None:
-        source.pop("skill_predictor_mode", None)
-    else:
-        source["skill_predictor_mode"] = predictor_mode
-    path.write_text(json.dumps(source))
-    settings = JOINT.build_settings(config)
-    assert settings["skill_predictor_mode"] == (predictor_mode or "mode1")
-    assert settings["skill_predictor_end_state_mode"] == "xyz"
 
 
-@pytest.mark.parametrize("variant", range(1, 7))
-@pytest.mark.parametrize("family", ["direct", "residual"])
-@pytest.mark.parametrize("dgd", [False, True])
-@pytest.mark.parametrize("bridge_layers", [1, 9])
-def test_joint_accepts_window_variants_and_preserves_newterm7_contract(
-    tmp_path, variant, family, dgd, bridge_layers,
-):
-    label = f"{family}_patch_{variant}" + ("_dGD" if dgd else "")
-    config = _joint_setup(tmp_path, label=label, terminator_contract={
-        "terminator_architecture_label": "newterm7", "terminator_post_end_steps": 10,
-        "terminator_start_proprio": True, "terminator_current_proprio": False,
-        "terminator_goal_xyz": True, "terminator_end_target_sigma": 1.0,
-        "terminator_end_pos_weight": 2.0,
-    })
-    path = tmp_path / "outputs/skillVLA_stage1/VSA/bs32_pt_run/checkpoints/050000/pretrained_model/config.json"
-    source = json.loads(path.read_text())
-    source.update(skill_flow_enabled=True, skill_flow_target="residual_window",
-                  skill_flow_state_conditioned=True, chunk_size=10, skill_flow_max_length=40,
-                  visual_bridge_last_n_layers=bridge_layers)
-    path.write_text(json.dumps(source))
-    settings = JOINT.build_settings(config)
-    assert settings["architecture_label"] == label
-    assert settings["trainable_expert_layers"] == bridge_layers
-    assert settings["joint_route_target"] == "residual_window"
-    assert settings["unfreeze_action_head"] is False
-    assert settings["unfreeze_skill_layers"] is False
-    assert settings["skill_flow_active"] is False
-    assert settings["freeze_vision_encoder"] is True
-    assert "dsbc_enabled" not in settings
-    assert settings["terminator_post_end_steps"] == 10
-    assert settings["terminator_current_proprio"] is False
-    assert settings["terminator_end_target_sigma"] == 1.0
-    assert settings["terminator_end_pos_weight"] == 2.0
 
 
-@pytest.mark.parametrize("label", ["both_3", "both_lit_4", "both_lit_5"])
-def test_joint_still_accepts_existing_canonical_models(tmp_path, label):
-    config = _joint_setup(tmp_path, label=label)
-    path = tmp_path / "outputs/skillVLA_stage1/VSA/bs32_pt_run/checkpoints/050000/pretrained_model/config.json"
-    source = json.loads(path.read_text())
-    source["skill_flow_enabled"] = True
-    path.write_text(json.dumps(source))
-    settings = JOINT.build_settings(config)
-    assert settings["joint_route_target"] == "canonical"
-    assert settings["unfreeze_action_head"] is False
-    assert settings["skill_flow_active"] is False
 
 
-def test_joint_hides_adaptation_and_keeps_old_default_snapshots_readable(tmp_path):
-    import yaml
-    visible = yaml.safe_load((CONFIGS / "FT/Joint/joint_ft_config.yaml").read_text())
-    assert "adaptation" not in visible
-    config = _joint_setup(tmp_path)
-    baseline = JOINT.build_settings(config)
-    config["adaptation"] = {"train_dino": False, "dino_lr_scale": 1.0, "dsbc": False}
-    legacy = JOINT.build_settings(config)
-    assert baseline["run_name"] == legacy["run_name"]
-    assert legacy["freeze_vision_encoder"] is True
-    assert "dsbc_enabled" not in legacy
 
 
-@pytest.mark.parametrize("key,value", [
-    ("train_dino", True), ("dino_lr_scale", 0.5), ("dsbc", True),
-    ("skill_flow_loss", True), ("unfreeze_action_head", True),
-])
-def test_joint_rejects_removed_adaptation_choices(tmp_path, key, value):
-    config = _joint_setup(tmp_path)
-    config["adaptation"] = {key: value}
-    with pytest.raises(ValueError, match="not supported in Joint|is fixed to"):
-        JOINT.build_settings(config)
 
 
 def test_aux_checkpoint_under_the_wrong_group_is_relocated(tmp_path: Path) -> None:
@@ -1156,3 +1018,14 @@ def test_vsa_termination_loss_toggle_preserves_head_and_separates_output(tmp_pat
     assert json.loads(checkpoint.read_text()) == source
     script = (CONFIGS / "FT/VSA/src/train.sbatch").read_text()
     assert '--policy.vlm_termination_loss_weight="${VLM_TERMINATION_LOSS_WEIGHT:-1.0}"' in script
+
+
+@pytest.mark.parametrize("value,expected", [
+    (False, (False, False)),
+    (True, (True, True)),
+    ({"llm": True, "vision": False}, (True, False)),
+])
+def test_aux_checkpointing_component_flags(value, expected):
+    settings = AUX._checkpointing_settings(value)
+    assert (settings["gradient_checkpointing_llm"], settings["gradient_checkpointing_vision"]) == expected
+    assert settings["gradient_checkpointing"] == any(expected)

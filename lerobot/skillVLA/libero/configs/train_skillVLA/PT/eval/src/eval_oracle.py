@@ -276,13 +276,19 @@ def _episode_skill_action_chunks(
 
 
 def load_sequences_by_language(
-    dataset_dir: str | Path, *, include_end_state: bool = False
+    dataset_dir: str | Path, *, include_end_state: bool = False, episode_ids: list[int] | None = None
 ) -> dict[str, list[list[dict]]]:
     """Return normalized task language -> ordered per-episode GT skill sequences."""
     import pandas as pd  # noqa: F401 - keeps parquet dependency local
 
     dataset_dir = Path(dataset_dir)
     rows, num_embeddings = _skill_rows(dataset_dir)
+    if episode_ids:
+        indexed = rows.set_index("episode_index", drop=False)
+        missing = sorted(set(episode_ids) - set(indexed.index))
+        if missing:
+            raise ValueError(f"GT reference episodes missing from {dataset_dir}: {missing}")
+        rows = indexed.loc[episode_ids]
     focus_by_skill = _skill_focus_uv(dataset_dir)
     end_state_by_skill = _skill_end_states(dataset_dir, focus_by_skill) if include_end_state else None
     tasks = pd.read_parquet(dataset_dir / "meta" / "tasks.parquet")
@@ -293,6 +299,8 @@ def load_sequences_by_language(
     result: dict[str, list[list[dict]]] = defaultdict(list)
     for _, row in rows.iterrows():
         skills = _decode_skills(row, num_embeddings, focus_by_skill, end_state_by_skill)
+        for skill in skills:
+            skill["gt_reference_episode_index"] = int(row["episode_index"])
         if skills:
             result[_norm_language(index_to_language[int(row["task_index"])])].append(skills)
     return dict(result)

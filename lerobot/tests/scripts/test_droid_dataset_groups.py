@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import shlex
 import subprocess
 
 import numpy as np
@@ -99,6 +100,23 @@ def test_fsq_filters_whole_corpus_before_train_validation_split(grouped, tmp_pat
     assert len(list(skills.glob('*.npz'))) == 5
 
 
+def test_fsq_requires_build_completion_before_training(grouped):
+    _, cfg, dataset, _ = grouped
+    local = yaml.safe_load((CONFIGS / 'train_skills/FSQ/fsq_config.yaml').read_text())
+    cfg = dict(cfg, **local)
+    cfg.update(source_dataset='tiny', target_dataset='tiny', outputs_root='outputs_DROID',
+        droid_fps=15, droid_action_space='joint_velocity', droid_proprio_space='joint_position',
+        vla_chunk_size=15, vla_replan_steps=8)
+    plan = TRAIN['resolve'](cfg, 'FSQ')
+    skillset = Path(plan['skillset'])
+    (skillset / 'skills').mkdir(parents=True)
+    (skillset / 'skillset_manifest.json').write_text('{}')
+    (dataset / 'training_view_manifest.json').write_text('{}')
+    assert TRAIN['resolve'](cfg, 'FSQ')['missing_prerequisites'] == [str(skillset / '.complete')]
+    (skillset / '.complete').write_text('complete')
+    assert TRAIN['resolve'](cfg, 'FSQ')['missing_prerequisites'] == []
+
+
 def test_eval_filters_selection_pca_and_threshold_as_one_group(grouped):
     path, cfg, _, _ = grouped
     cfg.update(task_ids='all', n_tasks='all', n_episodes=5, pca_scope='dataset')
@@ -130,6 +148,58 @@ def test_build_resolves_separate_group_with_global_pca_contract(grouped):
     assert settings['raw_dataset_dir'] == dataset
     # An explicit checkpoint remains the user's checkpoint; only outputs change.
     assert '_without_deformable' not in settings['dp_policy']
+
+
+def test_compact_build_names_follow_settings_and_respect_frozen_recipes(grouped):
+    _, cfg, _, _ = grouped
+    local = yaml.safe_load((CONFIGS / 'train_skills/build_data/build_data_config.yaml').read_text())
+    cfg = dict(cfg, **local)
+    cfg.update(target_dataset='tiny', outputs_root='outputs_DROID',
+               dp_run_name='tiny_future_only_obs30_future18_transformer_constLR_small')
+    compact = SHARED['build_data_settings'](cfg)
+    changed = SHARED['build_data_settings'](dict(cfg, skillset_smooth_window=9, skillset_savgol_polyorder=6))
+    assert 'sg13p10' in compact['skillset_dir'].parent.name
+    assert 'sg9p6' in changed['skillset_dir'].parent.name
+    assert compact['dp_policy_path'] == changed['dp_policy_path']
+    assert compact['droid_selection_sha256'] == changed['droid_selection_sha256']
+    # Explicit names from frozen runs must remain resumable after this change.
+    frozen = SHARED['build_data_settings'](dict(cfg, skillset_mode='gaussian_x0hat',
+        skillset_output_suffix='existing_recipe', skillset_gripper_indices=[6]))
+    assert frozen['skillset_dir'].parent.name.endswith('existing_recipe_without_deformable')
+    assert frozen['skillset_gripper_indices'] == '6'
+    old_without_suffix = SHARED['build_data_settings'](dict(cfg, skillset_mode='gaussian_x0hat'))
+    assert '_h18_' not in old_without_suffix['skillset_dir'].parent.name
+
+
+def test_compact_build_name_uses_checkpoint_horizon_not_stale_run_label(grouped):
+    _, cfg, _, _ = grouped
+    local = yaml.safe_load((CONFIGS / 'train_skills/build_data/build_data_config.yaml').read_text())
+    cfg = dict(cfg, **local)
+    cfg.update(target_dataset='tiny', outputs_root='outputs_DROID',
+               dp_run_name='tiny_future_only_obs30_future18_transformer_constLR_small')
+    original = SHARED['build_data_settings'](cfg)
+    policy = original['dp_policy_path'] / 'config.json'
+    policy.parent.mkdir(parents=True, exist_ok=True)
+    policy.write_text(json.dumps(dict(n_obs_steps=30, horizon=36, action_sequence_mode='future_only')))
+    resolved = SHARED['build_data_settings'](cfg)
+    assert '_h36_' in resolved['skillset_dir'].parent.name
+    assert resolved['dp_policy'] == original['dp_policy']
+
+
+def test_build_worker_can_resolve_exported_settings_without_path_changes(grouped, monkeypatch, capsys):
+    _, cfg, _, _ = grouped
+    local = yaml.safe_load((CONFIGS / 'train_skills/build_data/build_data_config.yaml').read_text())
+    cfg = dict(cfg, **local)
+    cfg.update(target_dataset='tiny', outputs_root='outputs_DROID',
+               dp_run_name='tiny_future_only_obs30_future18_transformer_constLR_small')
+    settings = SHARED['build_data_settings'](cfg)
+    SHARED['print_shell'](settings)
+    exports = capsys.readouterr().out
+    for line in exports.splitlines():
+        assignment = shlex.split(line)[1]
+        key, value = assignment.split('=', 1)
+        monkeypatch.setenv(key, value)
+    assert SHARED['build_data_settings'](cfg) == settings
 
 
 def test_snapshot_carries_immutable_group_even_if_live_manifest_changes(grouped, tmp_path):
@@ -166,11 +236,14 @@ def test_selected_dataset_propagates_from_conversion_to_training_and_builds(tmp_
         cfg = TRAIN['load_config'](path)
         assert cfg['source_dataset'] == 'new_converted' and cfg['target_dataset'] == 'new_joint_velocity'
         paths[stage] = cfg
-    assert paths['FSQ']['skillset_seg_name'].startswith('seg_new_joint_velocity_')
+    assert paths['FSQ']['skillset_seg_name'].startswith('seg_new_converted_delta_joint_')
     path = folder / 'build.yaml'
     path.write_text((CONFIGS / 'train_skills/build_data/build_data_config.yaml').read_text())
     cfg = SHARED['load_config'](path)
-    assert cfg['dp_run_name'].startswith('new_joint_velocity_')
+    assert cfg['dp_run_name'].startswith('new_converted_delta_joint_')
+    # This path-resolution test has no converted episodes for the new family.
+    # The grouped fixture above verifies selection against real tiny metadata.
+    cfg['droid_dataset']['group'] = 'all'
     assert SHARED['build_data_settings'](cfg)['raw_dataset_dir'].name == 'new_joint_velocity'
     conversion = yaml.safe_load((CONFIGS / 'generate_training_dataset/download_dataset/dataset_config.yaml').read_text())
     # External conversion YAMLs can select the same named family. Explicit

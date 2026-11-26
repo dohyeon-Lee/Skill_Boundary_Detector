@@ -118,6 +118,23 @@ def test_episode_mean_has_disjoint_work_and_final_paths(tmp_path: Path) -> None:
     assert "minlen" not in settings["run_tag"]
 
 
+@pytest.mark.parametrize('stored_mask', [None, 0, 20])
+def test_initial_mask_comes_from_fsq_recipe_not_new_defaults(tmp_path, stored_mask):
+    cfg = _config(tmp_path, 'global_mean')
+    cfg['initial_mask'] = stored_mask != 20  # Opposite YAML value must not win.
+    source = next((tmp_path / 'dataset/FSQ_dataset').rglob('skillset_manifest.json'))
+    if stored_mask is not None:
+        payload = json.loads(source.read_text())
+        payload['detector']['initial_mask_frames'] = stored_mask
+        source.write_text(json.dumps(payload))
+    settings = build_settings(cfg)
+    expected = stored_mask or 0
+    assert settings['skillset_initial_mask_frames'] == expected
+    assert settings['skillset_initial_mask'] is (expected > 0)
+    contract = json.loads(settings['skillset_contract_json'])
+    assert contract['segmentation']['detector']['initial_mask_frames'] == expected
+
+
 def test_ft_threshold_ignores_completed_ft_own_source(tmp_path: Path) -> None:
     config = _config(tmp_path, "global_mean")
     pt = build_settings(config)
@@ -135,6 +152,46 @@ def test_ft_threshold_ignores_completed_ft_own_source(tmp_path: Path) -> None:
     shared = build_settings(config)
     assert Path(shared["skillset_global_threshold_source"]) == threshold
     assert shared["skillvla_seg_dir"] != own["skillvla_seg_dir"]
+
+
+@pytest.mark.parametrize("mode", ["ft", "ft_own", "ft_epi"])
+def test_pt_pca_reuse_is_independent_of_threshold_and_preserves_old_paths(tmp_path, mode):
+    import hashlib
+
+    config = _config(tmp_path, "global_mean")
+    pt = build_settings(config)
+    Path(pt["skill_latents_path"]).parent.mkdir(parents=True)
+    Path(pt["skill_latents_path"]).touch()
+    threshold = Path(pt["skillset_global_threshold_path"])
+    threshold.parent.mkdir(parents=True)
+    threshold.write_text("{}")
+    pca = threshold.with_name("action_probe_pca.npz")
+    pca.write_bytes(b"PT PCA artifact")
+    config.update(source_dataset="libero_10_full_1", skillvla_data_mode=mode)
+    old = build_settings(config)
+    explicit = build_settings({**config, "PCA": "ft"})
+    shared = build_settings({**config, "PCA": "pt"})
+    assert old["skillvla_run_dir"] == explicit["skillvla_run_dir"]
+    assert old["skillset_dir"] == explicit["skillset_dir"]
+    assert old["skillset_pca_reference_path"] == ""
+    assert shared["skillset_pca_reference_path"] == str(pca)
+    assert shared["skillset_pca_reference_sha256"] == hashlib.sha256(pca.read_bytes()).hexdigest()
+    assert shared["skillset_boundary_threshold_mode"] == old["skillset_boundary_threshold_mode"]
+    assert shared["skillset_global_threshold_source"] == old["skillset_global_threshold_source"]
+    assert shared["skillvla_run_dir"].name == old["skillvla_run_dir"].name + "_pcapt"
+    assert shared["skillvla_seg_dir"].name == old["skillvla_seg_dir"].name + "_pcapt"
+    contract = json.loads(shared["skillset_contract_json"])
+    assert contract["segmentation"]["probe"]["pca_reference_sha256"] == shared["skillset_pca_reference_sha256"]
+
+
+def test_pt_pca_requires_completed_pt_artifact(tmp_path):
+    config = _config(tmp_path, "global_mean")
+    config.update(source_dataset="libero_10_full_1", skillvla_data_mode="ft_own", PCA="pt")
+    with pytest.raises(ValueError, match="PCA: pt requires exactly one"):
+        build_settings(config)
+    config["PCA"] = "unknown"
+    with pytest.raises(ValueError, match="PCA must be"):
+        build_settings(config)
 
 
 def test_build_settings_do_not_export_retired_eval_paths(tmp_path: Path) -> None:

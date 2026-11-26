@@ -115,7 +115,36 @@ def test_real_policy_training_loss_and_serialized_head(monkeypatch, tmp_path, fi
         observed.append((code.detach().clone(), goal.detach().clone()))
         return original(memory, state, code, goal)
     monkeypatch.setattr(model, 'vlm_termination_from_image_tokens', record)
+    from lerobot.utils.training_performance import defer_scalar_metrics, materialize_scalar_metrics
+    rng = torch.get_rng_state().clone()
     loss, metrics = policy(batch)
+    if detached and not finetune and term_weight:
+        # The speed optimization must preserve the real VSA/termination loss,
+        # every logged scalar, RNG consumption, and every parameter gradient.
+        loss.backward()
+        expected_grads = {name: p.grad.clone() for name, p in policy.named_parameters() if p.grad is not None}
+        policy.zero_grad(set_to_none=True)
+        expected_rng = torch.get_rng_state().clone()
+        torch.set_rng_state(rng)
+        with defer_scalar_metrics():
+            deferred_loss, deferred_metrics = policy(batch)
+        torch.testing.assert_close(deferred_loss, loss, rtol=0, atol=0)
+        actual_metrics = materialize_scalar_metrics(deferred_metrics)
+        assert metrics.keys() == actual_metrics.keys()
+        for key in metrics:
+            torch.testing.assert_close(torch.as_tensor(actual_metrics[key]), torch.as_tensor(metrics[key]),
+                                       rtol=0, atol=0, equal_nan=True)
+        assert torch.equal(expected_rng, torch.get_rng_state())
+        deferred_loss.backward()
+        for name, p in policy.named_parameters():
+            if name in expected_grads:
+                torch.testing.assert_close(p.grad, expected_grads[name], rtol=0, atol=0)
+            else:
+                assert p.grad is None
+        policy.zero_grad(set_to_none=True)
+        # Restore the original graph for the remaining shared assertions.
+        torch.set_rng_state(rng)
+        loss, metrics = policy(batch)
     assert torch.isfinite(loss)
     if term_weight:
         assert observed[0][0].tolist() == [3]

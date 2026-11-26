@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def settings(path):
-    sys.path.insert(0, str(ROOT / 'lerobot/skillVLA/libero/configs/train_skillVLA/PT/Terminator/src'))
-    from terminator_train_config import load_stage1_component_config, build_launch_settings
+    sys.path.insert(0, str(ROOT / 'lerobot/skillVLA/libero/configs/train_skillVLA/PT/src/auxiliary'))
+    from auxiliary_train_config import load_stage1_component_config, build_launch_settings
     config = load_stage1_component_config(path)
     return config, build_launch_settings(config)
 

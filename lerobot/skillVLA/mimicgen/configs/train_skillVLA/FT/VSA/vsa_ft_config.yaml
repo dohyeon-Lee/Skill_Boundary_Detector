@@ -4,7 +4,7 @@ stage1_component: VSA
 
 # 실험 이름
 run:
-  suffix: ''
+  suffix: topcrop1p1_gripaction_own_pcapt  # gripper-action PT + top-view randomization.
 
 # FT 학습 대상 / loss
 adaptation:
@@ -14,9 +14,6 @@ adaptation:
   termination_loss: true        # PT의 detach termination bottleneck도 Coffee에서 함께 FT
 
 # 스킬 전환 randomization
-transition_oversampling:
-  enabled: false
-
 # 학습 / 체크포인트 저장
 training:
   dataloader:
@@ -35,10 +32,10 @@ training:
     action_expert: false
   checkpoint_archive: ''
   keep_checkpoints: 1
-  protect_checkpoints: [1000, 3000, 5000, 10000, 15000, 20000]
+  protect_checkpoints: [1000, 3000, 5000, 10000]
 
   schedule:
-    steps: 20000
+    steps: 10000
     lr_mode: warmup_constant
     warmup_steps: 500
     log_every: 100

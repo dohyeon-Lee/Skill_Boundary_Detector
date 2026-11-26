@@ -336,6 +336,21 @@ def test_generic_lerobot_dataset_keeps_episode_tail_sampler() -> None:
     assert set(sampler.indices) == {*range(0, 7), *range(10, 17)}
 
 
+def test_noncontiguous_episode_subset_samples_loaded_rows_not_global_offsets() -> None:
+    from datasets import Dataset
+
+    dataset = SimpleNamespace(
+        episodes=[5, 2],
+        hf_dataset=Dataset.from_dict(dict(
+            episode_index=[2]*4 + [5]*6,
+            frame_index=list(range(4)) + list(range(6)),
+            index=list(range(400, 404)) + list(range(1000, 1006)),
+        )),
+    )
+    sampler = _make_policy_tail_sampler(dataset, 2)
+    assert sampler.indices == [0, 1, 4, 5, 6, 7]
+
+
 def test_shipped_abc_dp_config_targets_reproducible_singletask_group() -> None:
     config = yaml.safe_load((ABC_DP_DIR / "dp_config.yaml").read_text())
     assert config["dp_dataset"] == "abc_sim_all"

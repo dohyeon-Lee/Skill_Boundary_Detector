@@ -8,6 +8,7 @@ fi
 skillvla_skillset_args() {
   : "${SKILLSET_CONTRACT_JSON:?Old/incomplete config snapshot; resolve the current build configuration first}"
   SKILLSET_CONTRACT_ARGS=(
+    --initial_mask_frames "${SKILLSET_INITIAL_MASK_FRAMES:?}"
     --probe_generation "${SKILLSET_PROBE_GENERATION:?}"
     --gaussian_sampling "${SKILLSET_GAUSSIAN_SAMPLING:?}"
     --gaussian_seed "${SKILLSET_GAUSSIAN_SEED:?}"
@@ -25,6 +26,12 @@ skillvla_skillset_args() {
     --seed "${SKILLSET_SEED:?}"
     --segmentation_contract_json "${SKILLSET_CONTRACT_JSON}"
   )
+  if [ -n "${SKILLSET_PCA_REFERENCE_PATH:-}" ]; then
+    SKILLSET_CONTRACT_ARGS+=(
+      --pca_reference_path "${SKILLSET_PCA_REFERENCE_PATH}"
+      --pca_reference_sha256 "${SKILLSET_PCA_REFERENCE_SHA256:?}"
+    )
+  fi
   local pair name enabled
   for pair in "GAUSSIAN_INCLUDE_MEAN gaussian-include-mean" "GMM_WEIGHTED gmm-weighted" "PEAK_NMS peak-nms"; do
     read -r name enabled <<< "${pair}"
@@ -45,5 +52,6 @@ skillvla_check_contract() {
     "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skills/src/sbd_build_contract.py" \
     --contract-json "${SKILLSET_CONTRACT_JSON}" --skillset-dir "${SKILLSET_DIR}" \
     --run-dir "${SKILLVLA_RUN_DIR}" --stage "$1" \
+    --pca-reference "${SKILLSET_PCA_REFERENCE_PATH:-}" \
     --threshold-reference "${SKILLSET_GLOBAL_THRESHOLD_SOURCE:-}" --snap-reference "${snap}"
 }

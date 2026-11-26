@@ -65,13 +65,27 @@ def configure_data_mode(cfg):
         return cfg
     cfg = deepcopy(cfg)
     mode = data_mode(cfg)
+    submitted_pca_hash = cfg.get("skillset_pca_reference_sha256", "")
     cfg["skillvla_data_mode"] = mode
     cfg["skillset_boundary_threshold_mode"] = "episode_mean" if mode == "ft_epi" else "global_mean"
     cfg["skillset_global_threshold_source"] = str(pt_threshold(cfg)) if mode == "ft" else ""
+    cfg["skillset_pca_reference_path"] = ""
+    cfg["skillset_pca_reference_sha256"] = ""
+    if mode in {"ft", "ft_own"}:
+        threshold = Path(cfg["skillset_global_threshold_source"]) if mode == "ft" else pt_threshold(cfg)
+        pca = threshold.with_name("action_probe_pca.npz")
+        if not pca.is_file():
+            raise FileNotFoundError(f"FT requires the selected PT's PCA artifact: {pca}")
+        cfg["skillset_pca_reference_path"] = str(pca)
+        cfg["skillset_pca_reference_sha256"] = hashlib.sha256(pca.read_bytes()).hexdigest()
+        if submitted_pca_hash and submitted_pca_hash != cfg["skillset_pca_reference_sha256"]:
+            raise ValueError(f"PT PCA has changed since submission: {pca}")
     tag = "globalref" if mode == "ft" else "episodemean" if mode == "ft_epi" else "globalmean"
     for key in ("skillset_seg_name", "skillset_output_suffix"):
         if key in cfg:
             cfg[key] = str(cfg[key]).format(skillvla_data_mode=mode, skillvla_threshold_tag=tag)
+            if mode in {"ft", "ft_own"} and not cfg[key].endswith("_pcapt"):
+                cfg[key] += "_pcapt"
     return cfg
 
 
@@ -94,3 +108,10 @@ def validate_skillset_mode(cfg, manifest, skillset_dir):
         target = (Path(skillset_dir) / "global_boundary_threshold.json").resolve()
         if actual != target:
             raise ValueError(f"{data_mode(cfg)} requires this dataset's own mean threshold; got {actual}")
+    if data_mode(cfg) in {"ft", "ft_own"}:
+        expected_hash = cfg["skillset_pca_reference_sha256"]
+        if manifest.get("probe", {}).get("pca_reference_sha256") != expected_hash:
+            raise ValueError("FT SBD must reuse the selected PT PCA; rebuild SBD in the _pcapt output")
+        pca = Path(cfg["skillset_pca_reference_path"])
+        if hashlib.sha256(pca.read_bytes()).hexdigest() != expected_hash:
+            raise ValueError(f"PT PCA has changed since submission: {pca}")

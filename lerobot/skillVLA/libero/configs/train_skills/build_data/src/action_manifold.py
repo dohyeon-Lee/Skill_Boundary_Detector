@@ -13,8 +13,10 @@ action space:
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -417,9 +419,27 @@ def get_or_fit_action_pca(
     path: Path,
     expected_metadata: dict,
     fit: Callable[[], ActionPCA],
+    *,
+    reference_path: Path | None = None,
+    reference_sha256: str = "",
 ) -> ActionPCA:
     """Load one shared PCA artifact, serializing concurrent Slurm shard fitting."""
     import fcntl
+
+    if reference_path is not None:
+        payload = reference_path.read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if reference_sha256 and digest != reference_sha256:
+            raise ValueError(f"PT PCA changed since submission: {reference_path}")
+        reference = ActionPCA.load(io.BytesIO(payload))
+        # Only the corpus selection may differ. The projection must still refer
+        # to identical normalized action coordinates and descriptor definitions.
+        corpus_keys = {"dataset", "source_tasks", "episode_ids", "pca_reference_sha256"}
+        for key in (set(expected_metadata) | set(reference.metadata)) - corpus_keys:
+            if expected_metadata.get(key) != reference.metadata.get(key):
+                raise ValueError(f"PT PCA is incompatible at {key}: {reference_path}")
+        expected_metadata = {**expected_metadata, "pca_reference_sha256": digest}
+        fit = lambda: replace(reference, metadata=expected_metadata)
 
     lock_path = path.with_suffix(path.suffix + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)

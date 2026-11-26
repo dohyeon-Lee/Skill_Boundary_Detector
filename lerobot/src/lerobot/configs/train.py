@@ -13,7 +13,9 @@
 # limitations under the License.
 import builtins
 import datetime as dt
+import json
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,7 +28,6 @@ from lerobot import envs
 from lerobot.configs import parser
 from lerobot.configs.default import DatasetConfig, EvalConfig, PeftConfig, WandBConfig
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.configs.transition_oversampling import TransitionOversamplingConfig
 from lerobot.optim import OptimizerConfig
 from lerobot.optim.schedulers import LRSchedulerConfig
 from lerobot.utils.hub import HubMixin
@@ -48,7 +49,6 @@ class TrainPipelineConfig(HubMixin):
     # Note that when resuming a run, the default behavior is to use the configuration from the checkpoint,
     # regardless of what's provided with the training command at the time of resumption.
     resume: bool = False
-    transition_oversampling: TransitionOversamplingConfig = field(default_factory=TransitionOversamplingConfig)
     # Frozen DROID-only stage switches; empty preserves every existing workflow.
     droid_idle_filter: dict[str, Any] = field(default_factory=dict)
     # PI05 FT: target-dataset statistics by default, or the warm-start PT statistics.
@@ -196,15 +196,6 @@ class TrainPipelineConfig(HubMixin):
             )
         if self.dataloader_multiprocessing_context not in (None, "spawn", "fork", "forkserver"):
             raise ValueError("dataloader_multiprocessing_context must be spawn|fork|forkserver or None.")
-        self.transition_oversampling.validate()
-        if self.transition_oversampling.enabled:
-            standalone_terminator = (
-                self.policy.type == "skill_aux"
-                and getattr(self.policy, "train_terminator", False)
-                and not getattr(self.policy, "train_skill_predictor", False)
-            )
-            if self.dataset.streaming or not (self.policy.type == "skill_expert" or standalone_terminator):
-                raise ValueError("transition_oversampling requires offline VSA or standalone Terminator training.")
         if self.dataloader_prefetch_factor <= 0:
             raise ValueError(
                 "dataloader_prefetch_factor must be positive, got "
@@ -299,6 +290,16 @@ class TrainPipelineConfig(HubMixin):
 
         cli_args = kwargs.pop("cli_args", [])
         with draccus.config_type("json"):
+            if config_file is not None:
+                payload = json.loads(Path(config_file).read_text())
+                if "transition_oversampling" in payload:
+                    # Retired sampling option: load old checkpoints without
+                    # changing their files or re-enabling weighted sampling.
+                    payload.pop("transition_oversampling")
+                    with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as migrated:
+                        json.dump(payload, migrated)
+                        migrated.flush()
+                        return draccus.parse(cls, migrated.name, args=cli_args)
             return draccus.parse(cls, config_file, args=cli_args)
 
 

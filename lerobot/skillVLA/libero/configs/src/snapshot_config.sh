@@ -72,12 +72,14 @@ snapshot_config() {
   fi
   # New Stage-1 component configs inherit shared defaults. Freeze that layer
   # together with the component and global YAML for queued Slurm jobs.
-  local stage1_common="${src_dir}/../stage1_common_config.yaml"
+  local stage1_common="${src_dir}/stage1_common_config.yaml"
+  [ -f "${stage1_common}" ] || stage1_common="${src_dir}/../stage1_common_config.yaml"
   if [ -f "${stage1_common}" ]; then
     cp "${stage1_common}" "${bundle}/stage1_common_config.yaml" >&2
   fi
   # FT components keep their historical shared-YAML name for snapshot compatibility.
-  local newtask_ft_common="${src_dir}/../newtask_ft_common_config.yaml"
+  local newtask_ft_common="${src_dir}/newtask_ft_common_config.yaml"
+  [ -f "${newtask_ft_common}" ] || newtask_ft_common="${src_dir}/../newtask_ft_common_config.yaml"
   if [ -f "${newtask_ft_common}" ]; then
     cp "${newtask_ft_common}" "${bundle}/newtask_ft_common_config.yaml" >&2
   fi

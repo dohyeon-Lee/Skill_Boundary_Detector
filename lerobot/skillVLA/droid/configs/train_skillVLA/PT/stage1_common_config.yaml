@@ -1,0 +1,13 @@
+# One build selection shared by VSA and Predictor.
+dataset:
+  skillvla_root: skillvla
+  run: FSQ3332_delta_pose_2000_pt_without_deformable
+transition_randomization:
+  enabled: true
+  percent: 25
+  distribution: half_normal
+  preserve_gripper: true
+# Official LeRobot conversion of PI's DROID-finetuned VLM + Action Expert.
+warm_start:
+  pi_base: models/pi05_droid
+  tokenizer: models/paligemma-3b-pt-224-tokenizer

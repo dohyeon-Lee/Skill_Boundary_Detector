@@ -24,6 +24,7 @@ def reference(tmp_path):
     threshold.parent.mkdir(parents=True)
     threshold.write_text(json.dumps({"boundary_threshold_mode": "global_mean", "global_mean": .0033,
                                      "segmentation_contract": segmentation}))
+    threshold.with_name("action_probe_pca.npz").write_bytes(b"PT PCA fixture")
     cfg = {"project_root": str(tmp_path), "dataset_root": "coffee",
            "skillvla_pt_reference": {"dataset_root": "old", "source": "libero", "run": "FSQ_pt"},
            "skillset_seg_name": "seg_{skillvla_threshold_tag}_{skillvla_data_mode}"}
@@ -39,7 +40,10 @@ def test_modes_resolve_thresholds_and_distinct_names(reference, mode, threshold_
     resolved = MOD.configure_data_mode({**cfg, "skillvla_data_mode": mode})
     assert resolved["skillset_boundary_threshold_mode"] == threshold_mode
     assert resolved["skillset_global_threshold_source"] == (str(threshold) if mode == "ft" else "")
-    assert resolved["skillset_seg_name"] == f"seg_{tag}_{mode}"
+    assert resolved["skillset_seg_name"] == f"seg_{tag}_{mode}" + ("_pcapt" if mode in {"ft", "ft_own"} else "")
+    assert bool(resolved["skillset_pca_reference_path"]) == (mode in {"ft", "ft_own"})
+    assert bool(resolved["skillset_pca_reference_sha256"]) == (mode in {"ft", "ft_own"})
+    assert MOD.configure_data_mode(resolved) == resolved
 
 
 def test_ft_rejects_a_skillset_built_with_the_target_mean(reference, tmp_path):
@@ -50,7 +54,44 @@ def test_ft_rejects_a_skillset_built_with_the_target_mean(reference, tmp_path):
     with pytest.raises(ValueError, match="FT SBD must reuse"):
         MOD.validate_skillset_mode(cfg, manifest, tmp_path / "coffee")
     manifest["detector"]["global_threshold_path"] = str(threshold)
+    with pytest.raises(ValueError, match="must reuse the selected PT PCA"):
+        MOD.validate_skillset_mode(cfg, manifest, tmp_path / "coffee")
+    manifest['probe'] = {'pca_reference_sha256': cfg['skillset_pca_reference_sha256']}
     MOD.validate_skillset_mode(cfg, manifest, tmp_path / "coffee")
+
+
+def test_ft_requires_pt_pca_and_freezes_its_identity(reference):
+    cfg, threshold = reference
+    resolved = MOD.configure_data_mode({**cfg, "skillvla_data_mode": "ft"})
+    own = MOD.configure_data_mode({**resolved, 'skillvla_data_mode': 'ft_own'})
+    assert own['skillset_pca_reference_path'] == resolved['skillset_pca_reference_path']
+    assert own['skillset_global_threshold_source'] == ''
+    pca = threshold.with_name('action_probe_pca.npz')
+    pca.write_bytes(b'changed PCA')
+    with pytest.raises(ValueError, match='changed since submission'):
+        MOD.configure_data_mode(resolved)
+    with pytest.raises(ValueError, match='changed since submission'):
+        MOD.configure_data_mode(own)
+    pca.unlink()
+    with pytest.raises(FileNotFoundError, match="PT's PCA artifact"):
+        MOD.configure_data_mode({**cfg, "skillvla_data_mode": "ft"})
+
+
+def test_ft_own_reuses_pt_pca_but_requires_its_own_threshold(reference, tmp_path):
+    cfg, threshold = reference
+    own = MOD.configure_data_mode({**cfg, 'skillvla_data_mode': 'ft_own'})
+    directory = tmp_path / 'coffee'
+    manifest = {'detector': {'boundary_threshold_mode': 'global_mean',
+                              'global_threshold_path': str(directory / 'global_boundary_threshold.json')},
+                'probe': {'pca_reference_sha256': own['skillset_pca_reference_sha256']}}
+    MOD.validate_skillset_mode(own, manifest, directory)
+    manifest['detector']['global_threshold_path'] = str(threshold)
+    with pytest.raises(ValueError, match="own mean threshold"):
+        MOD.validate_skillset_mode(own, manifest, directory)
+    manifest['detector']['global_threshold_path'] = str(directory / 'global_boundary_threshold.json')
+    manifest['probe'].clear()
+    with pytest.raises(ValueError, match='must reuse the selected PT PCA'):
+        MOD.validate_skillset_mode(own, manifest, directory)
 
 
 def test_ambiguous_pt_provenance_is_rejected(reference):

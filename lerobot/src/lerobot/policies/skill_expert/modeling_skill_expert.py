@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import Tensor, nn
 
+from lerobot.utils.training_performance import scalar_metric
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.optim.optimizers import split_param_groups_for_muon
 from lerobot.policies.pi05.lora import route_plain_to_base
@@ -296,6 +297,7 @@ def _map_pi05_cond_key(
     key: str, *, include_predictor_vlm: bool = False
 ) -> str | None:
     """Original skillVLA_real pi0.5 -> condition-Gemma mapping."""
+    key = key.removeprefix('model.')  # Current official LeRobot pi05_droid export.
     expert_prefix = "paligemma_with_expert.gemma_expert."
     if key.startswith(expert_prefix):
         suffix = key[len(expert_prefix) :]
@@ -343,6 +345,7 @@ def _map_pi05_key(
 
 
 def _map_pi05_condition_vlm_key(key: str) -> str | None:
+    key = key.removeprefix('model.')
     prefix = "paligemma_with_expert.paligemma.model."
     return "model.cond_encoder.vlm." + key.removeprefix(prefix) if key.startswith(prefix) else None
 
@@ -355,8 +358,9 @@ def _build_state_dict(
     include_predictor_vlm: bool = False,
     include_condition_vlm: bool = False,
 ) -> tuple[dict, bool]:
-    is_pi05 = any(key.startswith("paligemma_with_expert.") for key in raw)
+    is_pi05 = any(key.removeprefix('model.').startswith("paligemma_with_expert.") for key in raw)
     if is_pi05:
+        raw = {key.removeprefix('model.'): value for key, value in raw.items()}
         mapped = {}
         for key, value in raw.items():
             mapped_key = _map_pi05_key(
@@ -414,8 +418,9 @@ def _load_pretrained_state_dict(
 
         with safe_open(str(safetensors_path), framework="pt", device="cpu") as checkpoint:
             keys = list(checkpoint.keys())
-            is_pi05 = any(key.startswith("paligemma_with_expert.") for key in keys)
+            is_pi05 = any(key.removeprefix('model.').startswith("paligemma_with_expert.") for key in keys)
             if is_pi05:
+                source_keys = {key.removeprefix('model.'): key for key in keys}
                 mapped = {}
                 for key in keys:
                     mapped_key = _map_pi05_key(
@@ -438,12 +443,12 @@ def _load_pretrained_state_dict(
                 if (
                     include_predictor_vlm
                     and predictor_embed not in mapped
-                    and pi05_lm_head in keys
+                    and pi05_lm_head in source_keys
                 ):
-                    mapped[predictor_embed] = checkpoint.get_tensor(pi05_lm_head)
+                    mapped[predictor_embed] = checkpoint.get_tensor(source_keys[pi05_lm_head])
                 condition_embed = "model.cond_encoder.vlm.language_model.embed_tokens.weight"
-                if include_condition_vlm and condition_embed not in mapped and pi05_lm_head in keys:
-                    mapped[condition_embed] = checkpoint.get_tensor(pi05_lm_head)
+                if include_condition_vlm and condition_embed not in mapped and pi05_lm_head in source_keys:
+                    mapped[condition_embed] = checkpoint.get_tensor(source_keys[pi05_lm_head])
                 return mapped, True
 
     raw = load_raw_state_dict(path, kwargs)
@@ -5513,7 +5518,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             weighted = self.config.vlm_termination_loss_weight * vlm_term_per_sample
             action_objective = action_objective + weighted.mean()
             objective_per_sample = objective_per_sample + weighted
-            vlm_term_metrics["vlm_termination/weighted"] = weighted.detach().mean().item()
+            vlm_term_metrics["vlm_termination/weighted"] = scalar_metric(weighted.detach().mean())
             vlm_term_metrics["vlm_termination/weight"] = self.config.vlm_termination_loss_weight
         if not action_only and patch_align_loss is not None:
             action_objective = action_objective + (
@@ -5528,8 +5533,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             # Outside visual aux and outside start/current patch averaging.
             action_objective = action_objective + weight * xyz_loss
             vision_xyz_metrics = {
-                "vision_tower_xyz_start/loss": xyz_loss.detach().item(),
-                "vision_tower_xyz_start/weighted": (weight * xyz_loss.detach()).item(),
+                "vision_tower_xyz_start/loss": scalar_metric(xyz_loss.detach()),
+                "vision_tower_xyz_start/weighted": scalar_metric(weight * xyz_loss.detach()),
                 "vision_tower_xyz_start/weight": weight,
                 **{f"vision_tower_xyz_start/{k.removeprefix('agent_end_state/')}": v
                    for k, v in xyz_metrics.items()},
@@ -5538,26 +5543,26 @@ class SkillExpertPolicy(PreTrainedPolicy):
             **vlm_term_metrics,
             **bspline_metrics,
             **vision_xyz_metrics,
-            "action_loss": action_loss.detach().item(),
+            "action_loss": scalar_metric(action_loss.detach()),
             "visual_aux/enabled": float(visual_aux_enabled),
             "conditioning/skill_source_predictor": float(
                 getattr(self.config, "training_skill_source", "gt") == "predictor"
             ),
             "regime/transition_jitter_fraction": (
-                self._last_transition_jitter_fraction.detach().item()
+                scalar_metric(self._last_transition_jitter_fraction.detach())
             ),
         }
         if "skill_start_frame" in batch and "skill_start_requested_frame" in batch:
-            loss_dict["regime/start_observation_future_clipped_fraction"] = (
+            loss_dict["regime/start_observation_future_clipped_fraction"] = scalar_metric((
                 batch["skill_start_requested_frame"].clamp_min(0) > batch["skill_start_frame"]
-            ).float().mean().item()
+            ).float().mean())
         if dsbc_loss is not None:
             loss_dict.update(
                 {
-                    "dsbc/loss": dsbc_loss.detach().item(),
-                    "dsbc/mae": dsbc_mae.detach().item(),
-                    "dsbc/prediction_rms": dsbc_prediction_rms.detach().item(),
-                    "dsbc/target_rms": dsbc_target_rms.detach().item(),
+                    "dsbc/loss": scalar_metric(dsbc_loss.detach()),
+                    "dsbc/mae": scalar_metric(dsbc_mae.detach()),
+                    "dsbc/prediction_rms": scalar_metric(dsbc_prediction_rms.detach()),
+                    "dsbc/target_rms": scalar_metric(dsbc_target_rms.detach()),
                     "dsbc/frs_steps": 10.0,
                     "dsbc/output_bound": 5.0,
                 }
@@ -5565,26 +5570,26 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if latent_best_of_n:
             loss_dict.update(mode_latent_stats)
             loss_dict["mode_latent/gain"] = float(
-                self.model.mode_latent_gain.detach().float().item()
+                scalar_metric(self.model.mode_latent_gain.detach().float())
             )
         if spatial_loss is not None:
             loss_dict.update({
-                f"{spatial_metric_prefix}/loss": spatial_loss.detach().item(),
-                f"{spatial_metric_prefix}/weighted": (spatial_weight * spatial_loss).detach().item(),
-                f"{spatial_metric_prefix}/mae": spatial_mae.detach().item(),
-                f"{spatial_metric_prefix}/valid_fraction": spatial_valid_fraction.detach().item(),
+                f"{spatial_metric_prefix}/loss": scalar_metric(spatial_loss.detach()),
+                f"{spatial_metric_prefix}/weighted": scalar_metric((spatial_weight * spatial_loss).detach()),
+                f"{spatial_metric_prefix}/mae": scalar_metric(spatial_mae.detach()),
+                f"{spatial_metric_prefix}/valid_fraction": scalar_metric(spatial_valid_fraction.detach()),
                 f"{spatial_metric_prefix}/weight": spatial_weight,
             })
         if chunk_end_state_loss is not None:
             chunk_weight = float(self.config.chunk_end_state_loss_weight)
             loss_dict.update({
-                "chunk_end_state/loss": chunk_end_state_loss.detach().item(),
-                "chunk_end_state/weighted": (
+                "chunk_end_state/loss": scalar_metric(chunk_end_state_loss.detach()),
+                "chunk_end_state/weighted": scalar_metric((
                     chunk_weight * chunk_end_state_loss
-                ).detach().item(),
-                "chunk_end_state/mae_normalized": chunk_end_state_mae.detach().item(),
+                ).detach()),
+                "chunk_end_state/mae_normalized": scalar_metric(chunk_end_state_mae.detach()),
                 "chunk_end_state/valid_fraction": (
-                    chunk_end_state_valid_fraction.detach().item()
+                    scalar_metric(chunk_end_state_valid_fraction.detach())
                 ),
                 "chunk_end_state/weight": chunk_weight,
             })
@@ -5596,17 +5601,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if self.config.trains_agent_patch_alignment or self.config.trains_agent_end_state_prediction
                 else "wrist_patch"
             )
-            loss_dict[f"{total_prefix}/loss"] = patch_align_loss.detach().item()
-            loss_dict[f"{total_prefix}/weighted"] = (
+            loss_dict[f"{total_prefix}/loss"] = scalar_metric(patch_align_loss.detach())
+            loss_dict[f"{total_prefix}/weighted"] = scalar_metric((
                 weight * patch_align_loss
-            ).detach().item()
+            ).detach())
             loss_dict[f"{total_prefix}/weight"] = weight
         if termination_loss is not None:
             loss_dict.update(termination_metrics)
-            loss_dict["bottleneck_termination/loss"] = termination_loss.detach().item()
-            loss_dict["bottleneck_termination/weighted"] = (
+            loss_dict["bottleneck_termination/loss"] = scalar_metric(termination_loss.detach())
+            loss_dict["bottleneck_termination/weighted"] = scalar_metric((
                 self.config.bottleneck_termination_loss_weight * termination_loss
-            ).detach().item()
+            ).detach())
         if getattr(self.config, "mask_actions_after_skill_end", False):
             # Report the physical dataset batch once; top-K replication is an
             # optimization detail and must not change masking statistics.
@@ -5619,14 +5624,13 @@ class SkillExpertPolicy(PreTrainedPolicy):
             boundary_masked = unpadded & ~base_valid
             loss_dict.update(
                 {
-                    "loss_mask/skill_end_masked_fraction": (
+                    "loss_mask/skill_end_masked_fraction": scalar_metric((
                         boundary_masked.sum().float() / unpadded_count
-                    ).detach().item(),
-                    "loss_mask/valid_action_steps_mean": base_valid.sum(dim=1)
+                    ).detach()),
+                    "loss_mask/valid_action_steps_mean": scalar_metric(base_valid.sum(dim=1)
                     .float()
                     .mean()
-                    .detach()
-                    .item(),
+                    .detach()),
                 }
             )
             if "skill_effective_de" in batch and "skill_de" in batch:
@@ -5634,19 +5638,17 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 original_de = batch["skill_de"].to(base_valid.device).float()
                 loss_dict.update(
                     {
-                        "loss_mask/effective_boundary_changed_fraction": (
+                        "loss_mask/effective_boundary_changed_fraction": scalar_metric((
                             effective_de != original_de
                         )
                         .float()
                         .mean()
-                        .detach()
-                        .item(),
-                        "loss_mask/effective_minus_original_de_mean": (
+                        .detach()),
+                        "loss_mask/effective_minus_original_de_mean": scalar_metric((
                             effective_de - original_de
                         )
                         .mean()
-                        .detach()
-                        .item(),
+                        .detach()),
                     }
                 )
         loss_dict.update(
@@ -5664,14 +5666,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         if self._last_predicted_skill_accuracy is not None:
             loss_dict["conditioning/predictor_acc_vs_jittered_gt"] = (
-                self._last_predicted_skill_accuracy.detach().item()
+                scalar_metric(self._last_predicted_skill_accuracy.detach())
             )
             loss_dict["conditioning/unique_predicted_skills"] = float(
                 self._last_unique_predicted_skills
             )
         if self._last_predicted_diff_from_current is not None:
             loss_dict["conditioning/predicted_diff_from_current_gt"] = (
-                self._last_predicted_diff_from_current.detach().item()
+                scalar_metric(self._last_predicted_diff_from_current.detach())
             )
         if cumulative_xyz_loss is not None and cumulative_xyz_raw_loss is not None:
             cumulative_weight = getattr(
@@ -5680,18 +5682,16 @@ class SkillExpertPolicy(PreTrainedPolicy):
             weighted_cumulative = cumulative_weight * cumulative_xyz_loss
             loss_dict.update(
                 {
-                    "cumulative_xyz/raw": cumulative_xyz_raw_loss.detach().item(),
-                    "cumulative_xyz/normalized": cumulative_xyz_loss.detach().item(),
-                    "cumulative_xyz/weighted": weighted_cumulative.detach().item(),
+                    "cumulative_xyz/raw": scalar_metric(cumulative_xyz_raw_loss.detach()),
+                    "cumulative_xyz/normalized": scalar_metric(cumulative_xyz_loss.detach()),
+                    "cumulative_xyz/weighted": scalar_metric(weighted_cumulative.detach()),
                     "cumulative_xyz/weight": float(cumulative_weight),
-                    "cumulative_xyz/horizon_normalizer_mean": (
+                    "cumulative_xyz/horizon_normalizer_mean": scalar_metric((
                         (valid.sum(dim=1).float() + 1.0) / 2.0
-                    ).mean().item(),
-                    "cumulative_xyz/to_flow_ratio": (
-                        weighted_cumulative.detach()
-                        / action_loss.detach().clamp(min=torch.finfo(action_loss.dtype).eps)
-                    ).item(),
-                    "action_objective": action_objective.detach().item(),
+                    ).mean()),
+                    "cumulative_xyz/to_flow_ratio": scalar_metric(weighted_cumulative.detach()
+                        / action_loss.detach().clamp(min=torch.finfo(action_loss.dtype).eps)),
+                    "action_objective": scalar_metric(action_objective.detach()),
                     "action_flow_weight": 1.0,
                     "action_cumulative_xyz_weight": float(cumulative_weight),
                 }
@@ -5700,7 +5700,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loss_dict.update(self.model.residual_diagnostics(base_valid, real_dim))
             if skill_flow_is_pad is not None:
                 prefix = "direct" if self.config.uses_direct_action else "residual"
-                loss_dict[f"{prefix}/base_valid_fraction"] = (~skill_flow_is_pad).float().mean().item()
+                loss_dict[f"{prefix}/base_valid_fraction"] = scalar_metric((~skill_flow_is_pad).float().mean())
             # FT/action-only callers do not consume the auxiliary graph.
             self.model._last_skill_window_residual = None
         if skill_flow_loss is not None and skill_flow_per_sample is not None:
@@ -5709,27 +5709,24 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 raise RuntimeError("Skill-flow loss is missing its padding mask.")
             loss_dict.update(
                 {
-                    "skill_flow/loss": skill_flow_loss.detach().item(),
-                    "skill_flow/weighted": weighted_skill_flow.detach().item(),
+                    "skill_flow/loss": scalar_metric(skill_flow_loss.detach()),
+                    "skill_flow/weighted": scalar_metric(weighted_skill_flow.detach()),
                     "skill_flow/weight": float(self.config.skill_flow_weight),
-                    "skill_flow/valid_steps_mean": (~skill_flow_is_pad)
+                    "skill_flow/valid_steps_mean": scalar_metric((~skill_flow_is_pad)
                     .sum(dim=1)
                     .float()
-                    .mean()
-                    .item(),
+                    .mean()),
                     "skill_flow/extended_chunk": float(
                         self.config.skill_flow_target == "extended_chunk"
                     ),
                     "skill_flow/state_conditioned": float(
                         self.config.skill_flow_state_conditioned
                     ),
-                    "skill_flow/to_main_flow_ratio": (
-                        weighted_skill_flow.detach()
+                    "skill_flow/to_main_flow_ratio": scalar_metric(weighted_skill_flow.detach()
                         / action_loss.detach().clamp(
                             min=torch.finfo(action_loss.dtype).eps
-                        )
-                    ).item(),
-                    "skill_flow/total_objective": action_objective.detach().item(),
+                        )),
+                    "skill_flow/total_objective": scalar_metric(action_objective.detach()),
                 }
             )
         if reduction == "none":

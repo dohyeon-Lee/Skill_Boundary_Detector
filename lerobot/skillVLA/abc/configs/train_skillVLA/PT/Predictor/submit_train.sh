@@ -10,4 +10,4 @@ PROJECT_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
 export SKILL_AUX_TRAIN_CONFIG="${SKILL_AUX_TRAIN_CONFIG:-${SCRIPT_DIR}/predictor_train_config.yaml}"
 export SKILL_AUX_SUBMIT_DIR="${SCRIPT_DIR}"
 if (( $# )); then echo "Usage: $0 [--JOB_ID]" >&2; exit 2; fi
-exec "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skillVLA/PT/Terminator/src/submit_auxiliary.sh"
+exec "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skillVLA/PT/src/auxiliary/submit_auxiliary.sh"

@@ -38,7 +38,8 @@ def prepare(cfg):
         ft_pretrained_outputs_root=warm.get("outputs_root", cfg["outputs_root"]),
         ft_pretrained_run_name=run,
         ft_pretrained_checkpoint=f'{int(warm["checkpoint"]):06d}',
-        ft_exp="epall" if episodes is None else f"ep{len(episodes)}",
+        ft_exp=(selection.training_episode_suffix({"dataset": data}, episodes).lstrip("_")
+                if data.get("episode_ids") else "epall" if episodes is None else f"ep{len(episodes)}"),
     )
     return cfg
 

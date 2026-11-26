@@ -30,6 +30,22 @@ def _predictor(state: dict[str, torch.Tensor]):
     return SimpleNamespace(state_dict=lambda: state)
 
 
+@pytest.mark.parametrize('prefix', ['', 'model.'])
+def test_official_pi05_exports_with_and_without_policy_prefix(tmp_path, prefix):
+    from torch import nn
+    policy = nn.Module()
+    policy.config = SimpleNamespace(dtype='float32')
+    policy.model = nn.Module()
+    policy.model.skill_predictor = nn.Module()
+    policy.model.skill_predictor.vlm = nn.Linear(3, 2)
+    expected = {'weight': torch.arange(6.).reshape(2, 3), 'bias': torch.tensor([2., 3.])}
+    save_file({prefix + 'paligemma_with_expert.paligemma.model.' + key: value
+               for key, value in expected.items()}, tmp_path/'model.safetensors')
+    SkillAuxPolicy._load_pi05_predictor_base(policy, tmp_path)
+    for key, actual in policy.model.skill_predictor.vlm.state_dict().items():
+        torch.testing.assert_close(actual, expected[key])
+
+
 def test_a_plain_checkpoint_fills_the_lora_wrapped_projection(tmp_path: Path) -> None:
     """Without routing, a wrapped projection would read as missing and stay at random init."""
     weight = torch.arange(6.0).reshape(2, 3)

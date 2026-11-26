@@ -207,6 +207,8 @@ PYTHONPATH="${PROJECT_ROOT}/lerobot/src" \
     --pca_variance "${SKILLSET_PCA_VARIANCE}" \
     --pca_stride "${SKILLSET_PCA_STRIDE}" \
     --pca_scale_mode "${SKILLSET_PCA_SCALE_MODE}" \
+    --pca_reference_path "${SKILLSET_PCA_REFERENCE_PATH:-}" \
+    --pca_reference_sha256 "${SKILLSET_PCA_REFERENCE_SHA256:-}" \
     --probe_exclude_indices "${SKILLSET_PROBE_EXCLUDE_INDICES}" \
     --action_mode "${SKILLSET_ACTION_MODE}" \
     --relative_exclude_joints "${SKILLSET_RELATIVE_EXCLUDE_JOINTS}" \

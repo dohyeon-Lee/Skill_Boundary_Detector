@@ -75,10 +75,21 @@ def resolve(config, stage):
         source = root / config['dataset_root'] / config['source_dataset']
         required = [source / 'conversion_manifest.json']
     else:
-        name = config['fsq_run_name'].format(target_dataset=config['target_dataset'])
+        action_space = config.get('fsq_action_space', 'joint_velocity')
+        if action_space not in {'joint_velocity', 'delta_pose'}:
+            raise ValueError('fsq_action_space must be joint_velocity|delta_pose')
+        # Action representation is independent of the source segmentation.
+        # Keep existing joint outputs compatible; pose outputs are separate.
+        label = config['target_dataset']
+        if action_space == 'delta_pose':
+            label = label.removesuffix('_joint_velocity') + '_delta_pose'
+        name = config['fsq_run_name'].format(target_dataset=label, fsq_action_space=action_space)
+        if action_space == 'delta_pose' and 'delta_pose' not in name:
+            name += '_delta_pose'
         source = dataset
         skills = dataset.parent / config['fsq_dataset_root'] / config['target_dataset'] / config['fsq_inputs_name'] / GROUPS['tagged'](config['skillset_seg_name'], config) / config['skillset_name']
-        required = [dataset / 'training_view_manifest.json', skills / 'skillset_manifest.json', skills / 'skills']
+        required = [dataset / 'training_view_manifest.json', skills / 'skillset_manifest.json',
+                    skills / 'skills', skills / '.complete']
     if selector.enabled:
         name += '_idle'
     name = GROUPS['tagged'](name, config)
@@ -105,6 +116,9 @@ def resolve(config, stage):
         plan.update(skillset=str(skills), chunk_size=int(config.get('fsq_chunk_size', config['vla_chunk_size'])))
         if plan['chunk_size'] < 1:
             raise ValueError('FSQ chunk size must be positive')
+        if action_space == 'delta_pose':
+            plan.update(action_space='delta_pose', proprio_space='eef_pose', action_dim=7, state_dim=7,
+                action_stats_path=str(output.parent / '.contracts' / (name + '.action_stats.json')))
     if plan['cpus'] < 1:
         raise ValueError('Training CPU budget must be positive')
     selection = GROUPS['select'](config, dataset if dataset.exists() else source)
@@ -141,16 +155,25 @@ def build_dp_config(config, plan):
         num_workers=int(config.get('dp_num_workers', 8)), seed=int(config.get('dp_seed', 42)),
         save_freq=int(config.get('dp_save_freq', 10000)), log_freq=int(config.get('dp_log_freq', 200)),
         eval_freq=0, dataloader_multiprocessing_context='spawn',
+        dataloader_persistent_workers=int(config.get('dp_num_workers', 8)) > 0,
         droid_idle_filter=filter_settings(config, 'DP'),
         wandb=WandBConfig(enable=bool(config.get('dp_wandb_enable', True)), project=config.get('dp_wandb_project', 'DROID_DP')))
 
 
 def _contract(config, plan):
     contract = {key: plan[key] for key in ('stage', 'dataset', 'idle_filter', 'fps', 'action_dim', 'state_dim')}
+    # Frozen Yonsei checkouts link to the same persistent dataset. Different
+    # launch directories must not prevent resuming that identical corpus.
+    contract['dataset'] = str(Path(contract['dataset']).resolve())
     if 'dataset_selection' in plan:
         contract['dataset_selection'] = plan['dataset_selection']
-    if plan.get('action_space') == 'delta_pose':
+    if plan['stage'] == 'DP' and plan.get('action_space') == 'delta_pose':
         contract.update(dp_action_space='delta_pose', delta_pose_input='eef_pose')
+    if plan['stage'] == 'FSQ' and plan.get('action_space') == 'delta_pose':
+        contract.update(fsq_action_space='delta_pose',
+            pose_convention='first_measured_then_consecutive_targets_base_frame_SO3',
+            skillset_manifest_sha256=hashlib.sha256(
+                (Path(plan['skillset']) / 'skillset_manifest.json').read_bytes()).hexdigest())
     contract['source_sha256'] = json.loads((Path(plan['dataset']) / 'training_view_manifest.json').read_text())['source_sha256']
     names = ('dp_n_obs_steps', 'dp_future_action_horizon', 'dp_history_encoder', 'dp_history_encoder_dim', 'dp_down_dims', 'dp_lr_scheduler') if plan['stage'] == 'DP' else ('fsq_quantizer', 'fsq_autoencoder', 'fsq_start_state_conditioning', 'fsq_pair_loss', 'fsq_route_loss', 'fsq_hidden_dim', 'fsq_num_layers', 'fsq_lr_schedule', 'fsq_boundary_aug_pmax_step', 'fsq_boundary_aug_pmax_percent', 'skillset_seg_name')
     contract.update({name: config.get(name) for name in names})
@@ -159,8 +182,11 @@ def _contract(config, plan):
         manifest = Path(plan['skillset']) / 'skillset_manifest.json'
         contract['skillset_sha256'] = hashlib.sha256(manifest.read_bytes()).hexdigest()
     path = Path(plan['output']).parent / '.contracts' / (Path(plan['output']).name + '.json')
-    if path.exists() and json.loads(path.read_text()) != contract:
-        raise ValueError(f'Cannot resume with changed DROID data/filter/model contract: {path}')
+    if path.exists():
+        saved = json.loads(path.read_text())
+        saved['dataset'] = str(Path(saved['dataset']).resolve())
+        if saved != contract:
+            raise ValueError(f'Cannot resume with changed DROID data/filter/model contract: {path}')
     VIEW['atomic_json'](path, contract)
 
 
@@ -184,6 +210,9 @@ def run_dp(config, plan):
             raise ValueError('Saved DP action representation differs; choose a separate output name')
         cfg.resume = True
         cfg.steps, cfg.num_workers, cfg.batch_size = desired.steps, desired.num_workers, desired.batch_size
+        # Runtime input optimizations also apply when the checkpoint predates them.
+        cfg.dataloader_persistent_workers = desired.dataloader_persistent_workers
+        cfg.dataloader_multiprocessing_context = desired.dataloader_multiprocessing_context
         # validate() restores model/optimizer/scheduler/RNG using this exact checkpoint.
         sys.argv.append('--config_path=' + str(checkpoint))
     else:
@@ -206,7 +235,9 @@ def build_fsq_args(config, plan, module):
         output_dir=plan['output'], device=config.get('fsq_device', 'cuda'),
         autoencoder_mode=config['fsq_autoencoder']['mode'],
         action_gripper_weight=float(config['fsq_autoencoder']['gripper_weight']),
-        action_space='dataset', action_gripper_indices=[7], chunk_size=plan['chunk_size'],
+        action_space='delta_pose' if plan.get('action_space') == 'delta_pose' else 'dataset',
+        action_gripper_indices=[6] if plan.get('action_space') == 'delta_pose' else [7],
+        stats_path=plan.get('action_stats_path', ''), chunk_size=plan['chunk_size'],
         start_state_conditioning=config.get('fsq_start_state_conditioning', 'none'),
         decoder_reconstructor=True, decoder_terminator_progress=False, decoder_terminator_termination=False,
         fsq_levels=config['fsq_quantizer']['levels'], quantizer='fsq',
@@ -232,6 +263,18 @@ def build_fsq_args(config, plan, module):
 def run_fsq(config, plan):
     module = fsq_module()
     args = build_fsq_args(config, plan, module)
+    if plan.get('action_space') == 'delta_pose':
+        adapter = runpy.run_path(str(CONFIGS / 'src/fsq_action_data.py'))
+        cache = {}
+        def load_pose_skills(skills_dir, *, episode_ids=None):
+            key = (str(skills_dir), None if episode_ids is None else tuple(episode_ids))
+            if key not in cache:
+                result = adapter['load_pose_skills'](skills_dir, plan['dataset'], episode_ids=episode_ids)
+                _, states, actions, metadata = result
+                adapter['write_stats'](args.stats_path, plan['dataset'], plan['skillset'], states, actions, metadata)
+                cache[key] = result
+            return cache[key]
+        module.load_skill_files = load_pose_skills
     checkpoints = list(Path(plan['output']).glob('FSQ_epoch*.pt'))
     if checkpoints:
         args.resume_from = str(max(checkpoints, key=lambda p: int(p.stem.removeprefix('FSQ_epoch'))))
@@ -287,6 +330,14 @@ def main(argv=None):
                   'DROID_CPUS': plan['cpus'], 'DROID_MEM': plan['mem'], 'DROID_TIME': plan['time'],
                   'DROID_PARTITION': plan['partition'], 'DROID_QOS': plan['qos'],
                   'DROID_NODELIST': plan['nodelist'], 'DROID_EXCLUDE': plan['exclude']}
+        # Remote dispatch copies only completed converted inputs. DP constructs
+        # its view on Yonsei; raw/calibration source roots are not dependencies.
+        values.update(DATASET_DIR=plan['source_dataset'], RUN_NAME=Path(plan['output']).name)
+        if args.stage == 'DP':
+            values['DP_STEPS'] = int(config.get('dp_steps', 100000))
+        else:
+            values.update(SKILLS_DIR=plan['skillset'], FSQ_NUM_EPOCHS=int(config.get('fsq_num_epochs', 2000)),
+                          DROID_FSQ_ACTION_SPACE=plan['action_space'])
         for name, value in values.items():
             if isinstance(value, list):
                 value = ','.join(map(str, value))

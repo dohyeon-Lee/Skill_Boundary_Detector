@@ -1,324 +1,66 @@
 # SkillVLA PT training
 
-The three PT components are independent jobs. Edit shared dataset/model
-inputs in [`stage1_common_config.yaml`](stage1_common_config.yaml), then edit
-the component-specific YAML and run its launcher:
+PT는 VSA와 Predictor를 각각 학습합니다. 데이터와 공통 모델 경로는
+[`stage1_common_config.yaml`](stage1_common_config.yaml)에서 선택합니다.
 
-The code directory was renamed from `stage1` to `PT`. Existing YAML names,
-`STAGE1_*` environment variables, and snapshot formats remain compatible.
-Training now writes to `outputs_root/skillVLA_PT/`. Existing `outputs/` and
-`outputs_filtered/` PT groups were renamed in place; checkpoints and run names
-are unchanged. Saved paths containing `skillVLA_stage1` remain readable, and
-run-name selectors also accept old layouts on servers not yet migrated.
-Evaluation results, logs, and snapshots moved with this
-directory, so closed-loop evaluation now runs from `PT/eval`.
-
-| Component | Config | Launcher | New output location |
+| Component | Config | Launcher | Output |
 | --- | --- | --- | --- |
-| VSA | `VSA/vsa_train_config.yaml` | `VSA/submit_train.sh [architecture]` | `outputs_root/skillVLA_PT/VSA/<run>` |
-| Skill Predictor | `Predictor/predictor_train_config.yaml` | `Predictor/submit_train.sh` | `outputs_root/skillVLA_PT/Predictor/<run>` |
-| Terminator | `Terminator/terminator_train_config.yaml` | `Terminator/submit_train.sh` | `outputs_root/skillVLA_PT/Terminator/<run>` |
+| VSA | `VSA/vsa_train_config.yaml` | `VSA/submit_train.sh` | `outputs_root/skillVLA_PT/VSA/<run>` |
+| Predictor | `Predictor/predictor_train_config.yaml` | `Predictor/submit_train.sh` | `outputs_root/skillVLA_PT/Predictor/<run>` |
 
-Each launcher snapshots its own YAML, the shared YAML, and the global cluster
-YAML before submission. Nested fields in a component config override shared
-fields. For example, Terminator can set `dataset.relabeled` without changing
-VSA or Predictor. Predictor PT training always uses original skill labels.
+Predictor PT·FT의 공통 실행기와 VSA FT가 쓰는 설정 함수는
+[`src/auxiliary`](src/auxiliary)에 있습니다. VSA의 병렬 실행기도 이 위치를 사용합니다.
+별도 Terminator 학습 진입점은 제거했고, 현재 VSA는 내장 termination reader를 학습합니다.
+기존 외부 Terminator 체크포인트를 사용하는 평가는 계속 가능합니다.
+제출 시 YAML과 실행 셸을 snapshot으로 저장하고, Python 모듈은 공통 소스에서 읽습니다.
 
-`VSA/submit_train.sh` is the VSA launcher itself (shared code in `src/`); the old
-`PT/submit_train.sh` + `stage1_train_config.yaml` pair was removed.
-`Terminator/src/submit_auxiliary.sh` backs the Predictor and Terminator launchers,
-including NewTask FT; its config helpers are shared with FT VSA and Joint.
+## VSA: 세 가지 Term bottleneck 모델
 
-## All-layer π0.5 VLM Vanilla variants
+설정 파일은 `VSA/vsa_train_config.yaml` 하나를 사용합니다. 공통 architecture는
+`UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach`이며,
+아래 두 옵션으로 모델과 결과 폴더명이 결정됩니다.
 
-Select either name through `architecture.name` in `VSA/vsa_train_config.yaml`.
-Both use current Top/Wrist images and the existing Skill/UV/current-proprio text
-prefix in the pretrained π0.5 VLM. Every Expert layer L1–L18 reads the same final
-bottleneck Z18. There is no fullskill planner, start-image pass or direct Expert
-start XYZ/current proprio input. Current-image Top/Wrist patch and XYZ auxiliary
-losses, bottleneck self-attention and UV randomization/clipping are retained.
+| 모델 구분 | `vision.top_crop.enabled` | `bspline.gripper_action` | full-skill target |
+| --- | --- | --- | --- |
+| `termbn_detach` | false | false | pose 6D + finger proprio 2D |
+| `termbn_detach_topcrop1p1_gripaction` | true | true | pose 6D + gripper action 1D |
+| `termbn_detach_gripaction` | false | true | pose 6D + gripper action 1D |
 
-| Name | Direct Expert conditions at L1–L18 |
-| --- | --- |
-| `vanila_vision_only_pi05vlm` | Denoising timestep only |
-| `vanila_skill_uv_pi05vlm` | Skill broadcast + goal UV AdaRMS + denoising timestep |
+`top_crop.zoom: 1.1`일 때 `_topcrop1p1`, action gripper를 쓸 때 `_gripaction`이
+자동으로 붙습니다. 현재 YAML은 마지막 모델을 선택합니다. `run.suffix: base`와
+기존 이름 생성 규칙을 유지하므로 이어학습 폴더도 그대로 결정됩니다.
 
-Both still denoise action tokens. Their distinct names/revisions separate new
-outputs from the previous split-input models; FT/evaluation restore the saved
-architecture contract. As with other Vanilla models, use
-`adaptation.skill_flow_loss: false` for FT because there is no fullskill branch.
+세 모델 모두 현재 Top/Wrist 이미지를 π0.5 VLM으로 인코딩하고, 두 독립적인
+100-token bottleneck이 Action Expert의 L1–L9 / L10–L18에 연결됩니다.
+Expert에 현재 proprio를 직접 넣지 않으며, full-skill readout은 L9입니다.
+별도의 termination reader는 각 VLM 층을 detach해서 읽는 18층 bottleneck으로,
+Action Expert에 연결되지 않고 gradient clipping도 본류와 분리됩니다.
 
-## Dual-bottleneck Proprio ablations
+`vlm_termination`은 loss weight 1, sigma 1, positive weight 2, 종료 후 10스텝을
+사용합니다. Skill transition randomization에 따른 현재/이전 스킬과 UV 처리는
+그대로 유지합니다. Termination loss는 action loss와 별도로 기록합니다.
 
-Set `architecture.name` in `VSA/vsa_train_config.yaml` to a name below.
-All retain the original 9+9 split, current-image π0.5 VLM, two bottlenecks,
-auxiliary targets/weights and independent fullskill flow loss.
+Top crop을 켜면 학습 중 random crop, 평가 중 center crop을 사용하며,
+VLM·Expert의 Top UV 조건과 visual auxiliary UV 정답을 함께 변환합니다.
+XYZ와 Wrist 목표는 원래 좌표를 유지합니다. Full-skill은 30개 B-spline
+샘플로 학습하며 `bspline.gripper_action`으로 마지막 gripper 표현만 바꿉니다.
 
-| Name | Early Expert L1–L9 | Vision bridges |
-| --- | --- | --- |
-| `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio` | Skill + goal UV + timestep | Lower bottleneck → L1–L9, upper → L10–L18 |
-| `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_last` | Skill + goal UV + timestep | Lower bottleneck → L9 only, upper → L18 only |
-| `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_wovis` | Skill + goal UV + fixed skill-start proprio8 + timestep | Upper bottleneck → L10–L18 only |
-
-None of these Experts directly reads current proprio. The VLM still receives current
-proprio. Late Expert layers receive only timestep as their direct condition.
-The second model uses `skill_start_state_normalized`, with the same state
-statistics as current proprio, and latches it at each skill occurrence during
-evaluation without storing/encoding start images. Fullskill's conditions are
-fixed; flow training still samples random noise. Its optional video diagnostic
-generates once per occurrence and holds that plan. Other dual models keep
-replanning diagnostics. Ordinary Action inference does not sample an unused
-fullskill chain or feed the auxiliary trajectory back into Action.
-The old top-level `terminator/` directory was removed. Its historical logs and
-snapshots are under `Terminator/logs/legacy_auxiliary/` and
-`Terminator/.config_snapshots/legacy_auxiliary/`. The historical flat
-`skillVLA_terminator/` group stays in place. Downstream resolvers accept both
-old and new run locations by run name.
-
-All components use the shared trainer, which never uploads checkpoint weights
-or adapters to W&B. Old resume configs cannot re-enable model uploads with
-`wandb.disable_artifact=false`. W&B metrics, plots/videos, local saves and
-server-to-server checkpoint archival are unchanged. This applies at the next
-trainer launch; running processes and existing cloud artifacts are untouched.
-
-## Terminator models
-
-`Terminator/terminator_train_config.yaml` selects one name or a list sharing one
-GPU. All four input profiles use Skill, current Top/Wrist images and current proprio,
-raw skill skip, Gaussian sigma 1 and ten-frame post-end supervision.
-Batch size and worker count apply to each model. Each prefix also supports
-`_dinoL_freeze`, `_dinoS_unfreeze` and `_dinoL_unfreeze`, for 16 selectable
-models. See [Terminator](Terminator/README.md) for the encoder variants.
-
-| Model | Additional input | Previous training name |
-| --- | --- | --- |
-| Term_Token_1_dinoS_freeze | skill-start proprio + skill-end Top UV | Term_Token_3_both_proprio |
-| Term_Token_2_dinoS_freeze | skill-start proprio | Term_Token_1_both_proprio |
-| Term_Token_3_dinoS_freeze | skill-end Top UV | Term_Token_4_both_proprio |
-| Term_Token_4_dinoS_freeze | none | Term_Token_5_both_proprio |
-
-UV goals add independent uniform noise of +/-0.01 m to XYZ before projection
-through recorded Top-camera calibration. Out-of-view UV is clipped to the image
-boundary. Evaluation disables noise. Historical checkpoints retain their original
-names and saved input contracts; their files and evaluation paths are unchanged.
-Retired names are unavailable for new PT submissions. FT inherits the saved
-checkpoint contract.
-
-## Top-UV Fullskill Bspline ablations
-
-Choose one name in `VSA/vsa_train_config.yaml` under `architecture.name`:
-
-* `UV_fullskill_bspline_3_lastlayer_lastvis`
-* `UV_fullskill_bspline_3_lastlayer_lastvis_current`
-* `UV_fullskill_bspline_3_lastlayer_lastvis_current_none`
-* `UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill`
-
-Names are case insensitive. Saved architecture labels are lowercase; output
-run names retain `UV_`. Splits still follow `visual_bridge_last_n_layers`
-(9 means 9+9). These are new checkpoint identities, not reinterpretations of
-the existing XYZ models.
-
-Cond and the prefix Expert receive continuous **absolute Top-view endpoint
-UV**, centered at zero in [-1,1] (u right, v down), through the same MLP/AdaRMS
-connections as the old end XYZ. The Expert retains grounded raw skill-start
-XYZ, but has no skill-start UV or end XYZ input. Invalid UV masks the entire
-goal-adapter contribution, not the action/plan loss. The action suffix, 30x8
-normalized proprio target, 1+1+98 patch interface, auxiliary losses/weights,
-and start/current observation rules are unchanged. `0.01` in the Notion
-patch tags means one query out of 100, NOT a new loss weight.
-
-The preskill variant carries the previous occurrence's UV/validity alongside
-its code/start XYZ and last observation. Its detached tau=1 prefix encoding
-remains non-recursive and occurrence-cached; BOS reads remain fully masked.
-
-PT and standalone FT use datasets with a valid Top-camera `skill_focus_uv.npz`.
-PT/FT eval use GT UV for GT panels or a UV-enabled external Predictor for
-predicted panels (Mode3 already inverse-transforms its center crop back to
-original-image UV). An XYZ-only predictor is not silently replaced with GT UV.
-End XYZ metadata is still retained for training-only patch geometry; it does
-not enter either VSA conditioning adapter. Joint FT remains unsupported, as
-for the original Bspline models.
-
-Each of the four UV names also accepts `_diffaux` as its final suffix. This
-replaces **only** the Top patch classification head with a LayerNorm + Linear
-8D regression head on its dedicated bottleneck token: skill-end EEF XYZ3
-(episode-grounded), axis-angle3, and measured finger positions2. The Wrist
-patch head, 1+1+98 interface, gates and all plan/vision routes are unchanged.
-The saved `chunk_end_state_q01/q99` (observation.state statistics) normalize
-all eight target dimensions; MSE averages over dimensions and valid samples.
-Invalid endpoint states are masked independently of Top UV visibility.
-
-The existing `wrist_patch_align_loss_weight` multiplies
-`wrist_patch_loss + end_state_mse` (no extra weight or 0.01 multiplier).
-Held-start models retain `0.5 * (start_aux + current_aux)`; `_current` models
-compute the shared current auxiliary once. `_preskill` memory has no extra
-auxiliary loss. W&B adds `agent_end_state/raw_loss`, `valid_fraction`, and
-normalized XYZ/rotation/gripper MAE (plus `start_...` for held-start models).
-The endpoint prediction is training-only: eval inputs remain UV + start XYZ,
-never GT end pose/gripper or a newly injected predicted state. Model/output
-names and checkpoint revisions distinguish all four diffaux architectures.
-Select these through `architecture.name` only; keep `end_pose_mode: xyz`.
-That legacy input-selector does not select or truncate the diffaux 8D target.
-
-## Final-layer-only UV vision ablations
-
-These four names append `_last` to their corresponding UV baseline:
-
-* `UV_Fullskill_Bspline_3_lastlayer_lastvis_last`
-* `UV_Fullskill_Bspline_3_lastlayer_lastvis_diffaux_last`
-* `UV_Fullskill_Bspline_3_lastlayer_lastvis_current_preskill_diffaux_last`
-* `UV_Fullskill_Bspline_3_lastlayer_lastvis_current_preskill_last`
-
-Only the suffix vision bridge changes: current Z18 enters L18 alone instead
-of L10–L18. Keep `visual_bridge_last_n_layers: 9` for the 9+9 split; setting
-it to 1 would also change the plan split. Prefix vision still enters L9,
-using held skill-start Z18 or shared current Z18 according to the baseline.
-Current proprio still conditions every suffix layer. Plan generation/read,
-detached preskill memory and BOS masking, the separate 1+1+98 bottleneck
-self-attention groups, and patch/diffaux targets and loss weights are retained.
-The `_diffaux_last` names keep the 8D auxiliary head; they do not predict XYZ
-for the Expert. PT, standalone FT and evaluation retain distinct labels and
-checkpoint revisions for the variants. Select a name through
-`architecture.name` or the existing `submit_train.sh` architecture argument.
-
-## Joint bottleneck self-attention ablation
-
-`UV_Bspline_lastlayer_current_preskill_diffaux` inherits
-`UV_fullskill_bspline_3_lastlayer_lastvis_current_preskill_diffaux`, with only
-the bottleneck self-attention scope changed. At each Cond layer, Top query 0
-still cross-attends only Top memory, Wrist query 1 only Wrist memory, and queries
-2–99 both cameras. Their cross-attention residuals are concatenated before one
-existing self-attention/MLP update over all 100 queries. No new weights or gate
-are added; the existing Expert bridges and their gates remain unchanged.
-The same update applies to the detached preskill encoder. UV/start-XYZ inputs,
-8D endpoint auxiliary, Wrist patch loss, Bspline targets and memory rules are
-inherited. The saved architecture label/revision and run name distinguish it
-from the original partitioned model.
-
-Select `architecture.name: UV_Bspline_lastlayer_current_preskill_diffaux`, or
-run `./submit_train.sh UV_Bspline_lastlayer_current_preskill_diffaux` from `PT/VSA`.
-
-## Predicted XYZ Expert input (diffaux2)
-
-Set `architecture.name` to one of these names; no additional option is required:
-
-| Name | Predicted-XYZ gradient into Expert | Top XYZ loss coefficient |
-| --- | --- | --- |
-| `UV_Bspline_lastlayer_current_preskill_diffaux2_detach` | detached | 0.1 |
-| `UV_Bspline_lastlayer_current_preskill_diffaux2_attach` | attached | 0.1 |
-| `UV_Bspline_lastlayer_current_preskill_diffaux2_detach_topw1` | detached | 1.0 |
-| `UV_Bspline_lastlayer_current_preskill_diffaux2_attach_topw1` | attached | 1.0 |
-
-Cond keeps endpoint UV and joint 100-token self-attention. The Top token predicts
-only normalized skill-end XYZ3. Both training and inference inverse-normalize
-that prediction to episode-grounded metres before the prefix Expert's goal
-adapter, matching its unchanged skill-start XYZ input. There is no GT XYZ input
-or fallback in this path. The same prediction path is used by detached preskill
-re-encoding. Wrist patch supervision and 30x8 Bspline planning are unchanged.
-With the default `spatial_loss_weight: 0.1`, Wrist has coefficient 0.1 in all four
-variants; `_topw1` fixes the XYZ coefficient at 1.0 independently. Other variants
-use the same coefficient as Wrist. Detach stops only the predicted goal's Expert
-input branch; the XYZ head remains supervised by XYZ MSE. Component raw losses,
-weights and weighted losses are logged separately. Each name has its own saved
-architecture revision and run directory.
-
-## GT XYZ variants: diffaux3 and diffaux4
-
-Select any of these fourteen names through `architecture.name` or the submission argument:
-
-| Name | XYZ readout | Prefix vision / plan |
-| --- | --- | --- |
-| `UV_Bspline_lastlayer_diffaux3` | Bottleneck query 2 | Held start / current plan |
-| `UV_Bspline_lastlayer_diffaux3_last` | Bottleneck query 2 | Held start / current plan |
-| `UV_Bspline_lastlayer_current_preskill_diffaux3` | Bottleneck query 2 | Current / detached previous plan |
-| `UV_Bspline_lastlayer_current_preskill_diffaux3_last` | Bottleneck query 2 | Current / detached previous plan |
-| `UV_Bspline_lastlayer_diffaux4` | Learned Gemma token + UV AdaRMS | Held start / current plan |
-| `UV_Bspline_lastlayer_diffaux4_uvtoken` | UV Gemma token; UV AdaRMS removed | Held start / current plan |
-| `UV_Bspline_lastlayer_current_preskill_diffaux4` | Learned Gemma token + UV AdaRMS | Current / detached previous plan |
-| `UV_Bspline_lastlayer_current_preskill_diffaux4_uvtoken` | UV Gemma token; UV AdaRMS removed | Current / detached previous plan |
-| `UV_Bspline_lastlayer_diffaux4_last` | Learned Gemma token + UV AdaRMS | Held start / current plan |
-| `UV_Bspline_lastlayer_current_preskill_diffaux4_last` | Learned Gemma token + UV AdaRMS | Current / detached previous plan |
-| `UV_Bspline_lastlayer_diffaux4_start` | Learned Gemma token, start-only XYZ loss | Held start / current plan |
-| `UV_Bspline_lastlayer_current_preskill_diffaux4_start` | Learned Gemma token, start-only XYZ loss | Current / detached previous plan |
-| `UV_Bspline_lastlayer_diffaux4_start_last` | Learned Gemma token, start-only XYZ loss; L18 late vision | Held start / current plan |
-| `UV_Bspline_lastlayer_current_preskill_diffaux4_start_last` | Learned Gemma token, start-only XYZ loss; L18 late vision | Current / detached previous plan |
-
-During training, the prefix Expert receives raw GT skill-end XYZ in episode-grounded metres.
-Each axis receives independent uniform
-noise in `[-0.01, +0.01]` metres. The SAME noisy endpoint supplies Expert XYZ
-and the calibrated Top UV projection. Never add noise in UV space. Auxiliary
-labels stay clean. Evaluation disables this noise. Training requires recorded
-per-episode Top calibration, loaded through the existing camera-artifact path.
-
-Diffaux3 retains Top/Wrist/XYZ/action queries 1+1+1+97. Diffaux4 uses
-1+1+98 bottleneck queries and adds one token to Cond Gemma (outside that 100).
-All 100 bottleneck queries mix via joint self-attention. The Gemma XYZ token
-participates in bidirectional Gemma attention but is excluded from the direct
-bottleneck memory and camera patch indexing. Its final hidden state predicts
-normalized XYZ3 through a separate head. `_uvtoken` initializes that token
-from projected UV and removes only UV AdaRMS; proprio/skill AdaRMS remains.
-
-The objective is action + Bspline + 0.1 Top patch + 0.1 Wrist patch + 0.1 XYZ
-with the default `spatial_loss_weight: 0.1`; the patch pair is not averaged.
-XYZ validity remains independent of UV visibility. Held-start models average
-start/current auxiliary losses. Plan length is 30 and the Expert split is 9+9.
-Suffix vision reaches L10–L18, except diffaux3/4 `_last` variants use only L18;
-current proprio still reaches all suffix layers. Preskill memory is prefix-only,
-non-recursive and detached, with the BOS reader update fully masked.
-
-The diffaux4 `_start` and `_start_last` variants supervise XYZ only from the current skill's
-start images. Held-start models retain the existing average of start/current
-Top and Wrist patch losses; current-preskill models retain current-only patch
-losses and add a start-image encoding for the training XYZ loss. That extra pass
-shares the encoder/readout weights, carries gradients, and never replaces the
-Expert's current vision or detached previous-skill plan. XYZ is added AFTER
-patch averaging with its full coefficient 0.1. The current-image XYZ head is
-not evaluated, and W&B records XYZ under `train/start_agent_end_state/*` only.
-Diffaux3/4 inference, including current-preskill variants, encodes the skill-start
-observation once for the XYZ goal and caches it until the next skill occurrence.
-`_start` does not select a different visual bridge layer or UV token route.
-`_start_last` additionally restricts direct suffix vision to L18; the prefix L9
-vision, all 18 Expert layers, suffix proprio and plan/preskill paths remain.
-
-All diffaux3/4 variants use their OWN start-image XYZ prediction for the
-Expert at inference: bottleneck query 2 for diffaux3, and the Gemma readout
-token for diffaux4. Quantile-normalized XYZ is inverse-normalized to grounded
-metres, with no training noise and no GT endpoint fallback. Held-start vision
-reuses that same encoding. Current-preskill vision remains current, and its
-previous-skill plan retains the previous skill's cached predicted XYZ. A new
-occurrence refreshes the cache even when consecutive FSQ codes are equal;
-episode reset clears it. `focus_source: auto | gt | predictor` still selects UV
-independently. `pose_source` remains relevant to other pose consumers; it does
-not replace these models' own XYZ with a GT or external Predictor goal.
-Training objectives and checkpoint revisions are unchanged.
-
-### Offline diffaux3/4 XYZ-head evaluation
-
-`eval/submit_xyz_head_eval.sh` measures the deploy-time start-image XYZ head
-without MuJoCo, action sampling, or a Terminator. The default
-`eval/xyz_head_eval_config.yaml` selects two deterministic recorded episodes
-for each of tasks 0--9, evaluates every canonical skill occurrence with GT
-skill and GT focus UV, and compares the prediction with the recorded canonical
-endpoint in episode-grounded metres.
+데이터셋·transition randomization·π0.5/tokenizer 경로는
+`stage1_common_config.yaml`에서 설정합니다. VSA YAML에는 모델 선택과 loss,
+학습·저장·실행 설정만 둡니다. DINO 선택, 비활성 Best-of-N, 과거 VSA ablation
+설정은 현재 설정 목록에서 제거했습니다.
 
 ```bash
-cd lerobot/skillVLA/libero/configs/train_skillVLA/PT/eval
-./submit_xyz_head_eval.sh --dry-run
-./submit_xyz_head_eval.sh
+cd lerobot/skillVLA/libero/configs/train_skillVLA/PT/VSA
+./submit_train.sh
+# 기존 할당 사용: ./submit_train.sh --JOB_ID
+# 연세 서버 사용: ./submit_train.sh --yonsei
 ```
 
-Each model writes `metrics.json`, CSV/JSONL predictions and an HTML report under
-`eval/outputs_xyz_head/<output_name>/`. The HTML includes overall and per-task
-mean/median/RMSE/P90 3D error, per-axis MAE, and every skill-start Top/Wrist
-image. The fixed Top camera overlays GT XYZ as a green circle, predicted XYZ as
-a red cross, and their pixel displacement as a yellow line. The evaluator calls
-only `predict_expert_xyz`; the Expert action flow is never sampled.
-
-The old 16 diffaux3 detach/attach/xyzw1 names are retired. New GT variants have
-separate checkpoint revisions and must not load those predicted-XYZ weights as
-if they were the same architecture. Existing diffaux2 models keep their original
-predicted-XYZ behavior. Diffaux4 `_last` is available only for the learned Gemma
-token + UV AdaRMS variants. No `_uvtoken_last` or `_xyzw1` variant is registered.
+`training.gradient_checkpointing`에서 LLM(`vlm`), Vision(`vision`),
+Action Expert(`action_expert`), Skill planner(`skill_planner`)를 각각 지정합니다.
+현재는 모두 false입니다. 체크포인트는 최신 1개와 50k/100k를 보관하며,
+동일 모델·suffix로 재실행하면 `checkpoints/last`에서 이어학습합니다.
 
 ## Predictor modes and spatial targets
 
@@ -371,189 +113,6 @@ Use `SKILL_AUX_DRY_RUN=1 bash Predictor/submit_train.sh` to inspect the snapshot
 resolved output paths, and one-GPU request without submitting. Lists are PT-only;
 FT continues to inherit its architecture from its warm-start checkpoint.
 
-## Terminator architectures sharing one GPU
-
-The same independent-process sharing is available for PT Terminators:
-
-```yaml
-fsq_terminator:
-  architecture: [Term_Token_3_both, Term_Token_4_both]
-training:
-  dataloader: {batch_size: 32, workers: 12, gpus: 1}
-slurm: {gres: "gpu:1", cpus: 32, memory: 192G, time: "24:00:00"}
-```
-
-Run the normal `Terminator/submit_train.sh`: one GPU allocation launches every
-listed architecture **concurrently**, with independent model/optimizer/W&B run,
-architecture-specific output folder and automatic checkpoint resume. Three or
-more names also work if the combined VRAM fits; these are not sequential jobs.
-The dataset is staged once, not once per model. No parameters, losses or batches
-are shared. Batch size and dataloader workers remain **per model**; Slurm CPU/RAM
-are job totals, not automatically multiplied. Shared GPU compute can reduce each
-model's speed, and the sample resources above are not a memory guarantee.
-
-The parent logs show each worker's status; individual logs and exit codes are in
-`Terminator/logs/terminator_group_<job id>/`. A failed model does not stop healthy
-models; the job reports failure if any model fails. Cancelling stops all workers.
-A scalar architecture keeps the original single-model/DDP path. Lists require
-exactly one GPU and Terminator-only PT; standalone FT still inherits one model
-from its warm-start checkpoint. Duplicate/unknown names and mixed Predictor +
-Terminator lists are rejected before any job is submitted. A one-item list also
-uses the ordinary single-model path. `SKILL_AUX_DRY_RUN=1 ./submit_train.sh` from
-`Terminator/` shows every output and the resource request without submitting.
-
-## Direct / Residual layer split
-
-For `direct_patch_1..6`, `residual_patch_1..6`, and their `_dGD` variants,
-`architecture.visual_bridge_last_n_layers` accepts 1..17. The first `18-N`
-Expert layers predict the 4H motion base; the last `N` layers process its
-current H-token slice and each read their corresponding Cond bottleneck.
-For example, `1` keeps the existing 17+1 split and run name, while `9` selects
-9+9 and adds `_layer9` after the architecture label in the run name.
-`_dGD` detaches the action path at the selected split. FT and evaluation
-inherit the split from the checkpoint without another setting.
-
-## Bspline current-observation memory ablations
-
-Both models retain `fullskill_bspline_3_lastlayer_lastvis_current`'s live
-current Z18, H-token main path, current proprio plan auxiliary loss, and one
-current patch auxiliary pass. Select either under `architecture.name`; use
-`visual_bridge_last_n_layers: 9` for the 9+9 split (the split remains configurable).
-
-- `fullskill_bspline_3_lastlayer_lastvis_current_preskill`: the first late layer
-  reads the previous skill's 30 plan hidden tokens instead of the current plan.
-  Training uses frame `s-1`, where `s` is the **same causal jittered current
-  start**; previous skill code/start/end XYZ accompany that observation. A
-  previous start later than this observation is causally clipped too. Extraction
-  uses a fixed Gaussian template at tau=1, runs only Cond and the Expert prefix
-  under no-grad/eval, and stops **before** any plan read: there is no recursion.
-  Eval snapshots every observed frame, not only action replans, and caches the
-  previous plan per skill occurrence. Episode BOS has a masked whole reader
-  update; reset clears history. Past inputs use the saved state normalization.
-- `fullskill_bspline_3_lastlayer_lastvis_current_none`: bypass the entire
-  30-token cross-attention reader. The prefix's H hidden tokens pass directly to
-  the late layers, while 30-token proprio auxiliary supervision remains active.
-  It needs no prior observation encoding or cache.
-
-Existing architectures retain their original memory and gradient behavior.
-FT inherits these contracts from its warm-start checkpoint; PT and FT eval use
-the same occurrence-aware runtime wrapper. External callers of the preskill
-model must provide the explicit `preskill_*` observation contract (including a
-validity mask and occurrence id), not a recursively generated action history.
-
-## UV_Bspline_skill independent start planners
-
-Set `architecture.name` in `VSA/vsa_train_config.yaml` to one of:
-
-| Name | Planner input | Fullskill readout / objective |
-| --- | --- | --- |
-| `UV_Bspline_skill_learnable` | 30 learned tokens | Direct 30×8D proprio MSE |
-| `UV_Bspline_skill_learnable_wovis` | 30 learned tokens, no prefix vision | Direct 30×8D proprio MSE |
-| `UV_Bspline_skill_denoising` | 30 independent noisy 8D proprio tokens | Direct velocity readout, proprio flow matching |
-| `UV_Bspline_skill_denoising_none` | 30 independent GT-noised proprio tokens (training only) | One FM forward; no Action plan reader or rollout planner |
-| `UV_Bspline_skill_denoising_none_wovis` | Same one-pass FM, no prefix vision | One FM forward; no Action plan reader or rollout planner |
-| `UV_Bspline_skill_learnable_query` | 10 learned tokens (`chunk_size`) | Existing 30 queries + generator + proprio MSE |
-| `UV_Bspline_skill_learnable_nouv` | 30 learned tokens; no direct Expert end UV | Direct 30×8D proprio MSE |
-| `UV_Bspline_skill_learnable_wovis_nouv` | Same, no prefix vision | Direct 30×8D proprio MSE |
-| `UV_Bspline_skill_denoising_none_nouv` | One-pass independent FM; no direct Expert end UV | No Action plan reader or rollout planner |
-| `UV_Bspline_skill_denoising_none_wovis_nouv` | Same, no prefix vision | No Action plan reader or rollout planner |
-
-The four `denoising_none` variants and the two UV-input `learnable` variants
-also accept a final `_last` suffix:
-`UV_Bspline_skill_learnable_last`,
-`UV_Bspline_skill_learnable_wovis_last`,
-`UV_Bspline_skill_denoising_none_last`,
-`UV_Bspline_skill_denoising_none_wovis_last`,
-`UV_Bspline_skill_denoising_none_nouv_last`, and
-`UV_Bspline_skill_denoising_none_wovis_nouv_last`.
-With the same 9+9 split (`visual_bridge_last_n_layers: 9`), only L18 reads the
-current final vision bottleneck. L10–L17 omit vision cross-attention but retain
-their normal action computation and current proprio/time conditioning.
-The prefix vision/UV ablations and joint bottleneck self-attention remain
-identical to each named baseline. The `learnable` pair retains 30 learned
-start-plan inputs, direct proprio regression and the Action plan reader;
-`denoising_none` retains its one-pass fullskill FM auxiliary and inference
-without an Action plan reader. Select a new name in `architecture.name` or
-pass it to `PT/VSA/submit_train.sh`; PT, checkpoint evaluation, and FT resolve
-the same registered contract. Existing names/revisions retain their behavior.
-
-The ten base variants use ordinary aux3 (no current/preskill): 100-token
-joint self-attention, Top/Wrist/XYZ auxiliary heads, shared 9+9 Expert, start
-vision at L9 except `_wovis`, and current vision/proprio at L10–L18. No aux5
-Gemma XYZ head or extra XYZ loss is added. All three auxiliary targets remain
-clean and keep their original weights and start/current averaging.
-
-`learnable`, `denoising_none` and their `_wovis` variants condition the prefix
-Expert on **end UV + start XYZ**, never end XYZ. Training perturbs GT endpoint
-XYZ by Uniform(-0.01,+0.01) metres per axis, projects it through calibrated
-Top camera metadata and clips UV. The same UV conditions vision and Expert;
-cached UV is not jittered directly. At inference, the selected `focus_source`
-supplies UV; finite clipped coordinates are retained even if the original
-projection was out of frame. No GT endpoint or predicted XYZ is fed to these
-four Experts. Bottleneck XYZ prediction remains an auxiliary objective.
-Their saved revisions end in `expert_uv_v2`, rejecting older XYZ-input weights
-under the same name rather than silently reusing an incompatible adapter.
-
-The four `_nouv` models remove that direct endpoint UV adapter from **both
-Planner and Action L1–L9**, leaving Skill, start XYZ and time. No endpoint XYZ
-replacement is added. Vision tower UV conditioning, XYZ-space ±0.01m training
-noise, clean auxiliary targets and loss weights stay unchanged. Thus UV can
-still affect the non-`_wovis` prefix indirectly through its start-vision tokens;
-`_wovis_nouv` removes that prefix visual connection as well. Current vision at
-L10–L18 still receives UV in every variant. Their separate checkpoint revisions
-end in `expert_start_xyz_only_v1`. Select the full model name in the training
-YAML or submission CLI; PT, FT and evaluation resolve the same architecture.
-
-The unmodified `denoising` and `learnable_query` models keep GT end XYZ during
-training and their own cached start-bottleneck XYZ prediction at inference.
-In Stage-1 eval, UV-only models use `expert_xyz_source: auto` (resolves to
-`native`) or `native`; override an inherited explicit `predicted`/`gt` setting.
-
-`_wovis` disables the start-vision bridge in **both Planner and Action L1–L9**.
-It leaves every late L10–L18 vision bridge and current proprio unchanged.
-Start images still train the shared auxiliary heads; inference skips their
-unused encoding. Planner conditions still include Skill, start XYZ and end
-UV (except `_nouv`), so this removes direct visual-token input rather than all scene-dependent
-information (UV may itself come from a predictor).
-
-The planner runs a **separate prefix forward** from start observations and
-skill/goal conditions (without the start images for `_wovis`). It never reads current observations, action noise or
-action hidden states. Learned inputs use fixed time=1. Direct modes remove
-the separate output query/generator, projecting 30 prefix states to plan width;
-the query variant retains that generator. Action still denoises its own H-token
-chunk. Reader models read the generated 30-token plan before L10;
-their shared prefix weights and plan latents receive Action gradients without
-an extra detach. Input length differs between the two learned variants,
-so their comparison does not isolate only the output-query mechanism.
-
-During training, start-only planning and current-observation Action learning
-both run on every batch. Loss is `Action + Plan + 0.1*(Top + Wrist + XYZ)`;
-the three auxiliaries retain aux3's start/current averaging. `Plan` is MSE for
-learned modes, or FM loss for denoising, using `bspline.weight` (default 1).
-FM operates on quantile-normalized 30×8D proprio, not action commands. Its
-teacher-noised GT is used only for the separate FM loss. In the denoising reader
-model, Action reads a freely generated plan: training samples the planner using
-`policy.num_inference_steps` (default 10), then re-encodes the clean state at
-t=0. This costs more prefix forwards and memory than the one-pass learned
-variants. `planner/flow_loss` or `planner/regression_loss` identifies the loss
-in metrics; `bspline/mae_normalized` measures generated-plan error.
-
-For the reader models, inference creates the plan once per skill occurrence, holds it across all
-Action replans, updates only changed batch elements, and clears it on reset.
-Repeated identical FSQ codes use the occurrence ID to distinguish skills.
-The `denoising_none` models instead pass the H-token Action hidden directly
-from L9 to L10 with no plan-reader update. Its fullskill branch does **one**
-GT-noised FM forward per supervised batch and no iterative sampling or clean
-re-encoding. Only the prefix weights/vision conditioning are shared; Action
-gradients do not directly reach the fullskill-specific projection/velocity head.
-Action-only/disabled-FT-plan training and normal inference skip this branch
-entirely, with no plan cache. Fullskill video overlay is skipped for these models
-(Input UV overlay remains available). Metrics omit generated-plan MAE rather
-than presenting teacher-noised velocities as a clean plan.
-PT warm-start allowlists, saved architecture revisions, Stage-1 eval/video
-capture and standalone FT all use these names. `submit_train.sh <name>` also
-works. Selecting a name does not submit a job by itself.
-
 ## GPU allocation in Stage-1 eval
 
 The existing `eval_num_gpus` and `eval_max_workers_per_gpu` settings also apply
@@ -587,64 +146,3 @@ one chart per model with a separate line for each task. Thus one model produces
 two line charts, and N models produce N+1. Curves sort checkpoints numerically,
 and unavailable task results are gaps. Every finished array worker refreshes
 the charts using the metrics available so far.
-
-### Current-image dual bottleneck (π0.5 VLM, 9–9)
-
-`UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9` shares one current Top/Wrist
-SigLIP + PaliGemma encoding between two independent recurrent 100-token
-bottleneck towers. Every tower has Top/Wrist/XYZ queries (1/1/1) and 97 remaining
-queries, with joint self-attention inside that tower. Their final outputs feed
-all Expert L1–9 and L10–18 respectively through separate visual bridges.
-
-L1–9 receives Skill, projected goal UV, current proprio, and flow time. L10–18
-and the final Expert norm receive only flow time as a direct AdaRMS condition;
-the action hidden still propagates from L1–9. There is no skill-start XYZ
-adapter, start-image pass, plan reader, or task-language input. The VLM prefix
-keeps the existing Skill/UV/proprio formatting and ±0.01 m XYZ-space goal
-randomization before UV projection/clipping.
-
-A separate 30×8 noisy fullskill trajectory traverses only the shared L1–9
-weights for one flow-matching auxiliary forward. Its noise/time are independent
-of action noise/time, its input uses current proprio and the lower bottleneck,
-and its clean target never enters the action path. Normal inference runs only
-the action denoising chain. Both bottlenecks have independent Top patch, Wrist
-patch, and endpoint XYZ heads, trained against the same clean skill-end labels:
-
-```
-L = L_action + bspline.weight * L_fullskill_FM
-    + 0.5 * (L_aux_lower + L_aux_upper)
-L_aux_tower = 0.1 * (L_top_patch + L_wrist_patch + L_endpoint_xyz)
-```
-
-Set `architecture.name` in `VSA/vsa_train_config.yaml` to this name; the selector
-fixes the 9–9 split. The same YAML controls all four checkpointing streams
-independently (currently all false) and disables extra sensitivity-debug forwards
-by default. Existing Dual checkpoints resume from their saved training state
-when the model settings and output suffix match:
-
-```bash
-cd lerobot/skillVLA/libero/configs/train_skillVLA/PT/VSA
-./submit_train.sh
-```
-
-The `_last` variant, `UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_last`,
-changes only the Expert visual-bridge locations: the lower tower connects at
-L9 and the upper tower at L18. The auxiliary fullskill branch likewise reads
-the lower tower only at L9. Both recurrent towers, direct conditioning, and
-losses are unchanged. Select it with `architecture.name` in the same
-`VSA/vsa_train_config.yaml`; use `training.gradient_checkpointing` for memory
-controls and the active server profile for GPU scheduling. To resume either
-variant, retain its model name and `run.suffix` and raise the target step count;
-the existing `checkpoints/last` restores model, optimizer, scheduler, and RNG state.
-
-W&B includes `bspline/*`, `planner/flow_loss`, and separate
-`vision_aux/lower/*` / `vision_aux/upper/*` metrics. This is a fresh architecture;
-use its separate output name rather than resuming a Vanilla checkpoint.
-
-Predictor submissions on RunPod automatically attach the existing HF checkpoint
-watchdog when `runpod_watchdog.enabled` is true. It keeps 50k/100k and the latest
-one checkpoint locally and on HF, uploading retained saves before pruning. There
-is no Pod time limit: training ends at 100k. Once the local training jobs stop
-(success or failure), checkpoint upload completes before the Pod is terminated;
-logs are archived to the private dataset repository. The watchdog is detached
-and logs under `.cache/runpod_training_watchdogs/`. Slurm submissions are unchanged.

@@ -2511,12 +2511,26 @@ def build_settings(config: dict) -> dict:
             "oracle.repeat_episodes and oracle.broadcast_single_episode are "
             "mutually exclusive."
         )
+    unaligned_gt = as_bool(_at(config, "oracle", "allow_unaligned_gt", default=False))
+    reference_ids = _at(config, "oracle", "reference_episode_ids", default=[])
+    if not isinstance(reference_ids, list) or any(
+        isinstance(ep, bool) or not isinstance(ep, int) or ep < 0 for ep in reference_ids
+    ) or len(reference_ids) != len(set(reference_ids)):
+        raise ValueError("oracle.reference_episode_ids must be unique non-negative integers.")
+    if unaligned_gt and (get_value(config, "target_task", "") != "Coffee_D0" or episode_exact):
+        raise ValueError("oracle.allow_unaligned_gt requires non-exact Coffee_D0 evaluation.")
+    if reference_ids and not unaligned_gt:
+        raise ValueError("oracle.reference_episode_ids requires oracle.allow_unaligned_gt=true.")
+    for model in resolved:
+        if unaligned_gt:
+            model["allow_unaligned_gt"] = True
+            model["gt_reference_episode_ids"] = reference_ids
     foveated_models = [
         model
         for model in resolved
         if (model["needs_focus_uv"] or model["terminator_needs_goal_uv"]) and model["focus_source"] == "gt"
     ]
-    if foveated_models and not episode_exact:
+    if foveated_models and not episode_exact and not unaligned_gt:
         labels = ", ".join(model["label"] for model in foveated_models)
         raise ValueError(
             "GT-focus Stage-1 evaluation requires oracle.episode_exact=true "
@@ -2533,7 +2547,7 @@ def build_settings(config: dict) -> dict:
         )
         and model["pose_source"] == "gt"
     ]
-    if gt_pose_models and not episode_exact:
+    if gt_pose_models and not episode_exact and not unaligned_gt:
         labels = ", ".join(model["label"] for model in gt_pose_models)
         raise ValueError(
             "GT end-pose Stage-1 evaluation requires oracle.episode_exact=true; "

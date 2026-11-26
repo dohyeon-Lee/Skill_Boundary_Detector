@@ -58,7 +58,7 @@ if [ "${STAGE1_GROUP_RUNS_JSON:-[]}" != "[]" ] && [ "${STAGE1_GROUP_WORKER:-0}" 
   source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/stage_skillvla_dataset.sh"
   stage_skillvla_dataset_on_node "${SKILLVLA_DATASET_DIR}" "VSA group dataset"
   export SKILLVLA_GROUP_STAGE_READY=1
-  GROUP_RUNNER="${STAGE1_GROUP_RUNNER:-${SRC_DIR}/../Terminator/src/run_predictor_group.py}"
+  GROUP_RUNNER="${STAGE1_GROUP_RUNNER:-${SRC_DIR}/auxiliary/run_predictor_group.py}"
   GROUP_WORKER="${STAGE1_GROUP_WORKER_SCRIPT:-${SRC_DIR}/train.sbatch}"
   GROUP_LOG_DIR="${SUBMIT_DIR}/logs/vsa_group_${SLURM_JOB_ID:-$$}"
   if [ "${SBD_SRUN_EXISTING_STEP:-0}" = "1" ]; then
@@ -94,7 +94,11 @@ echo "cumulative XYZ: enabled=${CUMULATIVE_XYZ_LOSS_ENABLED} weight=${CUMULATIVE
 echo "mode z  : enabled=${SKILL_FLOW_LATENT_BEST_OF_N_ENABLED} N=${SKILL_FLOW_LATENT_CANDIDATES} K=${SKILL_FLOW_LATENT_TOP_K} M=${SKILL_FLOW_LATENT_ASSIGNMENT_TIMESTEPS} ranking=${SKILL_FLOW_LATENT_RANKING_ROUTE} fp32=${SKILL_FLOW_LATENT_FP32}"
 echo "skill   : ${TRAINING_SKILL_SOURCE}   predictor=${SKILL_PREDICTOR_CHECKPOINT_PATH:-none}"
 echo "batch   : ordinary random shuffle"
-echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
+if [[ "${ARCHITECTURE_LABEL}" == *pi05vlm* ]]; then
+  echo "vision  : pretrained pi0.5 SigLIP from ${PI_BASE}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
+else
+  echo "vision  : DINO ${DINO_MODEL_PATH}   frozen=${FREEZE_VISION_ENCODER} lr_scale=${DINO_LR_SCALE}"
+fi
 echo "foveate : enabled=${FOVEATED_VISION_ENABLED} mode=${FOVEATION_MODE} crop=${FOVEATION_CROP_SIZE}->${FOVEATION_OUTPUT_SIZE}px inner=${FOVEATION_INNER_BOX_MODE}:${FOVEATION_INNER_BOX_SIZE}px"
 echo "           shape=${FOVEATION_SHAPE} sharp=${FOVEATION_SHARP_SIZE}px feather=${FOVEATION_FEATHER}px periphery=${FOVEATION_PERIPHERAL_MODE} peripheral_blur=${FOVEATION_PERIPHERAL_BLUR_RADIUS}"
 echo "augments: enabled=${FOVEATION_RANDOMIZATION_ENABLED} color=${FOVEATION_COLOR_ENABLED} crop(top-only)=${FOVEATION_CROP_ENABLED} outer=${FOVEATION_CROP_OFFSET_MIN_PX}:${FOVEATION_CROP_OFFSET_MAX_PX}px inner=${FOVEATION_INNER_BOX_OFFSET_MIN_PX}:${FOVEATION_INNER_BOX_OFFSET_MAX_PX}px input_blur(top+wrist)=${FOVEATION_INPUT_BLUR_ENABLED}"
@@ -114,6 +118,7 @@ if [ ! -e "${SKILLVLA_DATASET_DIR}" ]; then
 fi
 
 source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/stage_skillvla_dataset.sh"
+export SKILLVLA_STAGE_DEREFERENCE_SYMLINKS="${DATASET_STAGING_DEREFERENCE:-false}"
 if [ "${SKIP_DATASET_STAGING:-false}" = "true" ]; then
   echo "dataset staging: skipped (native dataset references its raw source in place)"
 else
@@ -134,6 +139,10 @@ fi
 
 stage1_configure_launcher "${NUM_GPUS}" "${PROJECT_ROOT}/.venv/bin/lerobot-train"
 DATASET_GROUP_ARGS=()
+DROID_FILTER_ARGS=()
+if [ -n "${DROID_IDLE_FILTER:-}" ]; then
+  DROID_FILTER_ARGS=(--droid_idle_filter="${DROID_IDLE_FILTER}")
+fi
 if [ -n "${DATASET_EPISODES:-}" ] && [ "${DATASET_EPISODES}" != null ]; then
   DATASET_GROUP_ARGS=(--dataset.episodes="${DATASET_EPISODES}")
 fi
@@ -142,6 +151,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --dataset.repo_id="${REPO_ID}" \
     --dataset.root="${SKILLVLA_DATASET_DIR}" \
     --dataset.video_backend=pyav \
+    "${DROID_FILTER_ARGS[@]}" \
     "${DATASET_GROUP_ARGS[@]}" \
     --policy.type=skill_expert \
     --policy.pretrained_path="${PI_BASE}" \
@@ -270,6 +280,7 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --policy.skill_flow_weight="${SKILL_FLOW_WEIGHT}" \
     --policy.bspline_tokens="${BSPLINE_TOKENS:-30}" \
     --policy.bspline_gripper_action="${BSPLINE_GRIPPER_ACTION:-false}" \
+    --policy.bspline_gripper_action_range="${BSPLINE_GRIPPER_ACTION_RANGE:-[-1.0,1.0]}" \
     --policy.bspline_loss_weight="${BSPLINE_LOSS_WEIGHT:-1.0}" \
     --policy.skill_flow_max_length="${SKILL_FLOW_MAX_LENGTH}" \
     --policy.skill_flow_target="${SKILL_FLOW_TARGET}" \
@@ -313,6 +324,8 @@ PYTORCH_ALLOC_CONF=expandable_segments:True "${TRAIN_LAUNCH[@]}" \
     --batch_size="${BATCH_SIZE}" \
     --num_workers="${NUM_WORKERS}" \
     --dataloader_prefetch_factor="${DATALOADER_PREFETCH_FACTOR:-4}" \
+    --dataloader_pin_memory="${DATALOADER_PIN_MEMORY:-false}" \
+    --dataloader_persistent_workers="${DATALOADER_PERSISTENT_WORKERS:-false}" \
     --steps="${STEPS}" \
     --log_freq="${LOG_FREQ}" \
     --save_freq="${SAVE_FREQ}" \

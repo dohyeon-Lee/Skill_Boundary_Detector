@@ -43,6 +43,17 @@ def _config(tmp_path: Path) -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("model_root", ["outputs", "shared_pt_outputs"])
+def test_resolving_exported_dp_root_does_not_append_dp_twice(tmp_path, monkeypatch, model_root):
+    config = _config(tmp_path)
+    config["dp_outputs_root"] = model_root
+    first = dp_train_settings(config)
+    monkeypatch.setenv("DP_OUTPUTS_ROOT", str(first["dp_outputs_root"]))
+    second = dp_train_settings(config)
+    assert second["dp_outputs_root"] == tmp_path / model_root / "DP"
+    assert second["dp_policy_path"] == first["dp_policy_path"]
+
+
 def test_dp_settings_resolve_only_dp_inputs(tmp_path: Path):
     settings = dp_train_settings(_config(tmp_path))
 

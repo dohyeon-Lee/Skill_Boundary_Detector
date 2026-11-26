@@ -342,7 +342,8 @@ def _state_xyz_quantiles(dataset_dir: Path) -> tuple[list[float], list[float]]:
     stats_path = dataset_dir / "meta" / "stats.json"
     if not stats_path.is_file():
         return [], []
-    stats = json.loads(stats_path.read_text()).get("observation.state") or {}
+    info = json.loads((dataset_dir / 'meta/info.json').read_text())
+    stats = json.loads(stats_path.read_text()).get(info.get('skill_spatial_state_key', 'observation.state')) or {}
     bounds: list[list[float]] = []
     for name in ("q01", "q99"):
         values = stats.get(name) or []
@@ -355,7 +356,8 @@ def _state_quantiles(dataset_dir: Path, dim: int) -> tuple[list[float], list[flo
     stats_path = dataset_dir / "meta" / "stats.json"
     if not stats_path.is_file():
         return [], []
-    stats = json.loads(stats_path.read_text()).get("observation.state") or {}
+    info = json.loads((dataset_dir / 'meta/info.json').read_text())
+    stats = json.loads(stats_path.read_text()).get(info.get('skill_spatial_state_key', 'observation.state')) or {}
     bounds = []
     for name in ("q01", "q99"):
         values = stats.get(name) or []
@@ -447,6 +449,8 @@ def _read_dataset_contract(dataset_dir: Path, run_tag: str) -> dict:
         ).strip(),
         "state_dim": state_dim,
         "action_dim": action_dim,
+        "droid_spatial": info.get('environment_type') == 'droid' and info.get('skill_spatial_state_key') == 'observation.states.ee_state',
+        "gripper_action_range": info.get('skill_gripper_action_range', [-1., 1.]),
         "proprio_grounding": proprio_grounding,
         "focus_uv_path": focus_path,
         "focus_uv_recorded_path": recorded_focus_path,
@@ -636,13 +640,17 @@ def build_settings(config: dict) -> dict:
             )
         ),
     )
+    uses_condition_vlm = str(_at(config, "architecture", "name", default="")).strip().lower() in PI05_VLM_LABELS
+    # VLM models retain this compatibility metadata without exposing an unused
+    # DINO selector in their training YAML. Actual images use the pi0.5 encoder.
     dino_model = _local_model_path(
-        project_root, str(_at(config, "vision", "dino_model", default="models/dinov3-vitl16"))
+        project_root, str(_at(config, "vision", "dino_model", default=(
+            "models/dinov3-vits16" if uses_condition_vlm else "models/dinov3-vitl16"
+        )))
     )
     fsq_path = dataset_dir.parent / "FSQ.pt"
     if not (pi_base / "model.safetensors").is_file():
         raise FileNotFoundError(f"pi0.5 base checkpoint not found: {pi_base}")
-    uses_condition_vlm = str(_at(config, "architecture", "name", default="")).strip().lower() in PI05_VLM_LABELS
     if not uses_condition_vlm and not dino_model.is_dir():
         raise FileNotFoundError(f"DINO model not found: {dino_model}")
     training_skill_source = str(
@@ -1018,9 +1026,10 @@ def build_settings(config: dict) -> dict:
         architecture_config.get("bimanual_spatial_auxiliary", False)
     )
     if bspline_gripper_action:
-        if not is_bspline or bimanual_spatial_auxiliary or contract["state_dim"] != 8 or contract["action_dim"] != 7:
+        if (not is_bspline or bimanual_spatial_auxiliary or contract["state_dim"] != 8
+                or contract["action_dim"] != (8 if contract['droid_spatial'] else 7)):
             raise ValueError("bspline.gripper_action requires LIBERO-compatible 8D states and 7D actions.")
-        skill_plan_state_dim, chunk_end_state_dim = 7, 8
+        skill_plan_state_dim, chunk_end_state_dim = 7, (6 if contract['droid_spatial'] else 8)
     if bimanual_spatial_auxiliary:
         expected = [
             "observation.images.top",
@@ -1086,7 +1095,7 @@ def build_settings(config: dict) -> dict:
         dataset_dir, chunk_end_state_dim
     )
     if is_lit or is_bspline or architecture_label in VANILA_LABELS:
-        expected_state_dim = chunk_end_state_dim if is_bspline else 8
+        expected_state_dim = chunk_end_state_dim if is_bspline and not contract['droid_spatial'] else 8
         if contract["state_dim"] != expected_state_dim:
             raise ValueError(
                 f"Architecture expects state_dim={expected_state_dim}; "
@@ -2010,6 +2019,7 @@ def build_settings(config: dict) -> dict:
         "skill_flow_chunk_multiplier": skill_flow_chunk_multiplier,
         "bspline_tokens": bspline_tokens,
         "bspline_gripper_action": bspline_gripper_action,
+        "bspline_gripper_action_range": json.dumps(contract['gripper_action_range']),
         "bspline_loss_weight": bspline_loss_weight,
         "skill_flow_checkpoint_layers": skill_flow_checkpoint_layers,
         "skill_flow_latent_best_of_n_enabled": skill_flow_latent_best_of_n_enabled,
@@ -2044,6 +2054,8 @@ def build_settings(config: dict) -> dict:
         "dataloader_prefetch_factor": int(
             _at(config, "training", "dataloader", "prefetch_factor", default=4)
         ),
+        "dataloader_pin_memory": as_bool(_at(config, 'training', 'dataloader', 'pin_memory', default=False)),
+        "dataloader_persistent_workers": as_bool(_at(config, 'training', 'dataloader', 'persistent_workers', default=False)),
         "num_gpus": num_gpus,
         "gradient_checkpointing": checkpoint_global,
         "vsa_debug_steps": 0,
@@ -2079,12 +2091,15 @@ def build_settings(config: dict) -> dict:
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
         "skip_dataset_staging": bimanual_spatial_auxiliary,
+        "dataset_staging_dereference": config.get('workflow_domain') == 'droid',
     }
     settings.update({name + "_checkpointing": json.dumps(value) for name, value in checkpoint_streams.items()})
     settings = apply_droid_training_group(config, settings, dataset_dir,
         run_key='pt_run_name', output_key='pt_output_dir')
     if settings["dataloader_prefetch_factor"] <= 0:
         raise ValueError("training.dataloader.prefetch_factor must be positive.")
+    if settings['dataloader_persistent_workers'] and settings['num_workers'] == 0:
+        raise ValueError('training.dataloader.persistent_workers requires workers > 0')
     saved_config = settings["pt_output_dir"] / "checkpoints" / "last" / "pretrained_model" / "config.json"
     if saved_config.is_file():
         saved = json.loads(saved_config.read_text())

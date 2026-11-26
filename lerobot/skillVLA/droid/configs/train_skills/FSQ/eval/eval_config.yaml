@@ -1,0 +1,21 @@
+# Architecture, action space, normalization and SBD source come from each run.
+models:
+  - FSQ333_contrastiveON_routeON_loss_droid_success_5k_joint_velocity_without_deformable
+  - FSQ333_contrastiveON_routeON_loss_droid_success_5k_delta_pose_without_deformable
+  - FSQ3332_contrastiveON_routeON_loss_droid_success_5k_delta_pose_without_deformable
+checkpoint: 2000                  # last | 2000 | [1000, 2000]
+output_name: droid_fsq_3models_epoch2000_all_tasks_5ep
+
+task_ids: all                     # dataset task IDs, or e.g. [0, 3, 8]
+max_tasks: 0                      # first eligible tasks; 0 = all
+episodes_per_task: 5              # up to 5; include all demos of rarer tasks
+episode_selection: first          # first | random
+seed: 42
+camera: exterior_1                # exterior_1 | wrist | exterior_2
+boundary_jitter_sweep: true
+resume: true
+
+slurm:
+  cpus: 8
+  memory: 32G
+  time: '04:00:00'

@@ -1,6 +1,7 @@
 # Coffee 데이터와 빌드 모드
 target_dataset: coffee_d0_full_full
-skillvla_data_mode: ft  # pt | ft | ft_own | ft_epi. 앞단계 SBD에도 자동 적용.
+skillvla_data_mode: ft_own  # pt | ft | ft_own | ft_epi. 앞단계 SBD에도 자동 적용.
+# ft: 참조 PT의 PCA + 평균 임계값 재사용. ft_own: PCA는 PT 재사용, 평균 임계값만 대상 데이터로 계산.
 # SBD가 없으면 같은 GPU에서 자동 빌드. DP/검출기/워커는 train_skills/build_data YAML 사용.
 # 해당 recipe도 제출 시 함께 고정하며, target_dataset·mode·PT 참조는 이 YAML이 우선.
 
@@ -19,6 +20,7 @@ fsq_snap_reference:
 
 # 빌드 결과 — dataset_root는 global을 따름
 dataset_run: FSQ333_libero2000_{skillvla_data_mode}_coffee_d0
+# ft/ft_own은 PT PCA 재사용 빌드임을 구분하도록 결과 폴더에 _pcapt 자동 추가.
 proprio_grounding: episode_start_xyz
 fsq_levels: [3, 3, 3]
 

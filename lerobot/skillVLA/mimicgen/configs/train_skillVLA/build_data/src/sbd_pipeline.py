@@ -34,7 +34,8 @@ def settings(cfg):
     source.pop("sbd_recipe", None)
     source.pop("skillset_seg_name", None)
     for key in ("project_root", "dataset_root", "outputs_root", "server", "workflow_domain",
-                "target_dataset", "skillvla_data_mode"):
+                "target_dataset", "skillvla_data_mode", "skillset_pca_reference_path",
+                "skillset_pca_reference_sha256"):
         if key in cfg:
             source[key] = cfg[key]
     reference = cfg.get("skillvla_pt_reference", cfg.get("fsq_snap_reference"))

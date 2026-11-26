@@ -26,6 +26,33 @@ import numpy as np
 from codebook_visualizer import _clip_frame_or_blank
 
 
+def fsq_grid_coordinates(code: int, levels) -> tuple[int, int, int]:
+    """Decode the encoder's mixed-radix index: x changes fastest, then y, z."""
+    levels = tuple(int(value) for value in levels)
+    if len(levels) != 3 or any(value < 2 for value in levels):
+        raise ValueError('FSQ grid colors require three dimensions with at least two levels each')
+    if not 0 <= int(code) < int(np.prod(levels)):
+        raise ValueError(f'FSQ code {code} is outside grid {levels}')
+    value, coordinates = int(code), []
+    for level in levels:
+        coordinates.append(value % level)
+        value //= level
+    return tuple(coordinates)
+
+
+def fsq_grid_color(code: int, levels) -> str:
+    """Trilinear RGB cube: eight distinct corners and continuous interior colors."""
+    coordinates = fsq_grid_coordinates(code, levels)
+    rgb = [round(32 + 192 * coordinate / (int(level) - 1))
+           for coordinate, level in zip(coordinates, levels, strict=True)]
+    return '#' + ''.join(f'{channel:02x}' for channel in rgb)
+
+
+def _color_text(color: str) -> str:
+    rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#111111' if np.dot(rgb, [0.2126, 0.7152, 0.0722]) > 140 else '#ffffff'
+
+
 def build_gmm_visualizations(
     raw_dir: str | Path | list[str | Path] | tuple[str | Path, ...],
     episode_ids,
@@ -255,6 +282,8 @@ def _episode_video_html(video: dict, skills) -> str:
     aspect_ratio = float(video.get("aspect_ratio", 4.0 / 3.0))
     object_position_y = float(video.get("object_position_y", 0.0))
     camera_views = video.get("camera_views") or []
+    code_labels_only = bool(video.get("code_labels_only", False))
+    fsq_levels = video.get("fsq_levels")
     n_frames = max(1, int(skills[-1][1]) if skills else int(round((episode_end - episode_start) * fps)))
     palette = ("#2563eb", "#7c3aed", "#db2777", "#ea580c", "#16a34a", "#0891b2")
     payload = []
@@ -263,16 +292,24 @@ def _episode_video_html(video: dict, skills) -> str:
         start = int(frame_start)
         end = int(frame_end)
         color = palette[index % len(palette)]
+        if fsq_levels is not None and label is not None:
+            color = fsq_grid_color(int(label), fsq_levels)
         item = {"index": index, "start": start, "end": end, "label": label}
+        if fsq_levels is not None and label is not None:
+            item.update(color=color, coordinates=fsq_grid_coordinates(int(label), fsq_levels))
         payload.append(item)
         width = max(0.0, 100.0 * (end - start) / n_frames)
         label_text = f"sk{index}" + (f" · tok{label}" if label is not None else "")
+        if code_labels_only and label is not None:
+            label_text = f"FSQ {label}"
+            item["display_label"] = label_text
+        coordinates = f" · grid {item['coordinates']}" if 'coordinates' in item else ''
         segments.append(
             "<button class='skill-segment' type='button' "
             f"data-skill-index='{index}' data-frame-start='{start}' "
-            f"style='flex-basis:{width:.6f}%;background:{color}' "
-            f"title='{html_lib.escape(label_text)} · frames {start}–{end}'>"
-            f"<span>{html_lib.escape(f'sk{index}')}</span></button>"
+            f"style='flex-basis:{width:.6f}%;background:{color};color:{_color_text(color)}' "
+            f"title='{html_lib.escape(label_text + coordinates)} · frames {start}–{end}'>"
+            f"<span>{html_lib.escape(label_text if code_labels_only else f'sk{index}')}</span></button>"
         )
     skills_json = html_lib.escape(json.dumps(payload, separators=(",", ":")), quote=True)
     if len(camera_views) > 1:
@@ -305,6 +342,7 @@ def _episode_video_html(video: dict, skills) -> str:
             "<video class='episode-video' preload='none' muted playsinline controls "
             f"data-src='{src}' style='object-position:center {object_position_y:.6f}%'></video>"
         )
+    badge_style = f"border-left:6px solid {payload[0]['color']}" if payload and 'color' in payload[0] else ''
     return (
         "<div class='episode-player' "
         f"data-skills='{skills_json}' data-fps='{fps:.9g}' "
@@ -313,7 +351,7 @@ def _episode_video_html(video: dict, skills) -> str:
         f"<div class='{focus_class}' style='--video-aspect:{focus_aspect:.9g}'>"
         f"<div class='video-stage' style='aspect-ratio:{focus_aspect:.9g}'>"
         f"{media_html}"
-        "<div class='skill-badge'><strong>Skill 0</strong><span>waiting to load</span></div>"
+        f"<div class='skill-badge' style='{badge_style}'><strong>{html_lib.escape(payload[0].get('display_label', 'Skill 0') if payload else 'Skill 0')}</strong><span>waiting to load</span></div>"
         "<div class='boundary-flash'>SKILL CHANGE</div>"
         "<button class='video-expand' type='button' title='show only this video fullscreen'>"
         "⛶ 영상 크게 보기</button>"
@@ -564,8 +602,9 @@ def save_gallery(out_dir: Path, title: str, cards: list[tuple], filename: str = 
         "if(!force&&Number.isFinite(previous)){player.classList.remove('skill-change');void player.offsetWidth;"
         "player.classList.add('skill-change');setTimeout(()=>player.classList.remove('skill-change'),260);}}"
         "const badge=player.querySelector('.skill-badge');"
-        "badge.querySelector('strong').textContent=`Skill ${skill.index}${skill.label===null?'':` · tok${skill.label}`}`;"
-        "badge.querySelector('span').textContent=`frames ${skill.start}–${skill.end}`;"
+        "badge.querySelector('strong').textContent=skill.display_label||`Skill ${skill.index}${skill.label===null?'':` · tok${skill.label}`}`;"
+        "badge.querySelector('span').textContent=`${skill.coordinates?'grid ('+skill.coordinates.join(', ')+') · ':''}frames ${skill.start}–${skill.end}`;"
+        "if(skill.color)badge.style.borderLeft=`6px solid ${skill.color}`;"
         "player.querySelector('.skill-playhead').style.left=`${100*frame/Math.max(1,nFrames)}%`;"
         "const card=player.closest('.card'),timeline=card?card.querySelector('.timeline-canvas'):null;"
         "updateGmmForFrame(card,frame);"
@@ -627,13 +666,25 @@ def _skill_cut_frames(skills) -> list[int]:
     return [fs for fs, _fe, _lab in skills] + ([skills[-1][1]] if skills else [])
 
 
-def _plot_skill_cuts(ax, skills, *, annotate: bool = False) -> None:
+def _plot_skill_cuts(ax, skills, *, annotate: bool = False, code_labels_only: bool = False,
+                     fsq_levels=None) -> None:
     cut_frames = _skill_cut_frames(skills)
     y_top = ax.get_ylim()[1]
     for k, frame in enumerate(cut_frames):
-        ax.axvline(frame, color="#2f6fd0", linestyle=":", linewidth=1.0, alpha=0.85)
+        code = skills[min(k, len(skills) - 1)][2] if skills else None
+        color = fsq_grid_color(int(code), fsq_levels) if fsq_levels is not None and code is not None else '#2f6fd0'
+        line = ax.axvline(frame, color=color, linestyle=":", linewidth=1.0, alpha=0.85)
+        if fsq_levels is not None:
+            from matplotlib import patheffects
+            line.set_path_effects([patheffects.withStroke(linewidth=2, foreground='#555555')])
+            if k < len(skills):
+                ax.axvspan(skills[k][0], skills[k][1], ymin=0.97, ymax=1.0,
+                           facecolor=color, edgecolor='#555555', linewidth=0.4)
         if annotate and k < len(skills):
-            ax.text(frame, y_top, f"sk{k}", fontsize=6, color="#2f6fd0", va="bottom", ha="left")
+            label = f"FSQ {skills[k][2]}" if code_labels_only and skills[k][2] is not None else f"sk{k}"
+            text = ax.text(frame, y_top, label, fontsize=6, color=color, va="bottom", ha="left")
+            if fsq_levels is not None:
+                text.set_path_effects([patheffects.withStroke(linewidth=1.5, foreground=_color_text(color))])
 
 
 def _shade_excluded_tail(ax, curve: dict) -> None:
@@ -858,7 +909,8 @@ def plot_boundary_curve(ax, curve: dict, skills) -> None:
     _shade_excluded_initial_motion(ax, curve)
     _shade_excluded_tail(ax, curve)
     # Actual skill cuts used in the dataset (skill starts + final end).
-    _plot_skill_cuts(ax, skills, annotate=True)
+    _plot_skill_cuts(ax, skills, annotate=True, code_labels_only=bool(curve.get("code_labels_only", False)),
+                     fsq_levels=curve.get('fsq_levels'))
     ax.set_xlabel("frame", fontsize=8)
     ax.set_ylabel(ylabel, fontsize=8)
     ax.tick_params(labelsize=7)

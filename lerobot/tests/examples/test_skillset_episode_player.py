@@ -18,7 +18,42 @@ from skillset_boundary_viz import (  # noqa: E402
     plot_boundary_curve,
     render_skillset_card,
     save_gallery,
+    fsq_grid_coordinates,
+    fsq_grid_color,
 )
+
+
+def test_fsq_grid_colors_follow_encoder_coordinates_and_stay_fixed_between_occurrences(tmp_path):
+    import matplotlib.pyplot as plt
+    from skillset_boundary_viz import _episode_video_html
+
+    levels = [3, 3, 3]
+    assert fsq_grid_coordinates(3, levels) == (0, 1, 0)
+    assert fsq_grid_coordinates(13, levels) == (1, 1, 1)
+    corners = [x + 3 * y + 9 * z for x in [0, 2] for y in [0, 2] for z in [0, 2]]
+    assert len({fsq_grid_color(code, levels) for code in corners}) == 8
+    colors = [np.array([int(fsq_grid_color(code, levels)[i:i+2], 16) for i in (1, 3, 5)])
+              for code in [0, 1, 2]]
+    np.testing.assert_array_equal(colors[1], (colors[0] + colors[2]) / 2)
+    with pytest.raises(ValueError, match='outside grid'):
+        fsq_grid_color(27, levels)
+    skills = [(0, 5, 3), (5, 10, 13), (10, 15, 3)]
+    video = dict(video_src='test.mp4', fps=20, episode_start_sec=0, episode_end_sec=0.75,
+                 code_labels_only=True, fsq_levels=levels)
+    page = _episode_video_html(video, skills)
+    assert page.count('background:' + fsq_grid_color(3, levels)) == 2
+    assert 'grid (0, 1, 0)' in page
+    curve = dict(replan_ts=np.array([0, 5, 10]), div_cos=np.array([0.1, 0.2, 0.1]),
+                 sg_vals=np.array([0.1, 0.2, 0.1]), mean_val=np.array(0.1),
+                 peak_ts=np.array([], dtype=int), peak_vals=np.array([]),
+                 code_labels_only=True, fsq_levels=levels)
+    fig, ax = plt.subplots()
+    try:
+        plot_boundary_curve(ax, curve, skills)
+        cuts = [line for line in ax.lines if line.get_linestyle() == ':']
+        assert [line.get_color() for line in cuts[:3]] == [fsq_grid_color(c, levels) for c in [3, 13, 3]]
+    finally:
+        plt.close(fig)
 
 
 @pytest.mark.parametrize("system_ffmpeg", [None, "/system/bin/ffmpeg"])

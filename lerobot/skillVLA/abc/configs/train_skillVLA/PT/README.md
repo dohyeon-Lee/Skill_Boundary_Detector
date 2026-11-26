@@ -15,7 +15,7 @@ Run from `PT/VSA`:
 ./submit_train.sh
 ```
 
-`Predictor/` and `Terminator/` each provide a YAML and `submit_train.sh` with the
+`Predictor/` provides a YAML and `submit_train.sh` with the
 same `--JOB_ID` interface (for example `./submit_train.sh --73428`). Dataset and
 transition settings come from `stage1_common_config.yaml`; submitted configs are
 snapshotted. Existing ABC SkillVLA artifacts are reused without rebuilding.
@@ -27,16 +27,7 @@ It predicts the four-axis FSQ skill and both Top-image endpoints in
 projections are masked separately for each arm. Its occurrence-balanced start
 sampling inherits the common +/-23-frame half-normal transition randomization.
 
-The Terminator defaults to `Term_Token_1_dinoS_freeze`: one shared frozen DINO-S
-encodes all three views. Fusion combines current/start 14D proprio, skill, and
-the two Top UV goals and emits one termination probability for the bimanual
-skill. It keeps canonical boundaries (transition jitter off). Endpoint noise
-is applied in world XYZ before projecting each arm through the recorded Top
-camera. At 30 FPS its default sigma is 1.5 frames and post-end supervision is
-15 frames, preserving the LIBERO defaults' elapsed times. Frame counts remain
-editable in the Terminator YAML.
-
-These entries train the auxiliaries separately from VSA, and save under
-`outputs_ABC/skillVLA_PT/Predictor/` and `outputs_ABC/skillVLA_PT/Terminator/`.
-Both save every 10k steps, retaining the latest checkpoint plus permanent 50k
-and 100k checkpoints, matching the ABC VSA retention setting.
+Predictor uses the common backend in LIBERO `PT/src/auxiliary/` and writes to
+`outputs_ABC/skillVLA_PT/Predictor/`. Standalone Terminator training entries were
+removed. VSA's integrated termination reader and evaluation of saved external
+Terminator checkpoints remain available.

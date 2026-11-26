@@ -70,10 +70,13 @@ def test_checkpoint_and_loss_normalization_separate_action_from_finger_statistic
     assert legacy.bspline_plan_quantiles == (cfg.chunk_end_state_q01, cfg.chunk_end_state_q99)
 
 
-def test_seven_dimensional_flow_trains_and_visualizes_with_eight_dimensional_proprio(monkeypatch):
+@pytest.mark.parametrize('spatial_dim,gripper_range', [(8, [-1., 1.]), (6, [0., 1.])])
+def test_seven_dimensional_flow_trains_and_visualizes_with_eight_dimensional_proprio(monkeypatch, spatial_dim, gripper_range):
     torch.manual_seed(17)
     model = tiny_vlm_model(monkeypatch, LABEL, bspline_gripper_action=True,
-                           skill_plan_state_dim=7, device="cpu")
+                           skill_plan_state_dim=7, chunk_end_state_dim=spatial_dim,
+                           chunk_end_state_q01=[-2.]*spatial_dim, chunk_end_state_q99=[2.]*spatial_dim,
+                           bspline_gripper_action_range=gripper_range, device="cpu")
     images = [torch.rand(1, 3, 4, 4), torch.rand(1, 3, 4, 4)]
     state, code = torch.randn(1, 32), torch.tensor([1])
     goal = torch.tensor([[.2, -.3, 1., .1, .2, .3]])

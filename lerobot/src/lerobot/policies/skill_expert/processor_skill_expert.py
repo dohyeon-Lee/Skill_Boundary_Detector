@@ -52,6 +52,7 @@ from lerobot.policies.skillVLA.processor_skillVLA import (
     SKILL_PROGRESS,
     SKILL_START_IMAGE,
     SKILL_START_STATE,
+    SKILL_START_PROPRIO,
     SKILL_START_STATE_NORMALIZED,
     SKILL_START_WRIST_IMAGE,
     TERMINATOR_START_STATE_NORMALIZED,
@@ -127,6 +128,7 @@ SKILL_BATCH_KEYS = preskill_plan.KEYS + VLM_TERMINATION_KEYS + (
     SKILL_START_IMAGE,
     SKILL_START_WRIST_IMAGE,
     SKILL_START_STATE,
+    SKILL_START_PROPRIO,
     SKILL_START_FRAME,
     SKILL_START_REQUESTED_FRAME,
     SKILL_START_FOCUS_UV,
@@ -317,7 +319,7 @@ class SkillExpertNormalizerProcessorStep(NormalizerProcessorStep):
             complementary[SKILL_CANONICAL_ACTIONS] = self._normalize_action(
                 canonical_tensor, inverse=False
             )
-        start_state = complementary.get(SKILL_START_STATE)
+        start_state = complementary.get(SKILL_START_PROPRIO, complementary.get(SKILL_START_STATE))
         previous_state = complementary.get(preskill_plan.STATE)
         if previous_state is not None:
             feature = self.features[OBS_STATE]

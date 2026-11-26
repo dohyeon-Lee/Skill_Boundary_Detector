@@ -2,7 +2,9 @@
 target_dataset: coffee_d0_full_full
 
 # SkillVLA 데이터 용도 — 후속 SkillVLA 빌드와 같은 값 사용
-skillvla_data_mode: ft  # pt | ft | ft_own | ft_epi. ft=기준 PT의 평균 임계값 재사용.
+skillvla_data_mode: ft_own  # pt | ft | ft_own | ft_epi
+# ft: 참조 PT의 PCA + 평균 임계값 재사용. ft_own: PCA는 PT 재사용, 평균 임계값만 대상 데이터로 계산.
+# ft/ft_own 결과에는 _pcapt가 자동으로 붙어 기존 빌드와 구분됨.
 skillvla_pt_reference:
   dataset_root: dataset_filtered
   source: libero_90_full_full

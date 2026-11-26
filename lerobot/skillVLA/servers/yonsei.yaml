@@ -101,4 +101,6 @@ train_exclude_nodes:
   - node24
   - node14
   - node17
+  # 2026-11-25: bare cuInit(0) fails with CUDA_ERROR_UNKNOWN(999); node06 control passes.
+  - node22
   - node23

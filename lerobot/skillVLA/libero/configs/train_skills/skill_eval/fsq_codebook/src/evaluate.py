@@ -215,6 +215,9 @@ class _EpisodeFrameReader:
                 chunk_index=int(row[f"videos/{self.video_key}/chunk_index"]),
                 file_index=int(row[f"videos/{self.video_key}/file_index"]),
             )
+            video_path = video_path.resolve()
+            if not video_path.is_file():
+                raise FileNotFoundError(f"Dataset episode video not found: {video_path}")
             row_start, row_end = 0, 0
             timestamps["video_from_timestamp"] = float(
                 row[f"videos/{self.video_key}/from_timestamp"]
@@ -223,7 +226,14 @@ class _EpisodeFrameReader:
         link_path = output_dir / relative_path
         link_path.parent.mkdir(parents=True, exist_ok=True)
         if link_path.is_symlink() or link_path.exists():
-            if link_path.resolve() != video_path:
+            same = link_path.resolve() == video_path
+            if not same and getattr(self, "materialize_videos", False) and link_path.is_file():
+                same = os.path.samefile(link_path, video_path)
+                if not same and link_path.stat().st_size == video_path.stat().st_size:
+                    import hashlib
+                    with link_path.open("rb") as first, video_path.open("rb") as second:
+                        same = hashlib.file_digest(first, "sha256").digest() == hashlib.file_digest(second, "sha256").digest()
+            if not same:
                 raise FileExistsError(
                     f"Replay video asset points at an unexpected file: {link_path}"
                 )
@@ -231,6 +241,21 @@ class _EpisodeFrameReader:
             temporary = link_path.with_name(f".{link_path.name}.{os.getpid()}.tmp")
             temporary.unlink(missing_ok=True)
             temporary.symlink_to(os.path.relpath(video_path, temporary.parent))
+            os.replace(temporary, link_path)
+        if getattr(self, "materialize_videos", False) and link_path.is_symlink():
+            # Portable reports must survive rsync --safe-links. A hard link
+            # consumes no extra video bytes on the same filesystem; a copy on
+            # another filesystem still preserves the original encoded stream.
+            import errno
+            import shutil
+            temporary = link_path.with_name(f".{link_path.name}.{os.getpid()}.materialize")
+            temporary.unlink(missing_ok=True)
+            try:
+                os.link(video_path, temporary)
+            except OSError as error:
+                if error.errno != errno.EXDEV:
+                    raise
+                shutil.copy2(video_path, temporary)
             os.replace(temporary, link_path)
         return {
             "video_path": relative_path.as_posix(),
@@ -424,6 +449,8 @@ def run_one(args, shared: dict) -> None:
         "selected_episodes": {str(key): value for key, value in selected.items()},
         "seed": args.seed,
     }
+    if getattr(args, "video_playback", False):
+        signature["video_key"] = shared["reader"].video_key
     request = {
         "format": "fsq_gt_replay_request_v1",
         "episode_source": "exact" if args.eval_init_states_path else "dataset",
@@ -509,7 +536,7 @@ def run_one(args, shared: dict) -> None:
     video_assets = {
         episode_id: reader.browser_video_asset(episode_id, output_dir)
         for episode_id in by_episode
-        if reader.native_abc
+        if reader.native_abc or getattr(args, "video_playback", False)
     }
     # A resume of an already-rendered ABC report should add video playback
     # metadata without decoding the start/end PNGs again.

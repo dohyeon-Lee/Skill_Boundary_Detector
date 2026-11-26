@@ -83,7 +83,8 @@ def setup(tmp_path):
     cfg = yaml.safe_load((EVAL / 'eval_config.yaml').read_text())
     for key in ('dp_run_name', 'dp_checkpoint'):
         cfg.pop(key)
-    cfg.update(project_root=str(tmp_path), dataset_root='dataset_DROID', target_dataset='tiny', score_power=2,
+    cfg.update(project_root=str(tmp_path), dataset_root='dataset_DROID', target_dataset='tiny', source_dataset='tiny', score_power=2,
+               initial_mask=True, terminal_mask=True,
                policy_checkpoint=str(model), task_ids=[1,0], n_episodes=1, pca_scope='selected')
     path = tmp_path / 'eval.yaml'; path.write_text(yaml.safe_dump(cfg))
     return path, cfg
@@ -229,10 +230,13 @@ def test_episode_workers_partition_droid_manifest_and_merge_globally_once(setup,
     assert global_calls==[{'source':'selected','expected_episodes':4}]
 
 
-def test_cached_droid_report_uses_real_videos_and_one_global_threshold(setup,tmp_path,monkeypatch):
+@pytest.mark.parametrize('terminal_mask', [True, False])
+def test_cached_droid_report_uses_real_videos_and_one_global_threshold(setup,tmp_path,monkeypatch,terminal_mask):
     from run_parallel_ablation import load_evaluator
     from cache_state import cache_status,sha256
-    path,cfg=setup;settings=payload(path)
+    path,cfg=setup
+    cfg.update(initial_mask=False, terminal_mask=terminal_mask)
+    path.write_text(yaml.safe_dump(cfg));settings=payload(path)
     artifact=tmp_path/'partial';report=tmp_path/'report'
     settings.update(artifact_dir=str(artifact),skillset_dir=str(artifact/'source'),
                     report_root=str(report),output_dir=str(report/'src'))
@@ -278,6 +282,8 @@ def test_cached_droid_report_uses_real_videos_and_one_global_threshold(setup,tmp
     assert len(thresholds)==2 and len(set(thresholds))==1
     statistics=json.loads((report/'src/threshold_statistics.json').read_text())
     global_mean=statistics[settings['experiments'][0]['name']]
+    assert global_mean['initial_mask_frames']==0
+    assert global_mean['terminal_mask_frames']==(24 if terminal_mask else 0)
     assert global_mean['groups']['dataset']['calibration_episodes']==2
     assert global_mean['calibration']['source']=='selected'
     np.testing.assert_allclose(thresholds,global_mean['groups']['dataset']['threshold'])

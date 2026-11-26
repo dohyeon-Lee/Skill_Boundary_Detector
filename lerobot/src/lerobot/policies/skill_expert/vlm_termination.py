@@ -1,5 +1,6 @@
 """Termination objective over the shared VSA VLM; never resample VSA frames."""
 import torch
+from lerobot.utils.training_performance import scalar_metric
 from torch.nn import functional as F
 
 from lerobot.policies.skillVLA.vlm_termination_supervision import (
@@ -67,20 +68,20 @@ def vlm_termination_loss(model, config, batch, state):
         fp = (predicted & ~truth & valid).sum().float()
         fn = (~predicted & truth & valid).sum().float()
         metrics = {
-            "vlm_termination/loss": (current + extra).mean().item(),
-            "vlm_termination/current_loss": current.mean().item(),
-            "vlm_termination/post_end_loss": extra.mean().item(),
-            "vlm_termination/current_valid_fraction": valid.float().mean().item(),
-            "vlm_termination/positive_fraction": (truth & valid).sum().float().div(count).item(),
-            "vlm_termination/accuracy": ((predicted == truth) & valid).sum().float().div(count).item(),
-            "vlm_termination/precision": (tp / (tp + fp).clamp_min(1)).item(),
-            "vlm_termination/recall": (tp / (tp + fn).clamp_min(1)).item(),
+            "vlm_termination/loss": scalar_metric((current + extra).mean()),
+            "vlm_termination/current_loss": scalar_metric(current.mean()),
+            "vlm_termination/post_end_loss": scalar_metric(extra.mean()),
+            "vlm_termination/current_valid_fraction": scalar_metric(valid.float().mean()),
+            "vlm_termination/positive_fraction": scalar_metric((truth & valid).sum().float().div(count)),
+            "vlm_termination/accuracy": scalar_metric(((predicted == truth) & valid).sum().float().div(count)),
+            "vlm_termination/precision": scalar_metric(tp / (tp + fp).clamp_min(1)),
+            "vlm_termination/recall": scalar_metric(tp / (tp + fn).clamp_min(1)),
             "vlm_termination/extra_conditions_per_frame": rows.numel() / state.shape[0],
             "vlm_termination/post_end_conditions_per_frame": (
-                (batch[PAST_DISTANCE].to(logits.device)[rows, slots] <= 0).sum().item() / state.shape[0]
+                scalar_metric((batch[PAST_DISTANCE].to(logits.device)[rows, slots] <= 0).sum()) / state.shape[0]
                 if rows.numel() else 0.0
             ),
         }
         if probabilities:
-            metrics["vlm_termination/post_end_probability"] = torch.cat(probabilities).mean().item()
+            metrics["vlm_termination/post_end_probability"] = scalar_metric(torch.cat(probabilities).mean())
     return current + extra, metrics

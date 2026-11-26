@@ -30,6 +30,8 @@ def resolve(cfg):
         return p if p.is_absolute() else ROOT / p
     raw = path(cfg['dataset_root']) / cfg['target_dataset']
     run = cfg['dataset_run'].format(skillvla_data_mode=data_mode(cfg))
+    if cfg.get('skillset_pca_reference_path') and not run.endswith('_pcapt'):
+        run += '_pcapt'
     out = path(cfg['dataset_root']) / 'skillvla' / cfg['target_dataset'] / run
     if 'skillset_seg_name' in cfg:  # Explicit historical snapshots keep their selected input.
         skills = path(cfg['dataset_root']) / 'FSQ_dataset' / cfg['target_dataset'] / 'FSQ_inputs' / cfg['skillset_seg_name'] / 'skillset'
@@ -153,6 +155,8 @@ def build(cfg):
         contract['skillvla_data_mode'] = data_mode(cfg)
         if data_mode(cfg) == 'ft':
             contract['pt_threshold_sha256'] = sha256(cfg['skillset_global_threshold_source'])
+        if data_mode(cfg) in {'ft', 'ft_own'}:
+            contract['pt_pca_sha256'] = cfg['skillset_pca_reference_sha256']
     if snap:
         contract.update(fsq_snap_to_supported=True,
                         fsq_snap_min_code_freq=snap_min_frequency,
@@ -216,6 +220,10 @@ def build(cfg):
     threshold = Path(manifest['detector'].get('global_threshold_path') or skills/'global_boundary_threshold.json')
     (output/'sbd_source.json').write_text(json.dumps(dict(skillvla_data_mode=data_mode(cfg),
         skillset_dir=str(skills), global_threshold_path=str(threshold),
+        pca_path=str(skills/'action_probe_pca.npz'),
+        pca_sha256=sha256(skills/'action_probe_pca.npz'),
+        pca_reference_path=cfg.get('skillset_pca_reference_path', ''),
+        pca_reference_sha256=cfg.get('skillset_pca_reference_sha256', ''),
         global_threshold_sha256=sha256(threshold) if threshold.is_file() else None),indent=2)+'\n')
     (output/'.complete').write_text(json.dumps(dict(skills=count,contract=contract),indent=2)+'\n')
     print(f'Built {count} Coffee skills: {output}',flush=True)
@@ -229,6 +237,8 @@ def main():
         path = Path(a.config)
         raw_cfg = yaml.safe_load(path.read_text())
         raw_cfg['sbd_recipe'] = sbd_pipeline.recipe(cfg)
+        if cfg.get('skillset_pca_reference_sha256'):
+            raw_cfg['skillset_pca_reference_sha256'] = cfg['skillset_pca_reference_sha256']
         cfg['sbd_recipe'] = raw_cfg['sbd_recipe']
         resolve(cfg)  # Validate the frozen recipe and resource budget before submission.
         path.write_text(yaml.safe_dump(raw_cfg, sort_keys=False, allow_unicode=True))
@@ -241,10 +251,12 @@ def main():
             extras['dp_policy_path'] = sbd_pipeline.settings(cfg)[1]['dp_policy_path']
         print_shell(dict(raw_dataset_dir=paths['raw'],skillset_dir=paths['skillset'],fsq_model_path=paths['model'],output_dir=paths['output'],
                          skillset_global_threshold_source=cfg.get('skillset_global_threshold_source',''),
+                         skillset_pca_reference_path=cfg.get('skillset_pca_reference_path',''),
                          **extras,
                          **{k:v for k,v in paths.items() if k.startswith('fsq_')}))
     elif a.dry_run: print(json.dumps({**{k:str(v) for k,v in resolve(cfg).items()},
         'skillvla_data_mode':data_mode(cfg), 'pt_threshold_source':cfg.get('skillset_global_threshold_source',''),
+        'pt_pca_source':cfg.get('skillset_pca_reference_path',''),
         'pipeline':'SBD → FSQ → SkillVLA' if 'skillset_seg_name' not in cfg else 'FSQ → SkillVLA',
         **({'sbd_workers':sbd_pipeline.settings(cfg)[1]['skillset_single_gpu_workers']} if 'skillset_seg_name' not in cfg else {})},indent=2))
     else: build(cfg)

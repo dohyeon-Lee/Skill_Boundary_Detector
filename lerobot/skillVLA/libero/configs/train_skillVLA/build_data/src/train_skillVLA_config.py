@@ -10,6 +10,7 @@ Root/yaml helpers are reused from train_skills_config.py.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -329,6 +330,12 @@ def build_settings(
             "skillvla_data_mode must be pt|ft|ft_own|ft_epi, "
             f"got {skillvla_data_mode!r}."
         )
+    pca_source = str(get_value(cfg, "PCA", "ft")).strip().lower()
+    if pca_source not in {"pt", "ft"}:
+        raise ValueError(f"PCA must be pt|ft, got {pca_source!r}.")
+    if pca_source == "pt" and skillvla_data_mode == "pt":
+        raise ValueError("PCA: pt requires an FT data mode; use PCA: ft to build the PT reference itself.")
+    pca_suffix = "_pcapt" if pca_source == "pt" else ""
     # ── FSQ reference (declared like dp_policy_name: folder name + checkpoint) ──
     # The FSQ artifact is the source of truth for the DP/skillset taxonomy it
     # learned. Do not duplicate those fields in train_skillVLA_config.yaml.
@@ -463,6 +470,16 @@ def build_settings(
         }
     )
     probe_settings = skillset_probe_settings(artifact_cfg)
+    # Historical FSQ skillsets smoothed from frame zero. The history-mask
+    # option was introduced later and is recorded explicitly by newer builders.
+    # Never let a current Python/YAML default change the source FSQ recipe.
+    initial_mask_frames = detector_contract.get("initial_mask_frames", 0)
+    if type(initial_mask_frames) is not int or initial_mask_frames < 0:
+        raise ValueError(f"Invalid FSQ initial_mask_frames: {initial_mask_frames!r}")
+    probe_settings.update(
+        skillset_initial_mask_frames=initial_mask_frames,
+        skillset_initial_mask=initial_mask_frames > 0,
+    )
     fsq_skillset_mode = str(fsq_meta["skillset_mode"]).strip().lower()
     if fsq_skillset_mode == "spherical":
         probe_type, pca_scale_mode, probe_exclude_indices = "spherical_xyz", "none", ""
@@ -642,7 +659,7 @@ def build_settings(
     # Append only the remaining concise identity and the optional user label.
     run_tag += (
         f"{data_identity_suffix}{proprio_grounding_suffix}"
-        f"{rotation_outlier_suffix}{output_suffix}"
+        f"{rotation_outlier_suffix}{output_suffix}{pca_suffix}"
     )
     source_out_dir = skillvla_root / source_dataset
     run_dir = source_out_dir / run_tag
@@ -684,6 +701,35 @@ def build_settings(
                 f"found:\n  {found}\nBuild the matching PT data first."
             )
         skillset_global_threshold_source = str(pt_thresholds[0])
+    # Reuse the PCA from the completed SkillVLA PT build, rather than the
+    # possibly different corpus used to train the FSQ encoder. Threshold
+    # selection above remains independent of this choice.
+    probe_settings["skillset_pca_reference_path"] = ""
+    probe_settings["skillset_pca_reference_sha256"] = ""
+    if pca_source == "pt":
+        if probe_settings["skillset_probe_type"] != "pca_action":
+            raise ValueError("PCA: pt requires an FSQ segmentation recipe using pca_action probes.")
+        if skillset_global_threshold_source:
+            pt_pcas = [Path(skillset_global_threshold_source).with_name("action_probe_pca.npz")]
+        else:
+            pt_seg_suffix = (
+                own_global_seg_suffix if fsq_boundary_threshold_mode == "global_mean"
+                else f"_episodemean_{threshold_percent_tag}"
+            )
+            pt_pcas = sorted(
+                path for path in skillvla_root.glob(
+                    f"*/_work/{seg_base}{pt_seg_suffix}/skillset/action_probe_pca.npz"
+                )
+                if (path.parents[3] / pt_run_tag / "skill_latents.npz").is_file()
+            )
+        if len(pt_pcas) != 1 or not pt_pcas[0].is_file():
+            raise ValueError(
+                "PCA: pt requires exactly one PCA artifact from the matching completed PT build; "
+                f"found: {[str(path) for path in pt_pcas]}. Build the matching PT data first."
+            )
+        pca = pt_pcas[0].resolve()
+        probe_settings["skillset_pca_reference_path"] = str(pca)
+        probe_settings["skillset_pca_reference_sha256"] = hashlib.sha256(pca.read_bytes()).hexdigest()
     if boundary_threshold_mode == "episode_mean":
         seg_suffix = f"_episodemean_{threshold_percent_tag}"
     else:
@@ -691,7 +737,7 @@ def build_settings(
             seg_suffix = f"_globalref_{threshold_percent_tag}"
         else:
             seg_suffix = own_global_seg_suffix
-    seg_dir = work_dir / f"{seg_base}{seg_suffix}"
+    seg_dir = work_dir / f"{seg_base}{seg_suffix}{pca_suffix}"
     skillset_dir = seg_dir / "skillset"
 
     parallelism = {
@@ -729,6 +775,7 @@ def build_settings(
         # source dataset
         "source_dataset": source_dataset,
         "skillvla_data_mode": skillvla_data_mode,
+        "pca_source": pca_source,
         "raw_dataset_dir": dataset_root / source_dataset,
         # (DINO precompute emit 은퇴 — DINO는 어디서도 precompute 안 함. DP=state/raw-frames,
         #  FSQ 학습·terminator=ONLINE. dino_root/required/generate/base 등 소비자 0.)

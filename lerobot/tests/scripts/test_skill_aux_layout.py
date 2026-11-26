@@ -11,7 +11,7 @@ import pytest
 
 CONFIGS = Path(__file__).resolve().parents[2] / "skillVLA/libero/configs"
 SKILLVLA = CONFIGS / "train_skillVLA"
-AUX_SRC = SKILLVLA / "PT/Terminator/src"
+AUX_SRC = SKILLVLA / "PT/src/auxiliary"
 
 
 def _load(path: Path, name: str):
@@ -23,16 +23,16 @@ def _load(path: Path, name: str):
 
 
 def test_auxiliary_resolver_defaults_to_the_component_yaml():
-    module = _load(AUX_SRC / "terminator_train_config.py", "aux_layout_config")
-    assert module.DEFAULT_CONFIG_PATH == AUX_SRC.parent / "terminator_train_config.yaml"
+    module = _load(AUX_SRC / "auxiliary_train_config.py", "aux_layout_config")
+    assert module.DEFAULT_CONFIG_PATH == SKILLVLA / "PT/Predictor/predictor_train_config.yaml"
     assert module.DEFAULT_CONFIG_PATH.is_file()
-    assert module.load_stage1_component_config(module.DEFAULT_CONFIG_PATH)["stage1_component"] == "Terminator"
+    assert module.load_stage1_component_config(module.DEFAULT_CONFIG_PATH)["stage1_component"] == "Predictor"
     assert not (SKILLVLA / "terminator/submit_train.sh").exists()
 
 
 @pytest.mark.parametrize("component", ["VSA", "Predictor", "Terminator"])
 def test_pt_components_use_the_renamed_checkpoint_group(tmp_path, component):
-    module = _load(AUX_SRC / "terminator_train_config.py", "aux_layout_output_config")
+    module = _load(AUX_SRC / "auxiliary_train_config.py", "aux_layout_output_config")
     assert module.stage1_run_dirs(tmp_path, "run", component)[0] == (
         tmp_path / "skillVLA_PT" / component / "run"
     )
@@ -42,9 +42,7 @@ def test_pt_components_use_the_renamed_checkpoint_group(tmp_path, component):
     "relative",
     [
         "PT/Predictor/submit_train.sh",
-        "PT/Terminator/submit_train.sh",
         "FT/Predictor/submit_train.sh",
-        "FT/Terminator/submit_train.sh",
     ],
 )
 def test_pt_and_ft_launchers_share_the_relocated_backend(relative):
@@ -66,23 +64,18 @@ def test_auxiliary_backend_shell_paths_and_syntax(script):
     prefix = {"CONFIG_LIB": CONFIGS, "SRC_DIR": AUX_SRC}[match.group(1)]
     bootstrap = (prefix / match.group(2).lstrip("/")).resolve()
     assert bootstrap == (CONFIGS.parents[3] / ".venv/bin/python").resolve()
-    assert "../terminator_train_config.yaml" in text
+    assert "../../Predictor/predictor_train_config.yaml" in text
     assert os.access(path, os.X_OK)
     subprocess.run(["bash", "-n", str(path)], check=True)
 
 
-def test_ft_vsa_and_joint_import_the_relocated_auxiliary_resolver():
+def test_ft_vsa_imports_the_relocated_auxiliary_resolver():
     vsa = _load(
         SKILLVLA / "FT/VSA/src/newtask_ft_vsa_config.py",
         "aux_layout_ft_vsa",
     )
-    joint = _load(
-        SKILLVLA / "FT/Joint/src/newtask_ft_joint_config.py",
-        "aux_layout_ft_joint",
-    )
-    expected = AUX_SRC / "terminator_train_config.py"
+    expected = AUX_SRC / "auxiliary_train_config.py"
     assert Path(vsa._AUX.__file__) == expected
-    assert Path(joint._AUX.__file__) == expected
 
 
 def test_ft_rename_does_not_leave_the_old_code_directory():
@@ -90,7 +83,15 @@ def test_ft_rename_does_not_leave_the_old_code_directory():
     assert not (SKILLVLA / "NewTask_FT").exists()
 
 
-@pytest.mark.parametrize("component", ["VSA", "Joint"])
+def test_retired_training_entries_are_absent_in_all_domains():
+    for domain in ("libero", "abc", "mimicgen", "droid"):
+        workflows = SKILLVLA.parents[2] / domain / "configs/train_skillVLA"
+        for retired in ("PT/Terminator", "FT/Terminator", "FT/Joint"):
+            assert not (workflows / retired).exists(), (domain, retired)
+        assert (workflows / "PT/Predictor/submit_train.sh").is_file()
+
+
+@pytest.mark.parametrize("component", ["VSA"])
 def test_resumed_ft_jobs_override_the_saved_old_output_path(component):
     path = SKILLVLA / "FT" / component / "src/train.sbatch"
     resumed = path.read_text().split('if [ -f "${CONFIG_JSON}" ]; then', 1)[1].split("elif", 1)[0]

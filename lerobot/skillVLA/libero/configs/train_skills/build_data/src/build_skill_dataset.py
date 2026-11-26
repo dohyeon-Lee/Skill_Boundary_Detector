@@ -140,6 +140,10 @@ class Args:
     """Optional processing shard; does not determine the PCA corpus."""
     pca_episode_ids_path: str = ""
     """Full corpus selection for PCA; independent of the worker's episode shard."""
+    pca_reference_path: str = ""
+    """Reuse this PT PCA without fitting on the target dataset."""
+    pca_reference_sha256: str = ""
+    """Expected reference fingerprint, frozen at submission."""
     # ── Diffusion scheduler ──────────────────────────────────────────────────
     noise_scheduler_type: str = "DDIM"
     num_inference_steps: int = 10
@@ -302,6 +306,8 @@ def _skillset_manifest(
         "seed": args.seed,
         "pca_components": action_pca.n_components if action_pca is not None else None,
         "pca_artifact": "action_probe_pca.npz" if action_pca is not None else None,
+        **({"pca_reference_sha256": action_pca.metadata["pca_reference_sha256"]}
+           if action_pca is not None and "pca_reference_sha256" in action_pca.metadata else {}),
     }
     detector_contract = {
         "noise_scheduler_type": args.noise_scheduler_type,
@@ -1347,7 +1353,10 @@ def main(args: Args) -> None:
         if pca_episodes is not None:
             pca_metadata['episode_ids'] = list(pca_episodes)
         pca_path = output_dir / "action_probe_pca.npz"
-        print(f"Loading/fitting action-plan PCA: {pca_path}")
+        if args.pca_reference_path:
+            print(f"Reusing PT action-plan PCA (no target fit): {args.pca_reference_path}")
+        else:
+            print(f"Loading/fitting action-plan PCA: {pca_path}")
         action_pca = get_or_fit_action_pca(
             pca_path,
             pca_metadata,
@@ -1368,6 +1377,8 @@ def main(args: Args) -> None:
                 source_tasks=source_tasks,
                 episode_ids=pca_episodes,
             ),
+            reference_path=Path(args.pca_reference_path) if args.pca_reference_path else None,
+            reference_sha256=args.pca_reference_sha256,
         )
         if args.probe_generation == "scheduler_gaussian":
             probe_directions = iid_scheduler_noise(

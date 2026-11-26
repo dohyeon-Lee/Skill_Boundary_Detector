@@ -13,6 +13,7 @@ from lerobot.policies.skillVLA.dataset_skillVLA import (
     SKILL_PREVIOUS_ACTION,
     SKILL_PREVIOUS_ACTION_BOS,
     SKILL_START_STATE,
+    SKILL_START_PROPRIO,
     SKILL_START_STATE_NORMALIZED,
     TERMINATOR_START_STATE,
 )
@@ -103,6 +104,19 @@ def test_joint_predictor_gets_normalized_start_proprio_without_changing_raw_goal
         restored[SKILL_START_STATE_NORMALIZED],
         torch.tensor([[-1.0, 0.0, 1.0]]),
     )
+
+
+def test_droid_joint_start_proprio_and_eef_pose_have_independent_scales():
+    batch = {SKILL_START_STATE: torch.ones(1, 6), SKILL_START_PROPRIO: torch.full((1, 8), 5.)}
+    normalizer = SkillExpertNormalizerProcessorStep(
+        features={'observation.state': PolicyFeature(type=FeatureType.STATE, shape=(8,))},
+        norm_map={FeatureType.STATE: NormalizationMode.QUANTILES},
+        stats={'observation.state': {'q01': torch.zeros(8), 'q99': torch.full((8,), 10.)}},
+    )
+    restored = skill_expert_transition_to_batch(normalizer(skill_expert_batch_to_transition(batch)))
+    torch.testing.assert_close(restored[SKILL_START_STATE], batch[SKILL_START_STATE])
+    torch.testing.assert_close(restored[SKILL_START_PROPRIO], batch[SKILL_START_PROPRIO])
+    torch.testing.assert_close(restored[SKILL_START_STATE_NORMALIZED], torch.zeros(1, 8))
 
 
 def test_joint_terminator_gets_a_separate_predictor_prompt() -> None:

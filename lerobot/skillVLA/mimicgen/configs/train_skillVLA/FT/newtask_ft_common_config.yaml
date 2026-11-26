@@ -2,22 +2,20 @@
 dataset:
   skillvla_root: skillvla
   source: coffee_d0_full_full
-  run: FSQ333_libero2000_ft_coffee_d0
-  n_episodes: 1  # all=전체, 10=episode ID 순서로 앞의 10개. 세 모델 공통.
+  run: FSQ333_libero2000_ft_own_coffee_d0_pcapt
+  n_episodes: 20  # all=전체, 10=episode ID 순서로 앞의 10개. VSA·Predictor 공통.
+  # episode_ids: [2, 3, 4, 8, 11]  # 예: [0, 3, 7]. 비어 있지 않으면 n_episodes 대신 이 ID만 사용. HTML의 Episode ID(0부터).
+  episode_ids: [1, 6, 10, 13, 14]  # 예: [0, 3, 7]. 비어 있지 않으면 n_episodes 대신 이 ID만 사용. HTML의 Episode ID(0부터).
 
 warm_start:
   outputs_root: outputs_filtered
 
   vsa_checkpoint:
-    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_base
+    run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_topcrop1p1_gripaction_base
     checkpoint: 100000
 
   predictor_checkpoint:
     run: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip
-    checkpoint: 100000
-
-  terminator_checkpoint:
-    run: bs32_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_terminator_Term_Token_1_dinoS_freeze
     checkpoint: 100000
 
 # 스킬 전환 randomization
@@ -26,9 +24,6 @@ transition_randomization:
   percent: 25
   distribution: half_normal
   preserve_gripper: true
-transition_oversampling:
-  enabled: false
-
 # FSQ 호환성 검증
 fsq:
   verify_source: true

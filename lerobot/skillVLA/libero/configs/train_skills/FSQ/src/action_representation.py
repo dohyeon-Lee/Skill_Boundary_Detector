@@ -15,6 +15,15 @@ def prepare_fsq_actions(actions, states, action_space="dataset", gripper_indices
     actions = np.asarray(actions, dtype=np.float32)
     if action_space in {"dataset", "absolute_joint"}:
         return actions
+    if action_space == "delta_pose":
+        from lerobot.processor.eef_delta_pose import to_eef_delta_pose_actions_numpy
+
+        states = np.asarray(states, dtype=np.float32)
+        indices = [i + 7 if i < 0 else i for i in gripper_indices]
+        if (actions.ndim != 2 or actions.shape[1] != 7 or not len(actions)
+                or states.shape != actions.shape or indices != [6]):
+            raise ValueError('Delta-pose FSQ requires aligned 7D XYZ/rotvec/gripper targets and anchors; gripper axis 6')
+        return to_eef_delta_pose_actions_numpy(actions, states[0]).astype(np.float32)
     if action_space != "delta_joint":
         raise ValueError(f"Unknown FSQ action_space: {action_space!r}")
     states = np.asarray(states, dtype=np.float32)
@@ -43,8 +52,13 @@ def pack_action_state_context(actions, states):
 
 
 def unpack_delta_joint_context(context, action_dim, gripper_indices):
+    return unpack_delta_action_context(context, action_dim, gripper_indices, 'delta_joint')
+
+
+def unpack_delta_action_context(context, action_dim, gripper_indices, action_space):
+    """Re-anchor either delta convention after moving the skill boundary."""
     context = np.asarray(context, dtype=np.float32)
     if context.ndim != 2 or context.shape[1] != 2 * action_dim:
-        raise ValueError("Delta-joint boundary context must contain actions and state anchors.")
+        raise ValueError("Delta-action boundary context must contain actions and state anchors.")
     return prepare_fsq_actions(context[:, :action_dim], context[:, action_dim:],
-                               "delta_joint", gripper_indices)
+                               action_space, gripper_indices)

@@ -1,32 +1,27 @@
-# Match the saved standard non-proprio frozen-Expert FT training settings.
-# Warm start comes from newtask_ft_common_config.yaml; output storage follows global config.
-# The corrected loss adds _skillbspline to the output name.
+# LIBERO VSA FT — 세 모델 모두 같은 설정 사용.
+# 구조·top crop·full-skill gripper 표현·정규화 통계는 PT 체크포인트에서 상속.
+# ../newtask_ft_common_config.yaml에서 warm_start.vsa_checkpoint와 학습 데이터를 선택.
+# 저장 위치·서버 설정은 global config를 따름.
 newtask_ft_common: true
 stage1_component: VSA
-
-run:
-  suffix: ""
 
 adaptation:
   freeze_expert: true
   skill_flow_loss: true
   visual_aux_loss: true
-  termination_loss: true   # 통합 detach termination bottleneck도 함께 FT (가중치 1)
+  termination_loss: true  # detach된 termination 분기도 함께 학습
 
 training:
   dataloader:
     batch_size: 16
     workers: 8
-    persistent_workers: true
-    multiprocessing_context: spawn
     gpus: 1
   optimizer:
-    base_lr: 2.5e-05  
+    base_lr: 2.5e-05
   gradient_checkpointing:
-    vlm: true            # LLM
+    vlm: true             # LLM
     vision: false         # Vision encoder
-    action_expert: false  # Action expert
-  checkpoint_archive: ''
+    action_expert: false  # Action Expert
   keep_checkpoints: 1
   protect_checkpoints: [3000, 5000, 10000, 20000]
   schedule:
@@ -45,10 +40,7 @@ logging:
     project: VLA_NewTask_FT
 
 slurm:
-  gres: gpu:B200:1
+  gres: gpu:1
   cpus: 16
   memory: 128G
   time: '48:00:00'
-
-transition_oversampling:
-  enabled: false

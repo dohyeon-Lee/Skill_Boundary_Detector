@@ -36,6 +36,32 @@ def test_initial_mask_changes_boundary_and_report_only(tmp_path, domain):
         assert enabled[key] == disabled[key]  # The same GPU/PCA/GMM caches remain usable.
 
 
+def test_droid_terminal_mask_keeps_probe_caches_and_prior_report_separate(tmp_path):
+    path = ROOT / "lerobot/skillVLA/abc/configs/train_skills/DP/eval/src/defaults.py"
+    spec = importlib.util.spec_from_file_location("terminal_mask_dp_defaults", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps({
+        "n_obs_steps": 30, "horizon": 18, "history_encoder": "transformer",
+        "down_dims": [128, 256, 512], "action_sequence_mode": "future_only",
+    }))
+    cfg = {"project_root": str(tmp_path), "policy_checkpoint": "model",
+           "output_name": "mask_comparison", "initial_mask": False}
+    enabled, on = module.resolve_config(cfg, domain="droid")
+    disabled, off = module.resolve_config(dict(cfg, terminal_mask=False), domain="droid")
+    assert enabled["boundary_variants"][0]["terminal_mask_frames"] == 24
+    assert disabled["boundary_variants"][0]["terminal_mask_frames"] == 0
+    assert on["output_suffix"].endswith("_imask0")
+    assert off["output_suffix"] == on["output_suffix"] + "_tmask0"
+    for key in ("probe_variants", "cluster_variants", "experiments", "output_name"):
+        assert enabled[key] == disabled[key]
+    for invalid in ("false", 0, None):
+        with pytest.raises(ValueError, match="terminal_mask must be true or false"):
+            module.resolve_config(dict(cfg, terminal_mask=invalid), domain="droid")
+
+
 def test_large_episode_settings_are_passed_by_file(tmp_path):
     path = ROOT / "lerobot/skillVLA/abc/configs/train_skills/DP/eval/src/config.py"
     spec = importlib.util.spec_from_file_location("large_dp_eval_config", path)

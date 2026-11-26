@@ -175,3 +175,22 @@ def test_external_predictor_loads_changed_vision_weights_not_just_heads(monkeypa
     monkeypatch.setattr(expert, "_load_learned_predictor_parameters", lambda *a: chosen.append("heads_only") or 1)
     expert.SkillExpertPolicy._initialize_frozen_skill_predictor(policy, tmp_path)
     assert chosen == ["complete"]
+
+
+def test_llm_only_checkpointing_keeps_vision_uncheckpointed_and_trainable(monkeypatch):
+    monkeypatch.setattr(model, "build_paligemma_model", lambda *a, **kw: TinyVLM())
+    config = _config(full=True)
+    config.gradient_checkpointing = True
+    config.gradient_checkpointing_llm = True
+    config.gradient_checkpointing_vision = False
+    policy = SkillAuxPolicy(config).train()
+    predictor = policy.model.skill_predictor
+    assert predictor.vlm.language_model.checkpoint_enabled
+    assert not predictor.vlm.vision_tower.checkpoint_enabled
+    objective, _ = predictor.loss(
+        [torch.rand(2, 3, 8, 8)], torch.ones(2, 2, dtype=torch.long),
+        torch.ones(2, 2, dtype=torch.bool), torch.tensor([0, 1]),
+    )
+    objective.backward()
+    assert predictor.vlm.vision_tower.weight.grad.abs().sum() > 0
+    assert predictor.vlm.language_model.q_proj.weight.grad.abs().sum() > 0

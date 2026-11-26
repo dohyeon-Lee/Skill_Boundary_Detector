@@ -35,9 +35,25 @@ def dataset_mask(dataset, config, stage):
         columns += ['skill_ds', 'skill_de']
     rows = table.select_columns(columns).with_format('numpy')[:]
     keep = np.zeros(len(dataset), dtype=bool)
+    cached = None
+    info = getattr(getattr(dataset, 'meta', None), 'info', {})
+    if info.get('droid_nonidle_path'):
+        import hashlib
+        path = Path(dataset.root).parent / info['droid_nonidle_path']
+        with path.open('rb') as stream:
+            digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+        if digest != info['droid_nonidle_sha256']:
+            raise ValueError('DROID portable idle mask SHA256 differs from the build contract')
+        with np.load(path, allow_pickle=False) as archive:
+            cached = {int(ep): archive['keep'][archive['episode_id'] == ep]
+                for ep in np.unique(archive['episode_id'])}
+            for ep, mask in cached.items():
+                indices = archive['frame_index'][archive['episode_id'] == ep]
+                if not np.array_equal(indices, np.arange(len(mask))) or mask.dtype != np.bool_:
+                    raise ValueError('Invalid DROID portable idle frame mapping')
     for episode in np.unique(rows['episode_index']):
         selected = np.flatnonzero(rows['episode_index'] == episode)
-        mask = raw_episode_mask(dataset.root, int(episode))
+        mask = cached[int(episode)] if cached is not None else raw_episode_mask(dataset.root, int(episode))
         keep[selected] = mask[rows['frame_index'][selected].astype(np.int64)]
     if stage.endswith('_TERM'):
         keep |= _core['termination_protection_mask'](

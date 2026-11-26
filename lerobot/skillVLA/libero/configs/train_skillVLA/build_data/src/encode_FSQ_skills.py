@@ -40,7 +40,7 @@ from train_FSQ import (
 from action_representation import (  # noqa: E402
     pack_action_state_context,
     prepare_fsq_actions,
-    unpack_delta_joint_context,
+    unpack_delta_action_context,
 )
 
 
@@ -327,10 +327,11 @@ def _encode_boundary_sweep(
         getattr(getattr(model, "cfg", None), "encoder_arch", "spline") == "action_seq"
     )
     source = skill_actions if action_seq_encoder else segments
-    delta_joint = getattr(model.cfg, "action_space", "dataset") == "delta_joint"
-    if delta_joint:
+    action_space = getattr(model.cfg, "action_space", "dataset")
+    delta_actions = action_space in {"delta_joint", "delta_pose"}
+    if delta_actions:
         if dec_states is None:
-            raise ValueError("Delta-joint boundary encoding requires state anchors.")
+            raise ValueError("Delta-action boundary encoding requires state anchors.")
         source = [pack_action_state_context(a, s) for a, s in zip(skill_actions, dec_states, strict=True)]
     contexts = build_boundary_augmentation_contexts(source, metadata, pmax=max_offset)
     with np.load(clean_latents_path, allow_pickle=False) as clean:
@@ -361,9 +362,9 @@ def _encode_boundary_sweep(
                     context, str(direction), int(offset), min_length
                 )
                 if trajectory is not None:
-                    if delta_joint:
-                        trajectory = unpack_delta_joint_context(
-                            trajectory, model.cfg.action_dim, model.cfg.action_gripper_indices
+                    if delta_actions:
+                        trajectory = unpack_delta_action_context(
+                            trajectory, model.cfg.action_dim, model.cfg.action_gripper_indices, action_space
                         )
                     rows.append(row)
                     trajectories.append(trajectory)
@@ -695,11 +696,12 @@ def _encode_one(
     # encodes the state trajectory. No images either way.
     action_seq_encoder = getattr(getattr(model, "cfg", None), "encoder_arch", "spline") == "action_seq"
     source = skill_actions if action_seq_encoder else segments
-    if getattr(model.cfg, "action_space", "dataset") == "delta_joint":
+    action_space = getattr(model.cfg, "action_space", "dataset")
+    if action_space in {"delta_joint", "delta_pose"}:
         if dec_states is None:
-            raise ValueError("Delta-joint encoding requires state anchors.")
+            raise ValueError("Delta-action encoding requires state anchors.")
         source = [
-            prepare_fsq_actions(a, s, "delta_joint", model.cfg.action_gripper_indices)
+            prepare_fsq_actions(a, s, action_space, model.cfg.action_gripper_indices)
             for a, s in zip(skill_actions, dec_states, strict=True)
         ]
     for item in tqdm(source, desc="Encoding FSQ skills"):

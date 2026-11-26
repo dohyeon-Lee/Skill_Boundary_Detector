@@ -18,8 +18,8 @@ Set `dp_checkpoint` to a saved step, such as `10000`, or `last`; its default is
 `100000`. History and maximum prediction length are read from that checkpoint.
 No evaluation is automatically chained after training.
 
-The recipe follows LIBERO standard, explicitly retaining power **2** even if a
-live LIBERO experiment YAML is changed to power 1:
+The recipe uses the shared LIBERO scoring pipeline. The live base YAML currently
+selects power **1** and disables both endpoint masks:
 
 | Setting | Value |
 | --- | --- |
@@ -28,18 +28,22 @@ live LIBERO experiment YAML is changed to power 1:
 | Descriptor | Full predicted horizon (18 currently), temporal mean |
 | PCA | Variance 0.95, stride 3, standardized actions including gripper |
 | GMM | Fixed K=5, diagonal, weighted, n_init=10, max_iter=300, no reference center |
-| Boundary score | Covariance-gated cosine, power 2 |
+| Boundary score | Covariance-gated cosine, power 1 |
 | Threshold | One dataset-global mean over the selected evaluation episodes |
 | Replan / SG / NMS / min skill | 8 frames / 7 anchors, order 4 / 23 frames / 10 frames |
-| Masks | Initial checkpoint history; fixed final 24 frames |
+| Masks | `initial_mask: false`, `terminal_mask: false` |
 
 The scoring and smoothing follow the maintained LIBERO evaluator. Replanning
 uses 8 frames (~0.53 seconds), rounding half of chunk15 upward. NMS is
 `ceil(1.5 * VLA chunk_size)`: DROID's chunk15 therefore uses 23 frames.
 The controls remain **frame-based**;
 DROID runs at 15Hz, so the elapsed times differ from LIBERO's 20Hz. The SG window
-counts replan anchors. This uses a fixed terminal mask, not ABC's semantic
-gripper-release mask. Probes stay in the stored 8D joint-velocity + absolute
+counts replan anchors. Enabling `initial_mask` excludes the checkpoint's history
+length; enabling `terminal_mask` restores the fixed final 24-frame guard, not
+ABC's semantic gripper-release mask. Missing `terminal_mask` in older snapshots
+retains that 24-frame guard. These controls reuse the same GPU/PCA/GMM caches;
+disabling the terminal guard adds `_tmask0` to the report folder, preserving
+earlier results. Probes stay in the stored 8D joint-velocity + absolute
 gripper space. Joint positions are the proprioception; no EEF grounding,
 delta-joint conversion or additional relative-action transform is applied.
 
@@ -85,3 +89,12 @@ re-encoding. Reports and partial evaluation caches stay in this `eval` folder;
 the original converted data, training checkpoints and production skillsets are
 never rewritten. The shared LIBERO/ABC evaluator provides cache validation,
 interactive reports and CPU-only regeneration; DROID only adds its data contract.
+
+## Together comparison
+
+`outputs/together/together_config.yaml` lists saved report folder names in column
+order. Run `./make_together.sh` from that folder to create
+`outputs/together/<output_name>/index.html`. This directly reuses the ABC together
+implementation: matching episodes appear side by side, with synchronized page
+scrolling, graph scrolling, playback and seeking. It references the original
+reports and MP4s; no inference, graph regeneration or video encoding is needed.

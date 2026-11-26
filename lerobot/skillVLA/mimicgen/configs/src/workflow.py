@@ -13,9 +13,8 @@ def main():
   extra=['--stage',{'dp':'dp','sbd':'build_data','fsq':'all'}[a.kind]]
  elif a.kind=='pt_vsa':resolver=shared/'train_skillVLA/PT/src/stage1_train_config.py';extra=[]
  elif a.kind=='ft_vsa':resolver=shared/'train_skillVLA/FT/VSA/src/newtask_ft_vsa_config.py';extra=[]
- else:
-  comp=a.kind.split('_',1)[1]
-  if a.kind.startswith('pt_'):resolver=shared/'train_skillVLA/PT/Terminator/src/terminator_train_config.py';extra=[]
-  else:resolver=shared/'train_skillVLA/PT/Terminator/src/terminator_train_config.py';extra=[]
+ elif a.kind in {'pt_predictor','ft_predictor'}:
+  resolver=shared/'train_skillVLA/PT/src/auxiliary/auxiliary_train_config.py';extra=[]
+ else:p.error('Supported workflows: dp, sbd, fsq, pt_vsa, ft_vsa, pt_predictor, ft_predictor')
  subprocess.run([str(root/'.venv/bin/python'),str(resolver),'--config',a.config,*extra],check=True)
 if __name__=='__main__': main()

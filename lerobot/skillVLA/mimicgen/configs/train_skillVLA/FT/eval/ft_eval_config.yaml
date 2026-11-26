@@ -1,39 +1,38 @@
-# 모델 선택 — FT의 auto는 해당 컴포넌트 학습 YAML에서 run 이름을 계산
-vsa_training_config: auto
+# 모델 선택 — top-view randomization + action-gripper Coffee FT 10k / Predictor FT 10k
+vsa_training_config: null
 model_defaults:
-  skill_source: external    # FT Predictor의 skill 예측 사용
-  focus_source: predictor   # 같은 Predictor의 top-view UV 예측 사용
+  skill_source: external    # 아래 Predictor 10k가 skill 선택
+  focus_source: predictor   # Predictor가 현재 장면의 top-view UV 예측
   pose_source: auto
-  advance_mode: external     # 스킬 전환은 기존 Terminator 20k 사용
+  advance_mode: own         # VSA 내장 detached termination bottleneck 신호 사용
   expert_xyz_source: auto
 models:
-  - label: Coffee_FT10k_Pred10k_Term20k_fixed
+  - label: Coffee_topcrop1p1_gripaction_FT10k_Pred10k_ids5182ddda_ownTerm_random
+    vsa_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_runa286c9258d_ert_skillbspline_ep5_ids5182ddda_topcrop1p1_gripaction_own_pcapt
     vsa_checkpoint: '010000'
-    predictor_dir: bs16_FSQ333_libero2000_ft_coffee_d0_libero_90_full_full_coffee_d0_full_full_predictor_uv_fullvlm_mode2_ep1_uvclip_lab
+    predictor_dir: bs16_FSQ333_libero2000_ft_own_coffee_d0_pcapt_libero_90_full_full_coffee_d0_full_full_predictor_uv_fullvlm_mode2_ep5_ids5182ddda_uvclip_lab
     predictor_checkpoint: '010000'
-    terminator_dir: bs32_FSQ333_libero2000_ft_coffee_d0_libero_90_full_full_coffee_d0_full_full_terminator_Term_Token_1_dinoS_freeze_ep1_lab_yonsei
-    terminator_checkpoint: '020000'
 
 # 평가 데이터 / 결과 이름
-output_name: coffee_d0_FT10k_Pred10k_Term20k_exact_ep0_5eps_fixed_r10
+output_name: coffee_d0_topcrop1p1_gripaction_FT10k_Pred10k_ids5182ddda_ownTerm_th03_random_10eps_r10
 resume: true
 target_task: Coffee_D0
-gt_dataset:                  # 초기 배치 복원 및 평가 참조 데이터
+gt_dataset:                  # 학습 skillset 메타데이터. skill/UV 입력은 Predictor 사용
   skillvla_root: skillvla
   source: coffee_d0_full_full
-  run: FSQ333_libero2000_ft_coffee_d0
+  run: FSQ333_libero2000_ft_own_coffee_d0_pcapt
 task_ids: [0]
-n_episodes: 5
+n_episodes: 10
 
 # Rollout / 스킬 전환
-n_action_steps: 10 # 5
+n_action_steps: 10           # 앞 10스텝 실행 후 재계획
 oracle:
-  episode_exact: true
-  repeat_episodes: true      # 복원 검증된 episode 0 배치를 n_episodes회 반복
+  episode_exact: false
+  repeat_episodes: false
   broadcast_single_episode: false
 terminator:
   end_mode: termination
-  end_threshold: 0.5
+  end_threshold: 0.3
   immediate_replan_on_skill_end: true
   min_skill_steps: 0
   max_skill_length: 200
@@ -44,7 +43,7 @@ video:
   raw: true
   record_skill_transitions: true
   fullskill_overlay: true
-  max_per_task: 5
+  max_per_task: 10
   frame_stride: 4
   fps: 10
   skill_videos: true

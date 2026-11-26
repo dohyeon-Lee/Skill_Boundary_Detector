@@ -15,6 +15,7 @@ stage_skillvla_dataset_on_node() {
   local label="${2:-SkillVLA dataset}"
   local run_dir stage_root owner job_key stage_base staged_dataset
   local -a lock=()
+  local -a copy_options=(-a --delete)
 
   if [ ! -d "${shared_dataset_dir}" ]; then
     echo "${label} staging: dataset not found: ${shared_dataset_dir}" >&2
@@ -58,12 +59,29 @@ stage_skillvla_dataset_on_node() {
   stage_base="${stage_root%/}/${owner}_skillvla_${job_key}"
   staged_dataset="${stage_base}/skillvla"
 
+  if [ "${SKILLVLA_STAGE_DEREFERENCE_SYMLINKS:-false}" = true ]; then
+    # DROID views reference the converted videos with a relative symlink.
+    # Materialize that small video corpus on NVMe instead of copying a broken
+    # relative link into /tmp or reading remote video for every training batch.
+    mkdir -p "${stage_root}"
+    local needed available
+    needed="$(du -sLB1 "${shared_dataset_dir}" | cut -f1)"
+    available="$(df -B1 --output=avail "${stage_root}" | tail -1 | tr -d ' ')"
+    if (( available < needed + 1073741824 )); then
+      echo "${label} staging: local cache has insufficient room; reading the verified shared dataset" >&2
+      SKILLVLA_SHARED_DATASET_DIR="${shared_dataset_dir}"
+      STAGED_SKILLVLA_DATASET_DIR="${shared_dataset_dir}"
+      export SKILLVLA_SHARED_DATASET_DIR STAGED_SKILLVLA_DATASET_DIR
+      return 0
+    fi
+    copy_options=(-aL --delete)
+  fi
   mkdir -p "${staged_dataset}"
   if [ -z "${SLURM_JOB_ID:-}" ] && command -v flock >/dev/null 2>&1; then
     lock=(flock "${stage_base}.lock")      # two runs on one dataset: the second waits, then syncs nothing
   fi
   echo "${label} staging: copying ${shared_dataset_dir} -> ${staged_dataset}" >&2
-  ${lock[@]+"${lock[@]}"} rsync -a --delete "${shared_dataset_dir}/" "${staged_dataset}/"
+  ${lock[@]+"${lock[@]}"} rsync "${copy_options[@]}" "${shared_dataset_dir}/" "${staged_dataset}/"
 
   # Do not enumerate auxiliary filenames here.  In particular, foveated
   # policies need skill_focus_uv.npz, which was absent from the old list.

@@ -162,6 +162,11 @@ def resolve_config(raw, *, domain="abc"):
     if not isinstance(initial_mask, bool):
         raise ValueError("initial_mask must be true or false")
     initial_mask_frames = history if initial_mask else 0
+    # DROID can recut its cached curves without the fixed final-frame guard.
+    # Keep other domains and old DROID snapshots at their existing defaults.
+    terminal_mask = cfg.get("terminal_mask", True) if domain == "droid" else True
+    if not isinstance(terminal_mask, bool):
+        raise ValueError("terminal_mask must be true or false")
     if RECIPE_KEYS & raw.keys():
         if not RECIPE_KEYS.issubset(raw) or set(CONTROLS) & raw.keys():
             raise ValueError("Use compact SBD controls or a complete legacy recipe, not both")
@@ -175,6 +180,8 @@ def resolve_config(raw, *, domain="abc"):
         model["sbd_prediction_horizon"] = int(cfg["probe_variants"][0].get("descriptor_temporal_length", maximum))
         for boundary in cfg["boundary_variants"]:
             boundary["initial_mask_frames"] = initial_mask_frames
+            if not terminal_mask:
+                boundary["terminal_mask_frames"] = 0
         return cfg, model
 
     domain_controls = {} if domain == "abc" else {"replan_interval": 5, "nms_frames": 15, "score_power": 2}
@@ -215,6 +222,8 @@ def resolve_config(raw, *, domain="abc"):
     # centers must never overwrite each other.
     model["output_suffix"] += f"_{center}"
     model["output_suffix"] += f"_imask{initial_mask_frames}"
+    if not terminal_mask:
+        model["output_suffix"] += "_tmask0"
     horizon_tag = f"true_h{length}" if length == maximum else f"future{maximum}_h{length}_descriptor"
     probe_name = f"iid96_r{replan}_{horizon_tag}_{center}"
     if maximum > 1 and center == "previous_action":
@@ -250,7 +259,7 @@ def resolve_config(raw, *, domain="abc"):
         "peak_curvature_scale": curvature,
     }]
     if domain in {"libero", "mimicgen", "droid"}:
-        cfg["boundary_variants"][0]["terminal_mask_frames"] = 24
+        cfg["boundary_variants"][0]["terminal_mask_frames"] = 24 if terminal_mask else 0
     cfg["experiments"] = [{
         "name": f"{horizon_tag}_{center}_unanchored", "probe": probe_name, "cluster": cluster_name,
         "metric": "cosine" if domain == "abc" else "covariance_gated_cosine", "boundary": boundary_name,

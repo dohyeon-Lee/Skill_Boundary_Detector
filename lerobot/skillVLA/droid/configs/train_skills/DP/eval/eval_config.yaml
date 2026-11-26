@@ -2,13 +2,14 @@
 sbd_prediction_horizon: all  # checkpoint prediction length (currently 18 = 1.2 s)
 replan_interval: 8         # approximately half of VLA chunk15 (~0.53 s)
 gaussian_center: current_gt
-pca_scope: dataset          # full converted dataset; threshold uses only selected episodes
+pca_scope: dataset          # whole selected dataset group; threshold uses only evaluation episodes
 
-initial_mask: true         # exclude the first checkpoint n_obs_steps frames
+initial_mask: false        # CPU recut: retain the first frames; other scoring settings unchanged
+terminal_mask: false       # retain the final frames; true restores the fixed 24-frame guard
 gmm_components: 5
 nms_frames: 23             # ceil(VLA chunk 15 * 1.5)
-smooth_window: 7           # SG window in replan anchors, not video frames
-polyorder: 4
+smooth_window: 13          # SG window in replan anchors, not video frames
+polyorder: 10
 score_power: 1
 peak_curvature_scale: 0
 
@@ -16,16 +17,18 @@ peak_curvature_scale: 0
 eval_workers: 2
 eval_cpus_per_task: 8
 
-dp_run_name: '{target_dataset}_future_only_obs30_future18_transformer_constLR_small{droid_group_suffix}'
-dp_checkpoint: 50000       # choose a saved step (e.g. 10000) or last
-# target_dataset inherits global droid_dataset.
+# Joint-velocity DP: recorded joint velocities and absolute gripper action.
+target_dataset: droid_success_5k_joint_velocity
+dp_run_name: '{source_dataset}_delta_joint_future_only_obs30_future18_transformer_constLR_small{droid_group_suffix}'
+dp_checkpoint: 100000
+# Explicit training view; the selected global dataset group is retained.
 
 # DROID task IDs are stored language-prompt IDs, not LIBERO suite IDs.
 # all + n_tasks selects the first N IDs; an explicit list preserves its order.
 task_ids: all
 n_tasks: 50                # all = all prompt IDs; no effect for an explicit task_ids list
 n_episodes: 3              # up to 3 per selected prompt ID; scarce tasks keep all available
-output_name: '{target_dataset}_obs30_future18_first50tasks_3ep_50k'
+output_name: '{source_dataset}_delta_joint_obs30_future18_first50tasks_3ep_100k'
 
 # Exterior 1 by default. Other preserved views: wrist_image, image2.
 report_image_key: observation.images.image

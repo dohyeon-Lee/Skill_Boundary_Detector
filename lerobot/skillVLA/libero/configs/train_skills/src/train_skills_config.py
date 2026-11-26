@@ -107,6 +107,12 @@ def _merge_global(config_path: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         root = next(p for p in Path(__file__).resolve().parents if (p / 'lerobot/src/lerobot').is_dir())
         cfg = runpy.run_path(str(root / 'lerobot/skillVLA/droid/configs/src/dataset_registry.py'))['configure'](cfg)
         _droid_groups()["definition"](cfg)
+        if cfg.get('stage1_component'):
+            cfg.setdefault('dataset', {}).setdefault('source', cfg['target_dataset'])
+            cfg.setdefault('architecture', {}).setdefault('chunk_size', cfg['vla_chunk_size'])
+            cfg.setdefault('execution', {}).setdefault('action_steps', cfg['vla_replan_steps'])
+            if not str(cfg['dataset'].get('run', '')).strip():
+                raise ValueError('Select dataset.run in DROID PT/stage1_common_config.yaml after building SkillVLA data')
     return cfg
 
 
@@ -159,38 +165,141 @@ def load_stage1_component_config(path: Path | str) -> dict[str, Any]:
     return _merge_global(config_path, merge(_read_yaml(common_path), component))
 
 
+def _per_task_training_episodes(data: dict, metadata, dataset_dir: Path) -> list[int]:
+    """Translate task-local episode ordinals into the dataset's global IDs."""
+    import numpy as np
+    import pandas as pd
+
+    # Episode statistics avoid scanning all frame rows in normal v3 datasets.
+    minimum, maximum = 'stats/task_index/min', 'stats/task_index/max'
+    if minimum in metadata and maximum in metadata:
+        pairs = []
+        for _, row in metadata.iterrows():
+            lo, hi = np.asarray(row[minimum]).reshape(-1), np.asarray(row[maximum]).reshape(-1)
+            if (lo.size != 1 or hi.size != 1 or lo[0] != hi[0]
+                    or not np.isfinite(lo[0]) or lo[0] < 0 or lo[0] != int(lo[0])):
+                raise ValueError('Per-task episode selection requires one nonnegative task_index per episode')
+            pairs.append((int(row['episode_index']), int(lo[0])))
+        pairs = pd.DataFrame(pairs, columns=['episode_index', 'task_index'])
+    else:
+        files = sorted((Path(dataset_dir) / 'data').rglob('*.parquet'))
+        if not files:
+            raise FileNotFoundError(f'No task-index statistics or frame data under {dataset_dir}')
+        pairs = pd.concat([
+            pd.read_parquet(path, columns=['episode_index', 'task_index']).drop_duplicates()
+            for path in files
+        ]).drop_duplicates()
+        if (pairs['episode_index'].duplicated().any()
+                or set(pairs['episode_index']) != set(metadata['episode_index'])):
+            raise ValueError('Per-task episode selection requires one task_index for every episode')
+        if any(type(task) is bool or not np.isfinite(task) or task < 0 or task != int(task)
+               for task in pairs['task_index']):
+            raise ValueError('Per-task episode selection requires nonnegative integer task indices')
+
+    groups = {int(task): sorted(int(ep) for ep in rows['episode_index'])
+              for task, rows in pairs.groupby('task_index', sort=True)}
+    explicit = data.get('episode_ids', [])
+    if explicit and len(explicit) != len(groups):
+        raise ValueError(
+            f'dataset.episode_ids needs one list per task in task_index order '
+            f'{list(groups)}; got {len(explicit)} lists'
+        )
+    selected = []
+    for position, (task, ids) in enumerate(groups.items()):
+        if explicit:
+            ordinals = explicit[position]
+            if any(index >= len(ids) for index in ordinals):
+                raise ValueError(
+                    f'dataset.episode_ids: task {task} has {len(ids)} episodes; '
+                    f'local indices must be in 0..{len(ids) - 1}'
+                )
+            selected.extend(ids[index] for index in ordinals)
+        else:
+            count = int(data['n_episodes'])
+            if count > len(ids):
+                raise ValueError(f'dataset.n_episodes={count} exceeds task {task}\'s {len(ids)} available episodes')
+            selected.extend(ids[:count])
+    if not selected:
+        raise ValueError('dataset.episode_ids selects no training episodes')
+    return sorted(selected)
+
+
 def resolve_training_episodes(config: dict, dataset_dir: Path) -> list[int] | None:
-    """Select the first N actual episode IDs; omission/all keeps the whole dataset."""
-    value = config.get('dataset', {}).get('n_episodes', 'all')
-    if isinstance(value, str) and value.strip().lower() == 'all':
+    """Explicit IDs or first N episodes, globally or independently per task."""
+    data = config.get('dataset', {})
+    scope = data.get('episode_selection', 'global')
+    if scope not in ('global', 'per_task'):
+        raise ValueError('dataset.episode_selection must be global or per_task')
+    explicit = data.get('episode_ids', [])
+    def valid_ids(ids):
+        return (isinstance(ids, list) and all(type(ep) is int and ep >= 0 for ep in ids)
+                and len(ids) == len(set(ids)))
+    if scope == 'per_task':
+        if not isinstance(explicit, list) or not all(valid_ids(ids) for ids in explicit):
+            raise ValueError('dataset.episode_ids must contain one list of unique nonnegative local indices per task, e.g. [[0, 3], [1, 2]]')
+    elif not valid_ids(explicit):
+        raise ValueError('dataset.episode_ids must be a YAML list of unique nonnegative integers, e.g. [0, 3, 7]')
+    value = data.get('n_episodes', 'all')
+    if not explicit and isinstance(value, str) and value.strip().lower() == 'all':
         return (_droid_groups()['selected_episodes'](config, dataset_dir)
                 if config.get('workflow_domain') == 'droid' else None)
-    if isinstance(value, bool) or not (
+    if not explicit and (isinstance(value, bool) or not (
         isinstance(value, int) or isinstance(value, str) and value.strip().isdigit()
-    ):
+    )):
         raise ValueError('dataset.n_episodes must be all or a positive integer')
-    count = int(value)
-    if count < 1:
+    count = int(value) if not explicit else len(explicit)
+    if not explicit and count < 1:
         raise ValueError('dataset.n_episodes must be all or a positive integer')
     import pandas as pd
 
     files = sorted((Path(dataset_dir) / 'meta/episodes').rglob('*.parquet'))
     if not files:
         raise FileNotFoundError(f'No episode metadata under {dataset_dir}/meta/episodes')
-    ids = sorted(int(ep) for path in files
-                 for ep in pd.read_parquet(path, columns=['episode_index'])['episode_index'])
+    metadata = pd.concat([
+        pd.read_parquet(path, columns=None if scope == 'per_task' else ['episode_index'])
+        for path in files
+    ], ignore_index=True)
+    ids = sorted(int(ep) for ep in metadata['episode_index'])
     if len(ids) != len(set(ids)) or any(ep < 0 for ep in ids):
         raise ValueError('Episode metadata contains duplicate or negative episode IDs')
+    if scope == 'per_task':
+        return _per_task_training_episodes(data, metadata, dataset_dir)
     if config.get('workflow_domain') == 'droid':
         ids = _droid_groups()['selected_episodes'](config, dataset_dir, ids)
+    if explicit:
+        missing = sorted(set(explicit) - set(ids))
+        if missing:
+            raise ValueError(f'dataset.episode_ids contains unavailable episode IDs: {missing}')
+        return sorted(explicit)
     if count > len(ids):
         raise ValueError(f'dataset.n_episodes={count} exceeds the {len(ids)} available episodes')
     return ids[:count]
 
 
+def training_episode_suffix(config: dict, episodes: list[int] | None) -> str:
+    """Keep equal-size explicit selections from sharing one training output."""
+    if episodes is None:
+        return ''
+    suffix = f'_ep{len(episodes)}'
+    if config.get('dataset', {}).get('episode_selection') == 'per_task':
+        suffix += '_pertask'
+    if config.get('dataset', {}).get('episode_ids'):
+        import hashlib
+        digest = hashlib.sha256(json.dumps(sorted(episodes), separators=(',', ':')).encode()).hexdigest()[:8]
+        suffix += f'_ids{digest}'
+    return suffix
+
+
 def apply_droid_training_group(config, settings, dataset_dir, *, run_key, output_key):
     """Shared VSA/Predictor/Terminator PT and FT hook; other domains unchanged."""
-    if config.get('workflow_domain') != 'droid' or not _droid_groups()['suffix'](config):
+    if config.get('workflow_domain') != 'droid':
+        return settings
+    component = str(config.get('stage1_component', 'VSA'))
+    phase = 'FT' if str(config.get('mode', 'pt')).lower() == 'ft' else 'PT'
+    stage = phase + '_' + {'Predictor': 'PRED', 'Terminator': 'TERM', 'VSA': 'VSA'}[component]
+    settings['droid_idle_filter'] = json.dumps(dict(workflow_domain='droid', stage=stage,
+        idle_filter={stage: config.get('idle_filter', {}).get(stage, False)}), separators=(',', ':'))
+    if not _droid_groups()['suffix'](config):
         return settings
     groups = _droid_groups()
     episodes = resolve_training_episodes(config, dataset_dir)
@@ -229,6 +338,8 @@ def stage1_run_dirs(outputs_root: Path, run_name: str, component: str) -> tuple[
         new,
         newtask_ft,
         joint,
+        new.parent / "PREV" / run_name,
+        newtask_ft.parent / "PREV" / run_name,
         outputs_root / "skillVLA_NewTask_FT" / component / run_name,
         outputs_root / "skillVLA_NewTask_FT" / "Joint" / run_name,
         outputs_root / "skillVLA_stage1" / component / run_name,
@@ -766,6 +877,8 @@ def skillset_probe_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "skillset_pca_variance": pca_variance,
         "skillset_pca_stride": pca_stride,
         "skillset_pca_scale_mode": pca_scale_mode,
+        "skillset_pca_reference_path": str(get_value(cfg, "skillset_pca_reference_path", "")),
+        "skillset_pca_reference_sha256": str(get_value(cfg, "skillset_pca_reference_sha256", "")),
         "skillset_probe_exclude_indices": probe_exclude_indices,
         "skillset_action_mode": action_mode,
         "skillset_relative_exclude_joints": relative_exclude,
@@ -954,7 +1067,12 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
     )
     dataset_root = root / dataset_root_name
     outputs_root = root / str(get_value(cfg, "outputs_root", "outputs"))
-    dp_model_root = Path(resolve_path(root, get_value(cfg, "dp_outputs_root", str(outputs_root))))
+    # DP_OUTPUTS_ROOT is an emitted checkpoint directory (already ending in DP).
+    # A worker resolving the config again must not treat that export as the
+    # model-output base and append a second DP component.
+    dp_model_root = Path(resolve_path(root, get_value(
+        cfg, "dp_outputs_root", str(outputs_root), env="DP_MODEL_OUTPUTS_ROOT"
+    )))
     dp_outputs_root = Path(resolve_path(root, get_value(cfg, "dp_checkpoint_root", str(dp_model_root / "DP"))))
     raw_dataset_dir = dataset_root / target_dataset
 
@@ -1249,6 +1367,15 @@ def dp_train_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[s
 
 
 def build_data_settings(cfg: dict[str, Any], dataset: str | None = None) -> dict[str, Any]:
+    if cfg.get('workflow_domain') == 'droid':
+        root = next(p for p in Path(__file__).resolve().parents if (p / 'lerobot/src/lerobot').is_dir())
+        defaults = runpy.run_path(str(root / 'lerobot/skillVLA/droid/configs/src/build_data_defaults.py'))
+        # Older detailed/frozen recipes keep their original output names.
+        automatic_name = ('skillset_mode' not in cfg and 'skillset_output_suffix' not in cfg
+                          and 'SKILLSET_OUTPUT_SUFFIX' not in os.environ)
+        cfg = defaults['configure'](cfg)
+        if automatic_name:
+            cfg = dict(cfg, skillset_output_suffix=defaults['output_suffix'](_build_data_settings(cfg, dataset)))
     if cfg.get('workflow_domain') != 'droid' or not _droid_groups()['suffix'](cfg):
         return _build_data_settings(cfg, dataset)
     groups = _droid_groups()
@@ -2704,6 +2831,11 @@ def print_shell(settings: dict[str, Any]) -> None:
         elif isinstance(value, list):
             value = ",".join(str(v) for v in value)
         print(f"export {key.upper()}={shlex.quote(str(value))}")
+    if "dp_outputs_root" in settings and "dp_checkpoint_root" not in settings:
+        # DP_OUTPUTS_ROOT is also a legacy input for the parent model folder.
+        # Pin the resolved checkpoint root when a worker resolves these exports
+        # again, otherwise the already appended /DP becomes /DP/DP.
+        print(f"export DP_CHECKPOINT_ROOT={shlex.quote(str(settings['dp_outputs_root']))}")
 
 
 def main() -> None:

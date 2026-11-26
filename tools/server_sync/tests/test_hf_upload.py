@@ -116,19 +116,21 @@ class UploadTest(unittest.TestCase):
         script = '''import runpy,sys
 from pathlib import Path
 path=Path(sys.argv[1]); expected=sys.argv[2]=='1'
-sys.path.insert(0,str(path.parent));sys.argv=[str(path),'--pretrained-only','--help']
+sys.path.insert(0,str(path.parent));sys.argv=[str(path),*sys.argv[3:],'--help']
 try:runpy.run_path(str(path),run_name='__main__')
 except SystemExit as error:assert error.code==0
 from huggingface_hub import constants
 assert constants.HF_HUB_DISABLE_XET is expected
 '''
-        for override, expected in ((None, '1'), ('0', '0')):
+        for flags, override, expected in ((['--pretrained-only'], None, '1'),
+                                         (['--pretrained-only'], '0', '0'),
+                                         ([], None, '1'), ([], '0', '0')):
             env = dict(os.environ)
             if override is None:
                 env.pop('HF_HUB_DISABLE_XET', None)
             else:
                 env['HF_HUB_DISABLE_XET'] = override
-            result = subprocess.run([sys.executable, '-c', script, str(uploader), expected],
+            result = subprocess.run([sys.executable, '-c', script, str(uploader), expected, *flags],
                 env=env, capture_output=True, text=True, timeout=20)
             self.assertEqual(result.returncode, 0, result.stderr)
 

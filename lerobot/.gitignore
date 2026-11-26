@@ -167,6 +167,13 @@ wandb/
 data/
 outputs/
 !skillVLA/abc/configs/train_skills/DP/eval/outputs/
+# Keep only the DROID together launcher/config; generated reports stay ignored.
+!skillVLA/droid/configs/train_skills/DP/eval/outputs/
+skillVLA/droid/configs/train_skills/DP/eval/outputs/*
+!skillVLA/droid/configs/train_skills/DP/eval/outputs/together/
+skillVLA/droid/configs/train_skills/DP/eval/outputs/together/*
+!skillVLA/droid/configs/train_skills/DP/eval/outputs/together/make_together.sh
+!skillVLA/droid/configs/train_skills/DP/eval/outputs/together/together_config.yaml
 
 # Translations
 *.mo

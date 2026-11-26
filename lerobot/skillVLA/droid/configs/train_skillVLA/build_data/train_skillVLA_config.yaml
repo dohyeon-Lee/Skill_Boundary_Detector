@@ -1,0 +1,9 @@
+# Choose an existing trained FSQ checkpoint. Nothing is submitted while blank.
+# Joint and pose FSQ checkpoints both produce the same joint-velocity VLA interface.
+fsq_checkpoint: outputs_DROID/FSQ/FSQ3332_contrastiveON_routeON_loss_droid_success_5k_delta_pose_without_deformable/FSQ_epoch2000.pt
+output_name: ""      # blank: derive levels, FSQ action space, epoch and dataset group
+
+slurm:
+  cpus: 8
+  memory: 64G
+  time: '04:00:00'

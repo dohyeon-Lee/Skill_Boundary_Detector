@@ -1,0 +1,24 @@
+stage1_common: true
+stage1_component: Predictor
+mode: pt
+run: {suffix: uvclip}
+
+skill_predictor:
+  train: true
+  mode: mode2
+  all_layers: true
+  freeze_vlm: false
+  lora: {enabled: false}
+  reader: {tokens: 4, depth: 2, heads: 8, deadzone_frac: 0.8}
+  token_access: {image: true, language: true}
+  spatial_target: uv
+  spatial_loss_weight: 1.0
+
+training:
+  dataloader: {batch_size: 16, workers: 8, gpus: 1}
+  optimizer: {base_lr: 2.5e-5, predictor_lr_scale: 1.0, grad_clip_norm: 1.0}
+  gradient_checkpointing: false
+  schedule: {steps: 100000, lr_mode: warmup_constant, warmup_steps: 1000, log_every: 100, save_every: 10000}
+logging:
+  wandb: {enable: true, project: DROID_SkillVLA_PT}
+slurm: {gres: 'gpu:1', cpus: 16, memory: 128G, time: '48:00:00'}

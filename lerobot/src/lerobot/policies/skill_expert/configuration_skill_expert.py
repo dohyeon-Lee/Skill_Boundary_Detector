@@ -475,6 +475,7 @@ class SkillExpertConfig(PreTrainedConfig):
     # Replace the full-plan's two finger qpos with one raw gripper action.
     # Observation inputs and spatial auxiliary state statistics stay 8-D.
     bspline_gripper_action: bool = False
+    bspline_gripper_action_range: list[float] = field(default_factory=lambda: [-1.0, 1.0])
     skill_flow_state_conditioned: bool = False
     skill_flow_chunk_multiplier: int = 1
     # Optional IMLE-style mode assignment for the skill-flow architectures.
@@ -1462,9 +1463,13 @@ class SkillExpertConfig(PreTrainedConfig):
                 raise ValueError("Fullskill visual models currently support ordinary PT/standalone FT, not latent Best-of-N or Joint routing.")
         if self.bspline_gripper_action and (
             not self.uses_bspline_plan or self.bimanual_spatial_auxiliary
-            or self.chunk_end_state_dim != 8 or self.skill_plan_state_dim != 7
+            or self.chunk_end_state_dim not in (6, 8) or self.skill_plan_state_dim != 7
         ):
             raise ValueError("bspline_gripper_action requires a 7D LIBERO plan and 8D proprio statistics.")
+        if (len(self.bspline_gripper_action_range) != 2
+                or not all(math.isfinite(v) for v in self.bspline_gripper_action_range)
+                or self.bspline_gripper_action_range[0] >= self.bspline_gripper_action_range[1]):
+            raise ValueError('bspline_gripper_action_range must contain increasing finite bounds')
         if self.uses_bspline_plan:
             if self.uses_dual_bottleneck and int(self.visual_bridge_last_n_layers) != 9:
                 raise ValueError("Dual bottleneck requires a 9+9 Expert split (visual_bridge_last_n_layers=9).")
@@ -2796,7 +2801,8 @@ class SkillExpertConfig(PreTrainedConfig):
     def bspline_plan_quantiles(self) -> tuple[list[float], list[float]]:
         """Plan scales, independent of the untouched proprio/auxiliary scales."""
         if self.bspline_gripper_action:
-            return list(self.chunk_end_state_q01[:6]) + [-1.0], list(self.chunk_end_state_q99[:6]) + [1.0]
+            lo, hi = self.bspline_gripper_action_range
+            return list(self.chunk_end_state_q01[:6]) + [lo], list(self.chunk_end_state_q99[:6]) + [hi]
         return self.chunk_end_state_q01, self.chunk_end_state_q99
 
     def get_optimizer_preset(self) -> AdamWConfig | MuonConfig:

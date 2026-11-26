@@ -28,6 +28,7 @@ from lerobot.utils.constants import (
 SKILL_START_IMAGE = "skill_start_image"
 SKILL_START_WRIST_IMAGE = "skill_start_wrist_image"
 SKILL_START_STATE = "skill_start_state"
+SKILL_START_PROPRIO = "skill_start_proprio"
 SKILL_START_STATE_NORMALIZED = "skill_start_state_normalized"
 SKILL_CODE = "skill_code"
 SKILL_PROGRESS = "skill_progress"
@@ -193,7 +194,7 @@ class SkillVLAPrepareStateTokenizerProcessorStep(ProcessorStep):
         transition = transition.copy()
         comp = dict(transition.get(TransitionKey.COMPLEMENTARY_DATA, {}) or {})
 
-        start_state = comp.get(SKILL_START_STATE)
+        start_state = comp.get(SKILL_START_PROPRIO, comp.get(SKILL_START_STATE))
         if not self.include_state:
             state_np = None
         elif start_state is not None:  # training: raw skill-start state → normalize to [-1, 1]

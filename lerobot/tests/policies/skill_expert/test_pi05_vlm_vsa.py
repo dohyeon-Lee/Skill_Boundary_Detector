@@ -292,11 +292,13 @@ def test_independent_checkpoint_controls_cover_expert_and_planner(monkeypatch, t
     assert model.cond_encoder.model.layers[0].self_attn.q_proj.weight.grad is not None
 
 
-def test_checkpoint_mapping_streaming_and_shared_embedding(tmp_path):
+@pytest.mark.parametrize('source_prefix', ['', 'model.'])
+def test_checkpoint_mapping_streaming_and_shared_embedding(tmp_path, source_prefix):
     from safetensors.torch import save_file
     raw = {"paligemma_with_expert.paligemma.model.language_model.norm.weight": torch.ones(4),
            "paligemma_with_expert.paligemma.lm_head.weight": torch.ones(7, 4),
            "paligemma_with_expert.gemma_expert.model.norm.weight": torch.ones(2)}
+    raw = {source_prefix + key: value for key, value in raw.items()}
     options = dict(architecture="layerwise_cond_bottleneck", include_condition_vlm=True, include_predictor_vlm=True)
     mapped, is_pi05 = _build_state_dict(raw, **options)
     assert is_pi05

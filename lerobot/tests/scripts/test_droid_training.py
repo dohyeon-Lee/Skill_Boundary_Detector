@@ -77,25 +77,109 @@ def tiny_dp_config(view, tmp_path):
     config['droid_dataset']['group'] = 'all'  # Tiny fixture UUIDs are not public DROID episodes.
     config.update(project_root=str(tmp_path), dataset_root=str(dataset.parent), target_dataset=dataset.name,
         source_dataset='converted', outputs_root='outputs', dp_device='cpu', dp_steps=1, dp_batch_size=2,
+        dp_action_space='joint_velocity',
         dp_num_workers=0, dp_n_obs_steps=3, dp_future_action_horizon=3,
         dp_history_encoder_dim=16, dp_down_dims=[8, 16], dp_wandb_enable=False, dp_save_freq=1, dp_log_freq=1)
     return config
 
 
-def test_dp_real_cpu_update_checkpoint_and_full_state_resume(view, tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', ['joint_velocity', 'delta_pose'])
+def test_dp_real_cpu_update_checkpoint_and_full_state_resume(view, tmp_path, monkeypatch, mode):
     import torch
+    import lerobot.scripts.lerobot_train as trainer
     torch.set_num_threads(1)
     config = tiny_dp_config(view, tmp_path)
+    config['dp_action_space'] = mode
     plan = TRAIN['resolve'](config, 'DP')
+    VIEW['prepare_view'](view[0], plan['dataset'], mode=mode)
     monkeypatch.setattr(sys, 'argv', ['droid_training_test'])
     monkeypatch.setenv('SBD_GPU_MEMORY_GUARD', 'false')
     TRAIN['run_dp'](config, plan)
     last = Path(plan['output']) / 'checkpoints/last'
     assert json.loads((last / 'training_state/training_step.json').read_text())['step'] == 1
     assert (last / 'training_state/optimizer_state.safetensors').is_file()
+    assert not json.loads((last / 'pretrained_model/train_config.json').read_text())['dataloader_persistent_workers']
+    loaded_steps = []
+    original_load = trainer.load_training_state
+    def record_resume(*args, **kwargs):
+        restored = original_load(*args, **kwargs)
+        loaded_steps.append(restored[0])
+        return restored
+    monkeypatch.setattr(trainer, 'load_training_state', record_resume)
     config['dp_steps'] = 2
+    config['dp_num_workers'] = 1
     TRAIN['run_dp'](config, plan)
+    assert loaded_steps == [1]
     assert json.loads((last / 'training_state/training_step.json').read_text())['step'] == 2
+    assert json.loads((last / 'pretrained_model/train_config.json').read_text())['dataloader_persistent_workers']
+
+
+@pytest.mark.parametrize('mode', ['joint_velocity', 'delta_pose'])
+def test_dp_numeric_cache_preserves_filtered_samples_and_persistent_spawn_workers(view, tmp_path, mode):
+    import torch
+    from lerobot.datasets.factory import make_dataset
+    torch.set_num_threads(1)
+    config = tiny_dp_config(view, tmp_path)
+    config.update(dp_action_space=mode, dp_num_workers=1)
+    plan = TRAIN['resolve'](config, 'DP')
+    VIEW['prepare_view'](view[0], plan['dataset'], mode=mode)
+    plan['dataset_selection'] = {'episode_ids': [1]}
+    desired = TRAIN['build_dp_config'](config, plan)
+    dataset = make_dataset(desired)
+    assert set(dataset.reader.cached_delta_columns) == {'observation.state', 'action'}
+    desired.droid_idle_filter = {}
+    baseline = make_dataset(desired)
+    assert baseline.reader.cached_delta_columns == ()  # Other workflows keep their reader behavior.
+    for index in range(len(dataset)):
+        actual, expected = dataset[index], baseline[index]
+        assert actual.keys() == expected.keys()
+        for key, value in actual.items():
+            if isinstance(value, torch.Tensor):
+                assert torch.equal(value, expected[key]), (index, key)
+            else:
+                assert value == expected[key]
+    loader = torch.utils.data.DataLoader(dataset, batch_size=2, num_workers=1,
+        multiprocessing_context='spawn', persistent_workers=True)
+    try:
+        first = list(loader)
+        worker_pids = [worker.pid for worker in loader._iterator._workers]
+        second = list(loader)
+        assert worker_pids == [worker.pid for worker in loader._iterator._workers]
+        for left, right in zip(first, second, strict=True):
+            for key in ('observation.state', 'action', 'observation.state_is_pad', 'action_is_pad'):
+                assert torch.equal(left[key], right[key])
+    finally:
+        if loader._iterator is not None:
+            loader._iterator._shutdown_workers()
+
+
+@pytest.mark.parametrize('mode', ['joint_velocity', 'delta_pose'])
+def test_dp_trains_nonzero_episode_subset_in_compacted_index_space(view, tmp_path, monkeypatch, mode):
+    import torch
+    from lerobot.scripts.lerobot_train import _make_policy_tail_sampler
+    from lerobot.datasets.factory import make_dataset
+    torch.set_num_threads(1)
+    original, _ = view
+    config = tiny_dp_config(view, tmp_path)
+    config['dp_action_space'] = mode
+    plan = TRAIN['resolve'](config, 'DP')
+    VIEW['prepare_view'](original, plan['dataset'], mode=mode)
+    plan['dataset_selection'] = {'episode_ids': [1]}
+    desired = TRAIN['build_dp_config'](config, plan)
+    dataset = make_dataset(desired)
+    sampler = _make_policy_tail_sampler(dataset, desired.policy.drop_n_last_frames)
+    assert sampler.indices == list(range(len(dataset)-2))
+    for index in sampler.indices:
+        item = dataset[index]
+        assert item['episode_index'].item() == 1
+        assert item['action'].shape == (3, plan['action_dim'])
+        assert not item['action_is_pad'].any()
+    monkeypatch.setattr(sys, 'argv', ['droid_subset_training_test'])
+    monkeypatch.setenv('SBD_GPU_MEMORY_GUARD', 'false')
+    TRAIN['run_dp'](config, plan)
+    last = Path(plan['output']) / 'checkpoints/last'
+    assert json.loads((last / 'training_state/training_step.json').read_text())['step'] == 1
+    assert json.loads((last / 'pretrained_model/train_config.json').read_text())['dataset']['episodes'] == [1]
 
 
 def test_fsq_real_cpu_epoch_with_training_only_mask(view, tmp_path):

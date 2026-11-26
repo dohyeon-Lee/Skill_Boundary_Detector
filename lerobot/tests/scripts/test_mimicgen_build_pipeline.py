@@ -36,12 +36,12 @@ def test_primary_target_and_mode_override_the_standalone_sbd_recipe(monkeypatch)
         seen.update(source)
         return {"skillset_single_gpu_workers": 4, "skillset_cpus_per_task": 8}
     monkeypatch.setattr(P, "build_data_settings", resolve)
-    cfg = {"target_dataset": "new_coffee", "skillvla_data_mode": "ft_own", "slurm": {"cpus": 8},
+    cfg = {"target_dataset": "new_coffee", "skillvla_data_mode": "pt", "slurm": {"cpus": 8},
            "project_root": "/project", "dataset_root": "new_data", "outputs_root": "new_outputs",
            "sbd_recipe": {"target_dataset": "old", "dataset_root": "old_data", "skillvla_data_mode": "ft"}}
     P.settings(cfg)
     assert seen["target_dataset"] == "new_coffee" and seen["dataset_root"] == "new_data"
-    assert seen["skillvla_data_mode"] == "ft_own" and seen["skillset_global_threshold_source"] == ""
+    assert seen["skillvla_data_mode"] == "pt" and seen["skillset_global_threshold_source"] == ""
 
 
 def test_snapshot_keeps_the_submitted_sbd_recipe_when_live_yaml_changes(tmp_path, monkeypatch):

@@ -340,8 +340,8 @@ def main(args: Args) -> None:
     segments, dec_states, dec_targets, metadata = load_skill_files(skills_dir, episode_ids=args.episode_ids)
     from action_representation import prepare_fsq_actions
 
-    if args.action_space not in {"dataset", "absolute_joint", "delta_joint"}:
-        raise ValueError("--action_space must be dataset|absolute_joint|delta_joint.")
+    if args.action_space not in {"dataset", "absolute_joint", "delta_joint", "delta_pose"}:
+        raise ValueError("--action_space must be dataset|absolute_joint|delta_joint|delta_pose.")
     transformed_targets = [
         prepare_fsq_actions(a, s, args.action_space, args.action_gripper_indices)
         for a, s in zip(dec_targets, dec_states, strict=True)
@@ -602,9 +602,9 @@ def main(args: Args) -> None:
             f"action {len(action_q01)}!={action_dim}."
         )
     target_actions = np.concatenate(transformed_targets)
-    if args.action_space == "delta_joint":
+    if args.action_space in {"delta_joint", "delta_pose"}:
         action_q01, action_q99 = np.quantile(target_actions, [.01, .99], axis=0).astype(np.float32)
-        print("[FSQ] delta-joint q01/q99 fitted to transformed skills; grippers stay absolute")
+        print(f"[FSQ] {args.action_space} q01/q99 fitted to transformed skills; grippers stay absolute")
     raw_action_min = target_actions.min(axis=0).astype(np.float32)
     raw_action_max = target_actions.max(axis=0).astype(np.float32)
     if args.autoencoder_mode == "action":

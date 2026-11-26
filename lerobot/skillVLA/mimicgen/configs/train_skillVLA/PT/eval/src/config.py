@@ -34,7 +34,9 @@ def build_settings(cfg):
     for component, config_path in aux_configs.items():
         if component not in {'predictor','terminator'}:
             raise ValueError('aux_training_configs supports predictor|terminator')
-        resolver=module(SHARED/'train_skillVLA/PT/Terminator/src/terminator_train_config.py','coffee_aux_'+component)
+        if component == 'terminator' and config_path == 'auto':
+            raise ValueError('Standalone Terminator training was removed; specify an existing checkpoint in models instead.')
+        resolver=module(SHARED/'train_skillVLA/PT/src/auxiliary/auxiliary_train_config.py','coffee_aux_'+component)
         path=(ROOT/f'lerobot/skillVLA/mimicgen/configs/train_skillVLA/FT/{component.title()}/{component}_ft_config.yaml'
               if config_path == 'auto' else ROOT/config_path)
         settings=resolver.build_settings(load_stage1_component_config(path))

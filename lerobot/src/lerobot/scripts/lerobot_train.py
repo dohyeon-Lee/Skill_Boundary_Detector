@@ -33,6 +33,9 @@ from torch.optim import Optimizer
 from tqdm import tqdm
 
 from lerobot.configs import parser
+from lerobot.utils.training_performance import (
+    defer_scalar_metrics, materialize_scalar_metrics, prepare_isolated_grad_clip_cache,
+)
 from lerobot.configs.train import TrainPipelineConfig
 from lerobot.datasets.abc_native_dataset import ABCNativeDataset
 from lerobot.datasets.factory import make_dataset
@@ -78,6 +81,19 @@ def _make_policy_tail_sampler(dataset, drop_n_last_frames):
     """
     if isinstance(dataset, ABCNativeDataset):
         return None
+    if dataset.episodes is not None:
+        from lerobot.datasets.recurrent_sampler import recurrent_episode_ranges
+
+        # Episode selection compacts HF rows, while metadata offsets and IDs
+        # retain their original corpus coordinates. Derive ranges from loaded
+        # rows so a subset such as episodes [2, 5] samples local frame indices.
+        ranges = recurrent_episode_ranges(dataset)
+        return EpisodeAwareSampler(
+            [start for start, _length in ranges],
+            [start + length for start, length in ranges],
+            drop_n_last_frames=drop_n_last_frames,
+            shuffle=True,
+        )
     return EpisodeAwareSampler(
         dataset.meta.episodes["dataset_from_index"],
         dataset.meta.episodes["dataset_to_index"],
@@ -230,7 +246,9 @@ def update_policy(
         rabc_batch_weights, rabc_batch_stats = rabc_weights_provider.compute_batch_weights(batch)
 
     # Let accelerator handle mixed precision
-    with accelerator.autocast():
+    with accelerator.autocast(), defer_scalar_metrics(
+        getattr(getattr(unwrapped_policy, "config", None), "model_type", None) == "skill_expert"
+    ):
         # Use per-sample loss when RA-BC is enabled for proper weighting
         if rabc_batch_weights is not None:
             # Get per-sample losses
@@ -263,20 +281,19 @@ def update_policy(
     if has_method(unwrapped_policy, "training_debug_metrics"):
         preclip_debug_metrics = unwrapped_policy.training_debug_metrics()
     isolated_grad_groups = {}
+    cached_clip = getattr(unwrapped_policy, "_sbd_isolated_grad_clip_cache", None)
     if has_method(unwrapped_policy, "isolated_main_optimizer_grad_groups"):
-        isolated_grad_groups = unwrapped_policy.isolated_main_optimizer_grad_groups()
+        isolated_grad_groups = (cached_clip[1] if cached_clip is not None
+                               else unwrapped_policy.isolated_main_optimizer_grad_groups())
 
     if isolated_grad_groups:
         accelerator.unscale_gradients(optimizer)
-        isolated_ids = {
-            id(param)
-            for params in isolated_grad_groups.values()
-            for param in params
-        }
-        main_params = [
-            param for param in policy.parameters()
-            if param.requires_grad and id(param) not in isolated_ids
-        ]
+        if cached_clip is not None:
+            main_params = cached_clip[0]
+        else:
+            isolated_ids = {id(param) for params in isolated_grad_groups.values() for param in params}
+            main_params = [param for param in policy.parameters()
+                           if param.requires_grad and id(param) not in isolated_ids]
         max_norm = grad_clip_norm if grad_clip_norm > 0 else float("inf")
         grad_norm = torch.nn.utils.clip_grad_norm_(
             main_params, max_norm, error_if_nonfinite=False
@@ -285,8 +302,8 @@ def update_policy(
             group_norm = torch.nn.utils.clip_grad_norm_(
                 params, max_norm, error_if_nonfinite=False
             )
-            output_dict[f"{group_name}/grad_norm"] = float(
-                group_norm.detach().item() if torch.is_tensor(group_norm) else group_norm
+            output_dict[f"{group_name}/grad_norm"] = (
+                group_norm.detach() if torch.is_tensor(group_norm) else float(group_norm)
             )
     elif grad_clip_norm > 0:
         grad_norm = accelerator.clip_grad_norm_(policy.parameters(), grad_clip_norm)
@@ -335,8 +352,12 @@ def update_policy(
     if has_method(unwrapped_policy, "update"):
         unwrapped_policy.update()
 
-    train_metrics.loss = loss.item()
-    train_metrics.grad_norm = grad_norm.item()
+    collected = materialize_scalar_metrics({
+        **output_dict, "_trainer_loss": loss.detach(), "_trainer_grad_norm": grad_norm.detach(),
+    })
+    train_metrics.loss = collected.pop("_trainer_loss")
+    train_metrics.grad_norm = collected.pop("_trainer_grad_norm")
+    output_dict = collected
     train_metrics.lr = optimizer.param_groups[0]["lr"]
     train_metrics.update_s = time.perf_counter() - start_time
     return train_metrics, output_dict
@@ -1095,34 +1116,6 @@ def train(
         if is_main_process:
             logging.info("GRU_epi: %d continuous streams (full batches), chunks=%d, layers=%d; random boundary phases and episode resets.",
                          cfg.batch_size, cfg.policy.n_obs_steps, cfg.policy.history_gru_layers)
-    elif cfg.transition_oversampling.enabled:
-        from lerobot.policies.skillVLA.dataset_skillVLA import SkillVLADataset
-        from lerobot.policies.skillVLA.transition_boundary_sampler import TransitionBoundarySampler
-
-        if (cfg.dataset.streaming or not isinstance(dataset, SkillVLADataset)
-                or predictor_transition_sampling or latent_samples_per_skill > 1
-                or getattr(cfg.policy, "same_skill_batch_enabled", False)
-                or getattr(cfg.policy, "state_full_skill_supervision", False)):
-            raise ValueError("transition_oversampling requires frame-level VSA or Terminator sampling.")
-        post_end_steps = (
-            int(getattr(cfg.policy, "terminator_post_end_steps", 0))
-            if not getattr(cfg.policy, "newtask_joint_enabled", False) else 0
-        )
-        indices = None
-        if not post_end_steps and hasattr(cfg.policy, "drop_n_last_frames"):
-            indices = EpisodeAwareSampler(
-                dataset.meta.episodes["dataset_from_index"], dataset.meta.episodes["dataset_to_index"],
-                episode_indices_to_use=dataset.episodes,
-                drop_n_last_frames=cfg.policy.drop_n_last_frames, shuffle=False,
-            ).indices
-        sampler = TransitionBoundarySampler(
-            dataset, cfg.transition_oversampling, indices=indices, post_end_steps=post_end_steps,
-        )
-        shuffle = False
-        if is_main_process:
-            logging.info("Transition oversampling: %d/%d frames in boundary/end windows, percent=%g, uniform weight=%g; episode-end frames=%d.",
-                         sampler.boundary_frames, len(sampler), cfg.transition_oversampling.percent,
-                         cfg.transition_oversampling.weight, sampler.episode_end_frames)
     elif predictor_transition_sampling:
         if cfg.dataset.streaming:
             raise ValueError(
@@ -1420,6 +1413,11 @@ def train(
             queue_checkpoint_archive(cfg, checkpoint_dir)
             prune_local_checkpoints(cfg, checkpoint_dir)
         accelerator.wait_for_everyone()
+
+    clip_policy = accelerator.unwrap_model(policy, keep_fp32_wrapper=True)
+    if (getattr(cfg.policy, "model_type", None) == "skill_expert"
+            and has_method(clip_policy, "isolated_main_optimizer_grad_groups")):
+        prepare_isolated_grad_clip_cache(clip_policy)
 
     for _ in range(step, cfg.steps):
         start_time = time.perf_counter()

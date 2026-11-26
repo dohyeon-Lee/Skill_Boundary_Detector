@@ -5,6 +5,7 @@ stage="$1"; config="$2"
 export SBD_GLOBAL_CONFIG="$(dirname "${config}")/global_config.yaml"
 export PYTHONPATH="${PROJECT_ROOT}/lerobot/src${PYTHONPATH:+:${PYTHONPATH}}"
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+export PYTHONUNBUFFERED=1
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export SBD_GPU_GUARD_TERMINAL_ON_OOM=1
 source "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/src/runtime_env.sh"
