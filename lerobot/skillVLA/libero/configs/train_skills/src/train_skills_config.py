@@ -280,10 +280,13 @@ def training_episode_suffix(config: dict, episodes: list[int] | None) -> str:
     """Keep equal-size explicit selections from sharing one training output."""
     if episodes is None:
         return ''
-    suffix = f'_ep{len(episodes)}'
-    if config.get('dataset', {}).get('episode_selection') == 'per_task':
-        suffix += '_pertask'
-    if config.get('dataset', {}).get('episode_ids'):
+    data = config.get('dataset', {})
+    if data.get('episode_selection') == 'per_task':
+        # N counts episodes per task; explicit lists may differ between tasks.
+        suffix = '_epselect_pertask' if data.get('episode_ids') else f"_ep{int(data['n_episodes'])}_pertask"
+    else:
+        suffix = f'_ep{len(episodes)}'
+    if data.get('episode_ids'):
         import hashlib
         digest = hashlib.sha256(json.dumps(sorted(episodes), separators=(',', ':')).encode()).hexdigest()[:8]
         suffix += f'_ids{digest}'

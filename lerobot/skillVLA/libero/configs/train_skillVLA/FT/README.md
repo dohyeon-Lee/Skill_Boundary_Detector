@@ -43,7 +43,9 @@ episode IDs. `n_episodes: all` uses the full build. A nonempty nested
 For example, `[[0, 2], [1]]` selects the first and third episodes of the first
 task and the second episode of the next task; `[]` skips that task. Missing
 task lists and unavailable positions fail before submission. VSA and Predictor receive the same resolved global episode IDs. Output names add
-`_ep<count>_pertask` and an ID hash for explicit selections. MimicGen's default
+`_ep<N>_pertask`, where N is the count per task (1 per task gives `_ep1_pertask`).
+Explicit nested selections use `_epselect_pertask_ids<hash>` because counts can
+differ between tasks. MimicGen's default
 `global` selection continues to use a flat list of global episode IDs.
 
 The configured source/run must already have a complete SkillVLA build; episode

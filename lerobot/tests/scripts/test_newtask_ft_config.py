@@ -538,13 +538,13 @@ def test_ft_selects_each_task_and_keeps_selection_in_output_name(tmp_path, compo
     cfg['dataset'].update(episode_selection='per_task', n_episodes=1, episode_ids=[])
     first = resolver.build_settings(cfg)
     assert json.loads(first['dataset_episodes']) == [3, 8, 40]
-    assert '_ep3_pertask' in first['run_name']
+    assert '_ep1_pertask' in first['run_name']
 
     # Local ordinals, not global IDs; [] deliberately omits one task.
     cfg['dataset']['episode_ids'] = [[2, 0], [], [1]]
     explicit = resolver.build_settings(cfg)
     assert json.loads(explicit['dataset_episodes']) == [3, 12, 50]
-    assert '_ep3_pertask_ids' in explicit['run_name']
+    assert '_epselect_pertask_ids' in explicit['run_name']
     assert explicit['output_dir'] != first['output_dir']
     cfg['dataset']['episode_ids'] = [[0, 2], [], [1]]
     assert resolver.build_settings(cfg)['output_dir'] == explicit['output_dir']
