@@ -565,6 +565,9 @@ def make_policy(
         )
 
     policy_cls = get_policy_class(cfg.type)
+    if cfg.type == "skill_expert" and getattr(cfg, "skillvla_backbone", "pi05").startswith("groot_"):
+        from lerobot.policies.skill_groot.policy import GrootSkillExpertPolicy
+        policy_cls = GrootSkillExpertPolicy
 
     kwargs = {}
     if ds_meta is not None:

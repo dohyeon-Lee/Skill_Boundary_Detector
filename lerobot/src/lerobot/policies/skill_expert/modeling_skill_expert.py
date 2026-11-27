@@ -14,7 +14,9 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import Tensor, nn
 
-from lerobot.utils.training_performance import scalar_metric
+from lerobot.utils.training_performance import (
+    cached_training_target, constant_tensor, reuse_training_targets, scalar_metric,
+)
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.optim.optimizers import split_param_groups_for_muon
 from lerobot.policies.pi05.lora import route_plain_to_base
@@ -2203,9 +2205,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             state, target = self._repeat_top_k(state, top_k), self._repeat_top_k(target, top_k)
         # The head reads patches of the DINO frame, so the projection uses that frame's size.
         size = int(self.config.dino_image_size)
-        cell, _, valid = patch_labels(
-            state[:, :3], state[:, 3:6], target, camera_for_batch(batch, repeat=top_k),
-            grid=grid, height=size, width=size,
+        cell, _, valid = cached_training_target(
+            batch, ('wrist_geometry', top_k, grid, size, wrist_logits.device),
+            lambda: patch_labels(
+                state[:, :3], state[:, 3:6], target, camera_for_batch(batch, repeat=top_k),
+                grid=grid, height=size, width=size,
+            ),
         )
         if chunk_patch:
             target_valid = batch.get(valid_key)
@@ -2214,12 +2219,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             target_valid = target_valid.to(valid.device).reshape(-1).bool()
             if top_k > 1:
                 target_valid = self._repeat_top_k(target_valid, top_k)
-            valid = valid & target_valid & torch.isfinite(target).all(dim=-1)
+            valid = cached_training_target(
+                batch, ('wrist_chunk_valid', top_k, grid, size, wrist_logits.device),
+                lambda: valid & target_valid & torch.isfinite(target).all(dim=-1),
+            )
         wrist_loss, metrics = wrist_patch_alignment_loss(
             wrist_logits, cell, valid,
             grid=grid, sigma=float(self.config.wrist_patch_align_target_sigma),
         )
-        metrics["wrist_patch/raw_loss"] = float(wrist_loss.detach())
+        metrics["wrist_patch/raw_loss"] = scalar_metric(wrist_loss.detach())
         if end_state_aux and not triple_aux:
             agent_loss, agent_metrics = self._agent_end_state_alignment_loss(
                 batch, agent_prediction, top_k=top_k,
@@ -2230,10 +2238,10 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 agent_weight = float(self.config.agent_end_state_loss_weight)
                 metrics.update({
                     "wrist_patch/weight": wrist_weight,
-                    "wrist_patch/weighted": float(wrist_weight * wrist_loss.detach()),
+                    "wrist_patch/weighted": scalar_metric(wrist_weight * wrist_loss.detach()),
                     "agent_end_state/weight": agent_weight,
-                    "agent_end_state/weighted": float(agent_weight * agent_loss.detach()),
-                    "patch_alignment/raw_sum": float((wrist_loss + agent_loss).detach()),
+                    "agent_end_state/weighted": scalar_metric(agent_weight * agent_loss.detach()),
+                    "patch_alignment/raw_sum": scalar_metric((wrist_loss + agent_loss).detach()),
                 })
                 return wrist_weight * wrist_loss + agent_weight * agent_loss, metrics
             return wrist_loss + agent_loss, metrics
@@ -2265,14 +2273,14 @@ class SkillExpertPolicy(PreTrainedPolicy):
         if top_k > 1:
             uv = self._repeat_top_k(uv, top_k)
             goal_valid = self._repeat_top_k(goal_valid, top_k)
-        cell_xy = torch.floor((uv + 1.0) * 0.5 * agent_grid).long().clamp(
-            0, agent_grid - 1
-        )
-        agent_cell = cell_xy[:, 1] * agent_grid + cell_xy[:, 0]
-        agent_valid = (
-            goal_valid
-            & torch.isfinite(uv).all(dim=-1)
-            & (uv.abs() <= 1.0).all(dim=-1)
+        def top_labels():
+            cell_xy = torch.floor((uv + 1.0) * 0.5 * agent_grid).long().clamp(0, agent_grid - 1)
+            return cell_xy[:, 1] * agent_grid + cell_xy[:, 0], (
+                goal_valid & torch.isfinite(uv).all(dim=-1) & (uv.abs() <= 1.0).all(dim=-1)
+            )
+
+        agent_cell, agent_valid = cached_training_target(
+            batch, ('top_patch_labels', top_k, agent_grid, uv_key, valid_key, agent_logits.device), top_labels,
         )
         agent_loss, agent_metrics = wrist_patch_alignment_loss(
             agent_logits,
@@ -2283,15 +2291,15 @@ class SkillExpertPolicy(PreTrainedPolicy):
             prefix="agent_patch",
         )
         metrics.update(agent_metrics)
-        metrics["agent_patch/raw_loss"] = float(agent_loss.detach())
+        metrics["agent_patch/raw_loss"] = scalar_metric(agent_loss.detach())
         if triple_aux:
             if not include_xyz:
                 patch_weight = float(self.config.wrist_patch_align_loss_weight)
                 metrics.update({
                     "agent_patch/weight": patch_weight,
-                    "agent_patch/weighted": float(patch_weight * agent_loss.detach()),
+                    "agent_patch/weighted": scalar_metric(patch_weight * agent_loss.detach()),
                     "wrist_patch/weight": patch_weight,
-                    "wrist_patch/weighted": float(patch_weight * wrist_loss.detach()),
+                    "wrist_patch/weighted": scalar_metric(patch_weight * wrist_loss.detach()),
                 })
                 return patch_weight * (agent_loss + wrist_loss), metrics
             xyz_loss, xyz_metrics = self._agent_end_state_alignment_loss(batch, agent_prediction, top_k=top_k)
@@ -2300,12 +2308,12 @@ class SkillExpertPolicy(PreTrainedPolicy):
             metrics.update(xyz_metrics)
             metrics.update({
                 "agent_patch/weight": patch_weight,
-                "agent_patch/weighted": float(patch_weight * agent_loss.detach()),
+                "agent_patch/weighted": scalar_metric(patch_weight * agent_loss.detach()),
                 "wrist_patch/weight": patch_weight,
-                "wrist_patch/weighted": float(patch_weight * wrist_loss.detach()),
+                "wrist_patch/weighted": scalar_metric(patch_weight * wrist_loss.detach()),
                 "agent_end_state/weight": xyz_weight,
-                "agent_end_state/weighted": float(xyz_weight * xyz_loss.detach()),
-                "patch_alignment/raw_sum": float((agent_loss + wrist_loss + xyz_loss).detach()),
+                "agent_end_state/weighted": scalar_metric(xyz_weight * xyz_loss.detach()),
+                "patch_alignment/raw_sum": scalar_metric((agent_loss + wrist_loss + xyz_loss).detach()),
             })
             return patch_weight * (agent_loss + wrist_loss) + xyz_weight * xyz_loss, metrics
         if chunk_patch:
@@ -2327,7 +2335,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             )
             metrics = {f"vision_aux/upper/{key}": value for key, value in upper_metrics.items()}
             metrics.update({f"vision_aux/lower/{key}": value for key, value in lower_metrics.items()})
-            metrics["vision_aux/dual_loss"] = float((0.5 * (upper_loss + lower_loss)).detach())
+            metrics["vision_aux/dual_loss"] = scalar_metric((0.5 * (upper_loss + lower_loss)).detach())
             return 0.5 * (upper_loss + lower_loss), metrics
 
         top_left, top_right, wrist_left, wrist_right, xyz_prediction = readouts
@@ -2364,8 +2372,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
         )
         patch_weight = float(self.config.wrist_patch_align_loss_weight)
         total = patch_weight * patch_loss
-        metrics["bimanual_patch/raw_loss"] = float(patch_loss.detach())
-        metrics["bimanual_patch/weighted"] = float(total.detach())
+        metrics["bimanual_patch/raw_loss"] = scalar_metric(patch_loss.detach())
+        metrics["bimanual_patch/weighted"] = scalar_metric(total.detach())
 
         if include_xyz:
             endpoint = batch.get(SKILL_END_XYZ)
@@ -2384,9 +2392,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
             xyz_weight = float(self.config.agent_end_state_loss_weight)
             total = total + xyz_weight * xyz_loss
             metrics.update({
-                "bimanual_xyz/loss": float(xyz_loss.detach()),
-                "bimanual_xyz/weighted": float((xyz_weight * xyz_loss).detach()),
-                "bimanual_xyz/valid_fraction": float(arm_valid.float().mean().detach()),
+                "bimanual_xyz/loss": scalar_metric(xyz_loss.detach()),
+                "bimanual_xyz/weighted": scalar_metric((xyz_weight * xyz_loss).detach()),
+                "bimanual_xyz/valid_fraction": scalar_metric(arm_valid.float().mean().detach()),
             })
         return total, metrics
 
@@ -2405,33 +2413,39 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 or (target.shape[1] < 3 if xyz_only else target.shape[1] != 8)):
             shape = ">=3" if xyz_only else "8"
             raise KeyError(f"Diffaux requires raw skill_end_state [batch, {shape}] and skill_end_state_valid.")
-        target = target[:, :dims].to(device=prediction.device, dtype=torch.float32)
-        valid = valid.to(device=prediction.device).reshape(-1).bool()
-        if valid.shape != (target.shape[0],):
-            raise ValueError("Diffaux endpoint validity must have one value per sample.")
-        valid = valid & torch.isfinite(target).all(-1)
-        if top_k > 1:
-            target, valid = self._repeat_top_k(target, top_k), self._repeat_top_k(valid, top_k)
+        def normalized_target():
+            selected = target[:, :dims].to(device=prediction.device, dtype=torch.float32)
+            usable = valid.to(device=prediction.device).reshape(-1).bool()
+            if usable.shape != (selected.shape[0],):
+                raise ValueError("Diffaux endpoint validity must have one value per sample.")
+            usable = usable & torch.isfinite(selected).all(-1)
+            if top_k > 1:
+                selected, usable = self._repeat_top_k(selected, top_k), self._repeat_top_k(usable, top_k)
+            q01 = constant_tensor(self.config.chunk_end_state_q01[:dims], device=prediction.device)
+            q99 = constant_tensor(self.config.chunk_end_state_q99[:dims], device=prediction.device)
+            selected = torch.where(usable[:, None], selected, q01)
+            selected = 2 * (selected - q01) / (q99 - q01).clamp_min(1e-6) - 1
+            return selected, usable, usable.sum().clamp_min(1)
+
+        target, valid, count = cached_training_target(
+            batch, ('normalized_xyz', dims, top_k, prediction.device,
+                    tuple(self.config.chunk_end_state_q01[:dims]), tuple(self.config.chunk_end_state_q99[:dims])),
+            normalized_target,
+        )
         if prediction.shape != target.shape:
             raise ValueError(f"Diffaux endpoint shape mismatch: {prediction.shape} vs {target.shape}.")
-        q01 = prediction.new_tensor(self.config.chunk_end_state_q01[:dims], dtype=torch.float32)
-        q99 = prediction.new_tensor(self.config.chunk_end_state_q99[:dims], dtype=torch.float32)
-        # Sanitize BEFORE subtraction so masked NaN labels cannot poison gradients.
-        target = torch.where(valid[:, None], target, q01)
-        target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
         error = prediction.float() - target
-        count = valid.sum().clamp_min(1)
         loss = (error.square().mean(-1) * valid).sum() / count
         metrics = {
-            "agent_end_state/raw_loss": loss.detach().item(),
-            "agent_end_state/valid_fraction": valid.float().mean().item(),
+            "agent_end_state/raw_loss": scalar_metric(loss.detach()),
+            "agent_end_state/valid_fraction": scalar_metric(valid.float().mean()),
         }
         for name, group in (("xyz", slice(0, 3)), ("rotation", slice(3, 6)), ("gripper", slice(6, 8))):
             if group.stop > dims:
                 continue
-            metrics[f"agent_end_state/{name}_mae_normalized"] = (
+            metrics[f"agent_end_state/{name}_mae_normalized"] = scalar_metric(
                 (error.detach()[:, group].abs().mean(-1) * valid).sum() / count
-            ).item()
+            )
         return loss, metrics
 
     def _skill_start_patch_alignment_loss(self, batch: dict) -> tuple[Tensor, dict[str, float]]:
@@ -2486,8 +2500,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
             loss = 0.5 * (current_loss + start_loss)
             metrics.update({f"start_{key}": value for key, value in start_metrics.items()})
             metrics.update({
-                "patch_alignment/current_loss": current_loss.detach().item(),
-                "patch_alignment/start_loss": start_loss.detach().item(),
+                "patch_alignment/current_loss": scalar_metric(current_loss.detach()),
+                "patch_alignment/start_loss": scalar_metric(start_loss.detach()),
                 "patch_alignment/symmetric_start": 1.0,
             })
         if start_xyz_only:
@@ -2500,7 +2514,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             metrics.update({f"start_{key}": value for key, value in xyz_metrics.items()})
             metrics.update({
                 "start_agent_end_state/weight": weight,
-                "start_agent_end_state/weighted": (weight * xyz_loss.detach()).item(),
+                "start_agent_end_state/weighted": scalar_metric(weight * xyz_loss.detach()),
             })
         if getattr(self.config, "uses_separate_vision_tower_xyz", False):
             metrics.update({
@@ -3646,8 +3660,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 if tuple(target.shape) != expected or not bool(torch.isfinite(target).all()):
                     raise ValueError(f"Independent planner target must be finite {expected}.")
                 low, high = self.config.bspline_plan_quantiles
-                q01 = target.new_tensor(low)
-                q99 = target.new_tensor(high)
+                q01 = constant_tensor(low, device=target.device, dtype=target.dtype)
+                q99 = constant_tensor(high, device=target.device, dtype=target.dtype)
                 target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
             if self.config.uses_dual_bottleneck:
                 return target  # The action forward will share its current VLM graph with FM.
@@ -4941,6 +4955,7 @@ class SkillExpertPolicy(PreTrainedPolicy):
             total_per_sample.mean(), metrics
         )
 
+    @reuse_training_targets()
     def forward(self, batch: dict, reduction: str = "mean"):
         if self.config.newtask_joint_enabled:
             return self._joint_forward(batch, reduction)
@@ -5404,8 +5419,8 @@ class SkillExpertPolicy(PreTrainedPolicy):
                     if target.shape != prediction.shape or not bool(torch.isfinite(target).all()):
                         raise ValueError(f"Invalid Bspline proprio target: {tuple(target.shape)} vs {tuple(prediction.shape)}.")
                     low, high = self.config.bspline_plan_quantiles
-                    q01 = torch.tensor(low, device=prediction.device)
-                    q99 = torch.tensor(high, device=prediction.device)
+                    q01 = constant_tensor(low, device=prediction.device, dtype=torch.get_default_dtype())
+                    q99 = constant_tensor(high, device=prediction.device, dtype=torch.get_default_dtype())
                     target = 2 * (target - q01) / (q99 - q01).clamp_min(1e-6) - 1
                 if getattr(self.config, "skill_planner_mode", "") == "denoising":
                     if independent_flow_loss is None:
@@ -5418,23 +5433,22 @@ class SkillExpertPolicy(PreTrainedPolicy):
                 action_objective = action_objective + weight * plan_loss
                 objective_per_sample = objective_per_sample + weight * plan_per_sample
                 bspline_metrics = {
-                    "bspline/loss": plan_loss.detach().item(),
-                    "bspline/weighted": (weight * plan_loss).detach().item(),
+                    "bspline/loss": scalar_metric(plan_loss.detach()),
+                    "bspline/weighted": scalar_metric((weight * plan_loss).detach()),
                     "bspline/read_gate": (
                         0.0 if not self.config.reads_bspline_plan
-                        else self.model.bspline_read_gate.detach().tanh().item()
+                        else scalar_metric(self.model.bspline_read_gate.detach().tanh())
                     ),
                     "bspline/read_enabled": float(self.config.reads_bspline_plan),
                 }
                 if prediction is not None:
-                    bspline_metrics["bspline/mae_normalized"] = (prediction.detach() - target).abs().mean().item()
+                    bspline_metrics["bspline/mae_normalized"] = scalar_metric((prediction.detach() - target).abs().mean())
                 if self.config.uses_independent_skill_planner:
                     bspline_metrics["planner/flow_loss" if self.config.skill_planner_mode == "denoising"
-                                    else "planner/regression_loss"] = plan_loss.detach().item()
+                                    else "planner/regression_loss"] = scalar_metric(plan_loss.detach())
                 if self.config.uses_bspline_preskill_memory:
-                    bspline_metrics["bspline/preskill_valid_fraction"] = (
-                        batch["preskill_valid"].detach().float().mean().item()
-                    )
+                    bspline_metrics["bspline/preskill_valid_fraction"] = scalar_metric(
+                        batch["preskill_valid"].detach().float().mean())
         skill_flow_loss = None
         skill_flow_per_sample = None
         # Skill supervision is opt-in during FT. Frozen Expert weights do not
@@ -6190,6 +6204,9 @@ class SkillExpertPolicy(PreTrainedPolicy):
         """Load an exact retained Stage-1 checkpoint or initialize from pi0.5."""
         local_config = Path(pretrained_name_or_path) / "config.json"
         raw_config = json.loads(local_config.read_text()) if local_config.is_file() else {}
+        if raw_config.get("skillvla_backbone", getattr(config, "skillvla_backbone", "pi05")).startswith("groot_"):
+            from lerobot.policies.skill_groot.policy import GrootSkillExpertPolicy
+            return GrootSkillExpertPolicy.from_pretrained(pretrained_name_or_path, config=config, strict=True, **kwargs)
         saved_architecture = raw_config.get("architecture")
         if saved_architecture is None and "conditioning_route" in raw_config:
             # skillVLA_real checkpoints predate the explicit architecture field.

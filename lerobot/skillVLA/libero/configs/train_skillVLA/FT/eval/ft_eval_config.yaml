@@ -1,11 +1,11 @@
-# 모델: top crop 1.1 + gripper action FT 10k / 기존 mode2 Predictor FT 20k
+# 모델: termbn_detach FT 10k / full_full·task당 1개·PT PCA / mode2 Predictor FT 20k
 model_defaults:
   focus_source: predictor
   pose_source: auto
   expert_xyz_source: auto
 models:
-  - label: termbn_detach_topcrop1p1_gripaction_FT10k_Predmode2FT20k
-    model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_run598298021e_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_topcrop1p1_gripaction_base_100k_libero_10_full_1_ft_bs16_frozenexpert_skillbspline
+  - label: termbn_detach_FT10k_fullfull_ep1pertask_pcapt_Predmode2FT20k
+    model_dir: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_base_100k_libero_10_full_full_ft_bs16_frozenexpert_skillbspline_ep1_pertask_yonsei
     checkpoint: '010000'
     external_predictor_model: bs16_FSQ333_contrastive_2000_ft_grounded_libero_90_full_full_libero_10_full_1_predictor_uv_fullvlm_mode2_uvclip_lab
     external_predictor_checkpoint: '020000'
@@ -14,15 +14,15 @@ models:
     end_mode: termination
 
 # 결과 저장: eval/outputs/<output_name> (--yonsei 결과는 _yonsei 추가)
-output_name: ft_nonproprio_termbn_detach_topcrop1p1_gripaction_PT100k_FT10k_PredFT20k_10eps_th03_range1_r10
+output_name: ft_nonproprio_termbn_detach_PT100k_FT10k_PredFT20k_fullfull_ep1pertask_pcapt_10eps_th03_range1_r10
 resume: true
 
 # 기본 LIBERO 초기 상태 x1. 확장 initial-state bank 사용 안 함.
 target_task: libero_10
 gt_dataset:
   skillvla_root: skillvla
-  source: libero_10_full_1
-  run: FSQ333_contrastive_2000_ft_grounded
+  source: libero_10_full_full
+  run: FSQ333_contrastive_2000_ft_grounded_pcapt
 task_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 n_episodes: 10
 oracle:
@@ -32,7 +32,7 @@ oracle:
 
 # 실행 병렬도. --yonsei는 servers/yonsei.yaml의 GPU/worker 설정 사용.
 eval_num_gpus: 1
-eval_max_workers_per_gpu: 5
+eval_max_workers_per_gpu: 3
 eval_batch_size: 1
 max_parallel_tasks: 1
 n_action_steps: 10          # 앞 10스텝 실행 후 재계획

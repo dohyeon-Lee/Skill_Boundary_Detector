@@ -22,6 +22,7 @@ from dataclasses import dataclass
 
 import torch
 from torch import Tensor
+from lerobot.utils.training_performance import constant_axis, constant_eye, constant_tensor
 
 # LIBERO's Panda: robot0_eye_in_hand sits 5 cm ahead of the hand body and 9.7 cm behind the grip
 # site, aligned with the hand frame (verified against MuJoCo).
@@ -72,7 +73,7 @@ def rotation_from_axis_angle(axis_angle: Tensor) -> Tensor:
     cross = torch.stack(
         [zero, -z, y, z, zero, -x, -y, x, zero], dim=-1
     ).reshape(*axis.shape[:-1], 3, 3)
-    identity = torch.eye(3, device=axis_angle.device, dtype=axis_angle.dtype).expand_as(cross)
+    identity = constant_eye(3, axis_angle.device, axis_angle.dtype).expand_as(cross)
     sin, cos = torch.sin(angle).unsqueeze(-1), torch.cos(angle).unsqueeze(-1)
     rotation = identity + sin * cross + (1.0 - cos) * (cross @ cross)
     return torch.where(angle.unsqueeze(-1) < 1e-12, identity, rotation)
@@ -95,16 +96,16 @@ def project_into_wrist(
         tensor.to(dtype=torch.float32) for tensor in (eef_xyz, eef_axis_angle, target_xyz)
     )
     rotation = rotation_from_axis_angle(eef_axis_angle)
-    offset = torch.tensor(camera.position, device=eef_xyz.device, dtype=torch.float32)
-    camera_rotation = rotation @ torch.tensor(
+    offset = constant_tensor(camera.position, device=eef_xyz.device, dtype=torch.float32)
+    camera_rotation = rotation @ constant_tensor(
         camera.rotation, device=eef_xyz.device, dtype=torch.float32
     ).reshape(3, 3)
     camera_xyz = eef_xyz + (rotation @ offset.unsqueeze(-1)).squeeze(-1)
 
     # MuJoCo cameras look down their own -z with +y up; robosuite's renderer flips both axes.
-    axis_correction = torch.diag(
-        torch.tensor([1.0, -1.0, -1.0], device=eef_xyz.device, dtype=torch.float32)
-    )
+    axis_correction = constant_tensor(
+        (1., 0., 0., 0., -1., 0., 0., 0., -1.), device=eef_xyz.device, dtype=torch.float32,
+    ).reshape(3, 3)
     world_to_camera = (camera_rotation @ axis_correction).transpose(-1, -2)
     local = (world_to_camera @ (target_xyz - camera_xyz).unsqueeze(-1)).squeeze(-1)
 
@@ -174,11 +175,11 @@ def soft_targets(label: Tensor, *, grid: int, sigma: float) -> Tensor:
     """
     if bool(((label < 0) | (label >= grid * grid)).any()):
         raise ValueError("soft_targets expects valid cell labels; mask the dropped frames first.")
-    targets = torch.zeros(label.shape[0], grid * grid, device=label.device, dtype=torch.float32)
     if sigma <= 0:
+        targets = torch.zeros(label.shape[0], grid * grid, device=label.device, dtype=torch.float32)
         targets[torch.arange(label.shape[0], device=label.device), label] = 1.0
         return targets
-    axis = torch.arange(grid, device=label.device, dtype=torch.float32)
+    axis = constant_axis(grid, label.device, torch.float32)
     cell_row = (label // grid).to(torch.float32)
     cell_column = (label % grid).to(torch.float32)
     row_weight = torch.exp(-((axis[None, :] - cell_row[:, None]) ** 2) / (2.0 * sigma**2))

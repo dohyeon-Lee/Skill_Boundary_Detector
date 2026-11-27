@@ -384,6 +384,8 @@ class SkillExpertConfig(PreTrainedConfig):
     """Configuration shared by the retained Stage-1 modes."""
 
     model_type: str = "skill_expert"
+    skillvla_backbone: str = "pi05"
+    groot_base_path: str = ""
     dtype: str = "float32"
 
     architecture: str = COND_GEMMA_ARCHITECTURE

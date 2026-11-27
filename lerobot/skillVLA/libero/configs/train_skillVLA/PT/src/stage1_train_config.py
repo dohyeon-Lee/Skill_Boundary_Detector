@@ -649,7 +649,10 @@ def build_settings(config: dict) -> dict:
         )))
     )
     fsq_path = dataset_dir.parent / "FSQ.pt"
-    if not (pi_base / "model.safetensors").is_file():
+    if not (pi_base / "model.safetensors").is_file() and not (
+        config.get("skillvla_backbone", "pi05").startswith("groot_")
+        and (pi_base / "model.safetensors.index.json").is_file()
+    ):
         raise FileNotFoundError(f"pi0.5 base checkpoint not found: {pi_base}")
     if not uses_condition_vlm and not dino_model.is_dir():
         raise FileNotFoundError(f"DINO model not found: {dino_model}")
@@ -2096,6 +2099,8 @@ def build_settings(config: dict) -> dict:
     settings.update({name + "_checkpointing": json.dumps(value) for name, value in checkpoint_streams.items()})
     settings = apply_droid_training_group(config, settings, dataset_dir,
         run_key='pt_run_name', output_key='pt_output_dir')
+    from skillvla_backend import finalize
+    settings = finalize(config, settings, run_key='pt_run_name', output_key='pt_output_dir')
     if settings["dataloader_prefetch_factor"] <= 0:
         raise ValueError("training.dataloader.prefetch_factor must be positive.")
     if settings['dataloader_persistent_workers'] and settings['num_workers'] == 0:

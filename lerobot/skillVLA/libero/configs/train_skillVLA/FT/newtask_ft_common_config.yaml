@@ -1,6 +1,9 @@
+skillvla_backbone: pi05  # pi05 | groot_integrate | groot_seperate
+# GR00T FT auto-selects the matching PT component/run (100k) from the PT YAML.
+# Optional warm_start.backend_sources.<backend> can override its vsa_checkpoint/predictor_checkpoint.
 run:
   # Optional suffix shared by FT VSA/Predictor.
-  common_suffix: ""
+  common_suffix: pcapt
 
 dataset:
   skillvla_root: skillvla
@@ -30,7 +33,7 @@ sbd_preview:
 # Transition randomization은 각 모델의 warm-start PT 체크포인트에서 상속.
 
 warm_start:
-  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_base, checkpoint: "100000"}
+  vsa_checkpoint: {run: bs16_libero_90_full_full_FSQ333_contrastive_2000_pt_grounded_UV_Bspline_denoising_dualbottleneck_pi05vlm_9_9_noproprio_termbn_detach_vlmtermGT_k10_s1_pw2_w1_vlast9_gripaction_base, checkpoint: "100000"}
   # Scalar = one Predictor FT; list = independent simultaneous FT on ONE GPU.
   # VSA ignores this Predictor selection.
   predictor_checkpoint: {run: bs16_FSQ333_contrastive_2000_pt_grounded_libero_90_full_full_predictor_uv_fullvlm_mode2_uvclip, checkpoint: "100000"}

@@ -7,3 +7,6 @@ opencv-python-headless==4.13.0.92
 # egl-probe still uses old CMake policies (LIBERO/robomimic dependency).
 cmake==3.31.10
 pytest>=8,<10
+# Shared SkillVLA trainer dependencies (inside the GR00T environment only).
+pyserial==3.5
+deepdiff==8.6.2

@@ -45,10 +45,14 @@ class FrozenVLMSkillPredictor(nn.Module):
     def __init__(self, config: SkillExpertConfig):
         super().__init__()
         self.config = config
-        self.vlm = build_paligemma_model(
-            config.skill_predictor_vlm_variant,
-            image_size=config.skill_predictor_image_size,
-        )
+        if getattr(config, "skillvla_backbone", "pi05").startswith("groot_"):
+            from lerobot.policies.skill_groot.predictor import predictor_vlm
+            self.vlm = predictor_vlm(config)
+        else:
+            self.vlm = build_paligemma_model(
+                config.skill_predictor_vlm_variant,
+                image_size=config.skill_predictor_image_size,
+            )
         width = int(self.vlm.language_model.config.hidden_size)
         self.reader = SkillReader(
             width,

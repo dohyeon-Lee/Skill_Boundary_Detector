@@ -186,7 +186,10 @@ class PreTrainedConfig(draccus.ChoiceRegistry, HubMixin, abc.ABC):  # type: igno
 
     def _save_pretrained(self, save_directory: Path) -> None:
         with open(save_directory / CONFIG_NAME, "w") as f, draccus.config_type("json"):
-            draccus.dump(self, f, indent=4)
+            # draccus 0.11 (GR00T's runtime) omits the discriminator when
+            # encoding a concrete subclass at the root. Keep checkpoints
+            # readable by the shared policy factory in both 0.10 and 0.11.
+            json.dump({"type": self.type, **draccus.encode(self)}, f, indent=4)
 
     @classmethod
     def _migrate_legacy_config(cls, config: dict[str, Any]) -> dict[str, Any]:

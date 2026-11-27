@@ -434,7 +434,7 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
     if len(run_name) > 240:
         raise ValueError(f"Run name exceeds the filesystem limit ({len(run_name)} chars): {run_name}")
 
-    return apply_droid_training_group(config, {
+    settings = apply_droid_training_group(config, {
         "project_root": project_root,
         "lerobot_root": project_root / "lerobot",
         "skillvla_dataset_dir": dataset_dir,
@@ -510,6 +510,9 @@ def build_settings(config: dict, *, _allow_joint_adaptation: bool = False) -> di
         "train_nodelist": str(config.get("train_nodelist", "")),
         "train_exclude_nodes": ",".join(as_list(config.get("train_exclude_nodes", []))),
     }, dataset_dir, run_key='run_name', output_key='output_dir')
+    from skillvla_backend import finalize
+    settings['pi_base'] = checkpoint if config.get('skillvla_backbone', 'pi05') == 'pi05' else project_root / str(config['warm_start']['pi_base'])
+    return finalize(config, settings)
 
 
 def main() -> None:

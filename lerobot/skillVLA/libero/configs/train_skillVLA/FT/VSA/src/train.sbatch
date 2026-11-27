@@ -24,6 +24,9 @@ RESOLVER="${NEWTASK_FT_VSA_RESOLVER:-${SRC_DIR}/newtask_ft_vsa_config.py}"
 
 BOOTSTRAP_PYTHON="${NEWTASK_FT_BOOTSTRAP_PYTHON:-python3}"
 eval "$("${BOOTSTRAP_PYTHON}" "${RESOLVER}" --config "${CONFIG_PATH}" --shell)"
+if [[ "${SKILLVLA_BACKBONE:-pi05}" == groot_* ]]; then
+  exec bash "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skillVLA/PT/src/groot/run.sh" "${CONFIG_PATH}" ft VSA
+fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"

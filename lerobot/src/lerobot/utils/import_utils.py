@@ -70,6 +70,14 @@ def is_package_available(
 
 
 _transformers_available = is_package_available("transformers")
+_diffusers_available = is_package_available("diffusers")
+
+
+def require_package(name: str, *, extra: str = "", import_name: str | None = None) -> None:
+    """Lazy dependency check shared with the pinned GR00T N1.7 modules."""
+    if not is_package_available(name, import_name=import_name):
+        raise ImportError(f"{name} is required. Install the {extra or name} environment first.")
+
 _peft_available = is_package_available("peft")
 _scipy_available = is_package_available("scipy")
 _reachy2_sdk_available = is_package_available("reachy2_sdk")

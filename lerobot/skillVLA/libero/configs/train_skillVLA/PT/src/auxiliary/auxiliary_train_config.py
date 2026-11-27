@@ -1323,7 +1323,10 @@ def build_settings(
             )
         if train_terminator and not fsq_path.is_file():
             raise FileNotFoundError(f"FSQ checkpoint not found: {fsq_path}")
-        if train_predictor and not (pi_base / "model.safetensors").is_file():
+        if train_predictor and not (pi_base / "model.safetensors").is_file() and not (
+            config.get("skillvla_backbone", "pi05").startswith("groot_")
+            and (pi_base / "model.safetensors.index.json").is_file()
+        ):
             raise FileNotFoundError(f"pi0.5 predictor base not found: {pi_base}")
         termination_sigma = float(
             _at(config, "termination_loss", "target_sigma", default=(
@@ -1847,6 +1850,8 @@ def build_settings(
         raise ValueError("training.dataloader.workers must be non-negative.")
     settings = apply_droid_training_group(config, settings, dataset_dir,
         run_key='run_name', output_key='output_dir')
+    from skillvla_backend import finalize
+    settings = finalize(config, settings)
     if settings["dataloader_prefetch_factor"] <= 0:
         raise ValueError("training.dataloader.prefetch_factor must be positive.")
     if settings["dataloader_persistent_workers"] and settings["num_workers"] == 0:

@@ -159,3 +159,7 @@ wrapt==2.5.1
 xxhash==4.0.1
 yarl==1.25.1
 zipp==4.1.1
+# Shared SkillVLA trainer dependencies.
+pyserial==3.5
+deepdiff==8.6.2
+orderly-set==5.5.0

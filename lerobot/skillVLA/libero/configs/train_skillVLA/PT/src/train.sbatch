@@ -44,6 +44,9 @@ if ! STAGE1_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/stage1_train_config.py"
 fi
 unset DATASET_EPISODES
 eval "${STAGE1_EXPORTS}"
+if [[ "${SKILLVLA_BACKBONE:-pi05}" == groot_* ]]; then
+  exec bash "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skillVLA/PT/src/groot/run.sh" "${CONFIG_PATH}" pt VSA
+fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"

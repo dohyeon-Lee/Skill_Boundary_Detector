@@ -43,6 +43,9 @@ if ! SKILL_AUX_EXPORTS="$("${BOOTSTRAP_PYTHON}" "${SRC_DIR}/auxiliary_train_conf
   exit 1
 fi
 eval "${SKILL_AUX_EXPORTS}"
+if [[ "${SKILLVLA_BACKBONE:-pi05}" == groot_* ]]; then
+  exec bash "${PROJECT_ROOT}/lerobot/skillVLA/libero/configs/train_skillVLA/PT/src/groot/run.sh" "${CONFIG_PATH}" "${INITIALIZATION_MODE}" Predictor
+fi
 
 cd "${LEROBOT_ROOT}"
 source "${PROJECT_ROOT}/.venv/bin/activate"

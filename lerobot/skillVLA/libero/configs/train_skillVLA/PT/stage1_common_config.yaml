@@ -1,3 +1,5 @@
+skillvla_backbone: groot_integrate  # pi05 | groot_integrate | groot_seperate
+# GR00T starts from models/groot_n1_7_base and uses .venv_groot_lerobot.
 
 dataset:
   skillvla_root: skillvla

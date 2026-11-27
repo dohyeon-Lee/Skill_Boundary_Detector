@@ -62,9 +62,11 @@ class SkillAuxModules(nn.Module):
 
     def __init__(self, config: SkillAuxConfig):
         super().__init__()
-        self.skill_predictor = (
-            FrozenVLMSkillPredictor(config) if config.train_skill_predictor else None
-        )
+        predictor_class = FrozenVLMSkillPredictor
+        if getattr(config, "skillvla_backbone", "pi05").startswith("groot_"):
+            from lerobot.policies.skill_groot.predictor import GrootSkillPredictor
+            predictor_class = GrootSkillPredictor
+        self.skill_predictor = predictor_class(config) if config.train_skill_predictor else None
         self.fsq_term_train = None
         if config.train_terminator:
             if config.bimanual_spatial_auxiliary:
@@ -1982,7 +1984,8 @@ class SkillAuxPolicy(PreTrainedPolicy):
             raise ValueError("A SkillAuxConfig is required when initializing from pi0.5.")
         policy = cls(config, **kwargs)
         if config.train_skill_predictor:
-            policy._load_pi05_predictor_base(pretrained_name_or_path)
+            if not getattr(config, "skillvla_backbone", "pi05").startswith("groot_"):
+                policy._load_pi05_predictor_base(pretrained_name_or_path)
             predictor_checkpoint = str(
                 config.skill_predictor_checkpoint_path
                 or config.auxiliary_checkpoint_path

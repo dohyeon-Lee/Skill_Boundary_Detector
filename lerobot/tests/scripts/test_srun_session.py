@@ -38,6 +38,27 @@ def test_request_overrides_resources_without_interpreting_script_arguments(tmp_p
     assert not (tmp_path / "should-not-exist").exists()
 
 
+def test_launch_environment_does_not_inherit_previous_workflow_settings():
+    runtime = {'PATH': '/bin', 'HOME': '/home/test', 'USER': 'test',
+               'DROID_IDLE_FILTER': 'old-filter', 'DATASET_EPISODES': '[99]',
+               'STAGE1_TRAIN_CONFIG': 'old-droid.yaml', 'SLURM_JOB_ID': '123',
+               'SLURMD_NODENAME': 'compute-node',
+               'CUDA_VISIBLE_DEVICES': '6', 'TMUX_PANE': '%1'}
+    frozen = {'STAGE1_TRAIN_CONFIG': 'libero.yaml', 'CUDA_VISIBLE_DEVICES': 'wrong'}
+    result = MODULE.launch_environment(frozen, runtime)
+    assert 'DROID_IDLE_FILTER' not in result and 'DATASET_EPISODES' not in result
+    assert result['STAGE1_TRAIN_CONFIG'] == 'libero.yaml'
+    assert result['SLURM_JOB_ID'] == '123' and result['CUDA_VISIBLE_DEVICES'] == '6'
+    assert result['SLURMD_NODENAME'] == 'compute-node'
+    assert result['TMUX_PANE'] == '%1' and result['PATH'] == '/bin'
+    # A DROID task's own explicit filter remains valid.
+    assert MODULE.launch_environment({'DROID_IDLE_FILTER': 'new-filter'}, runtime)[
+        'DROID_IDLE_FILTER'] == 'new-filter'
+    assert MODULE.launch_environment(frozen, runtime, 'NONE')['CUDA_VISIBLE_DEVICES'] == '6'
+    assert 'STAGE1_TRAIN_CONFIG' not in MODULE.launch_environment(frozen, runtime, 'NONE')
+    assert runtime['DROID_IDLE_FILTER'] == 'old-filter'
+
+
 def test_reserve_only_records_gpu_without_starting_training(tmp_path, monkeypatch):
     monkeypatch.setenv("SLURM_JOB_ID", "123")
     path = tmp_path / "launch.json"

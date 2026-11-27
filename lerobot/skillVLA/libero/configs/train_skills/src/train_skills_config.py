@@ -113,6 +113,9 @@ def _merge_global(config_path: Path, cfg: dict[str, Any]) -> dict[str, Any]:
             cfg.setdefault('execution', {}).setdefault('action_steps', cfg['vla_replan_steps'])
             if not str(cfg['dataset'].get('run', '')).strip():
                 raise ValueError('Select dataset.run in DROID PT/stage1_common_config.yaml after building SkillVLA data')
+    if cfg.get("stage1_component"):
+        from skillvla_backend import prepare
+        cfg = prepare(cfg, config_path)
     return cfg
 
 

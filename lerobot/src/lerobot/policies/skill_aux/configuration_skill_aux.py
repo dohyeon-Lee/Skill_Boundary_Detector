@@ -23,6 +23,8 @@ class SkillAuxConfig(PreTrainedConfig):
     """Train the Stage-1 skill auxiliaries without constructing an action model."""
 
     model_type: str = "skill_aux"
+    skillvla_backbone: str = "pi05"
+    groot_base_path: str = ""
     dtype: str = "bfloat16"
 
     max_state_dim: int = 32

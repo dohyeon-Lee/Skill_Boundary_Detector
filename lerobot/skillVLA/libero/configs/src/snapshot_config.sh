@@ -83,6 +83,16 @@ snapshot_config() {
   if [ -f "${newtask_ft_common}" ]; then
     cp "${newtask_ft_common}" "${bundle}/newtask_ft_common_config.yaml" >&2
   fi
+  # GR00T FT can derive its PT run from the PT recipe. Resolve it now so a
+  # later PT YAML edit cannot change a queued FT job's warm start.
+  if [ -f "${bundle}/newtask_ft_common_config.yaml" ] && \
+      grep -Eq "^skillvla_backbone:[[:space:]]*[\"']?groot_(integrate|seperate)([\"']|[[:space:]]|$)" "${bundle}/newtask_ft_common_config.yaml"; then
+    local backend_helper backend_python
+    backend_helper="$(dirname "${BASH_SOURCE[0]}")/../train_skills/src/skillvla_backend.py"
+    backend_python="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)/.venv/bin/python"
+    [ -x "${backend_python}" ] || backend_python=python3
+    "${backend_python}" "${backend_helper}" --freeze-ft-source "${snap}" || return
+  fi
   # DROID UUID groups are data contracts too: queued work must not reread a
   # subsequently edited allowlist. Other domains and old snapshots are unchanged.
   local group_helper group_python

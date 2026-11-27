@@ -139,6 +139,21 @@ def exported_environment(environment, spec):
     return result
 
 
+def launch_environment(frozen, runtime, export_spec='ALL'):
+    """Use this launch's settings, not the allocation worker's previous payload."""
+    # Launch records contain the submit environment. Only basic shell defaults
+    # may fall back for older/minimal records; workflow flags must never leak
+    # from the persistent worker into a later, unrelated task.
+    environment = {key: runtime[key] for key in ('PATH', 'HOME', 'USER') if key in runtime}
+    environment.update(frozen)
+    environment = exported_environment(environment, export_spec)
+    # Device assignment and allocation identity belong to the compute node.
+    for key, value in runtime.items():
+        if key.startswith(('SLURM_', 'SLURMD_')) or key in {'CUDA_VISIBLE_DEVICES', 'TMUX', 'TMUX_PANE'}:
+            environment[key] = value
+    return environment
+
+
 def tmux_command():
     command = ["tmux"]
     if os.environ.get("SBD_TMUX_SOCKET"):
@@ -309,13 +324,8 @@ def run_training(path):
     if data.get('training_control'):
         control = runpy.run_path(str(REPO / 'tools/slurm_monitor/training_control.py'))
         return control['execute'](data['control_root'], data['training_control'], data['control_receipt'])
-    environment = os.environ.copy()
-    environment.update(data["environment"])
-    environment = exported_environment(environment, data['options'].get('--export', 'ALL'))
-    # Slurm assigns visible devices on the compute node; never restore the submit host's mapping.
-    for key, value in os.environ.items():
-        if key.startswith("SLURM_") or key in {"CUDA_VISIBLE_DEVICES", "TMUX", "TMUX_PANE"}:
-            environment[key] = value
+    environment = launch_environment(data['environment'], os.environ,
+                                     data['options'].get('--export', 'ALL'))
     environment.update(SBD_SRUN_SESSION="1", SLURM_SUBMIT_DIR=data["cwd"])
     environment = memory_guard_environment(environment)
     if data.get("existing_job_id"):

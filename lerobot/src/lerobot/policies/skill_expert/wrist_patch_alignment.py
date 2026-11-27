@@ -18,6 +18,7 @@ import torch
 from torch import Tensor, nn
 
 from lerobot.policies.skill_expert.wrist_patch_target import soft_targets
+from lerobot.utils.training_performance import cached_training_target, scalar_metric
 
 
 class WristPatchAlignmentHead(nn.Module):
@@ -108,14 +109,23 @@ def wrist_patch_alignment_loss(
     if logits.shape[-1] != patches:
         raise ValueError(f"Expected {patches} logits for a {grid}x{grid} grid, got {logits.shape[-1]}.")
     logits = logits.float()
-    counted = int(valid.sum())
+    def prepare():
+        counted = int(valid.sum())
+        selected = label[valid] if counted else None
+        targets = soft_targets(selected, grid=grid, sigma=sigma) if counted else None
+        return valid, counted, selected, targets
+
+    # Both banks share this exact crop's label/valid tensors. Retain validity
+    # too, so its identity cannot be recycled until the forward scope exits.
+    _, counted, selected_label, targets = cached_training_target(
+        label, ('patch_distribution', id(valid), grid, sigma), prepare,
+    )
     metrics = {f"{prefix}/valid_fraction": counted / max(int(valid.numel()), 1)}
     if counted == 0:
         # Keep the parameters in the graph so DDP still sees a gradient for this head.
         return logits.sum() * 0.0, metrics
 
-    logits, label = logits[valid], label[valid]
-    targets = soft_targets(label, grid=grid, sigma=sigma)
+    logits, label = logits[valid], selected_label
     loss = -(targets * logits.log_softmax(dim=-1)).sum(dim=-1).mean() / math.log(patches)
 
     with torch.no_grad():
@@ -125,9 +135,9 @@ def wrist_patch_alignment_loss(
         ).float()
         metrics.update(
             {
-                f"{prefix}/cell_accuracy": float((predicted == label).float().mean()),
-                f"{prefix}/within_one_cell": float((distance <= 1.0).float().mean()),
-                f"{prefix}/cell_distance": float(distance.mean()),
+                f"{prefix}/cell_accuracy": scalar_metric((predicted == label).float().mean()),
+                f"{prefix}/within_one_cell": scalar_metric((distance <= 1.0).float().mean()),
+                f"{prefix}/cell_distance": scalar_metric(distance.mean()),
             }
         )
     return loss, metrics
